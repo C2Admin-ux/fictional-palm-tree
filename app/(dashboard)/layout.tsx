@@ -15,7 +15,7 @@ const NAV_PORTFOLIO = [
   { href: '/tasks',              label: 'Tasks',            icon: CheckSquare },
   { href: '/capex',              label: 'CapEx',            icon: HardHat },
   { href: '/performance',        label: 'PM Performance',   icon: BarChart2 },
-  { href: '/documents',          label: 'Documents',        icon: FolderOpen },
+  { href: '/documents',          label: 'Contracts',        icon: FolderOpen },
   { href: '/insurance/policies', label: 'Insurance',        icon: Shield },
   { href: '/reports',            label: 'Reports',          icon: FileText },
   { href: '/inspections',        label: 'Inspections',      icon: ClipboardList },
