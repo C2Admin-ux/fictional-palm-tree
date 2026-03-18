@@ -5,7 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Upload, Shield, AlertTriangle, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, ChevronDown, Search } from 'lucide-react'
+import { InlineSelect } from '@/components/ui/inline-edit'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
 const POLICY_TYPE_LABELS: Record<string,string> = { gl:'General Liability', property:'Property', umbrella:'Umbrella', workers_comp:"Workers' Comp", auto:'Commercial Auto', other:'Other' }
@@ -135,7 +136,18 @@ export default function InsurancePoliciesPage() {
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.aggregate_limit, true)}</td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.annual_premium, true)}</td>
                     <td className="px-3 py-2.5">
-                      <span className={cn('badge text-xs', p.status === 'active' ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : p.status === 'expired' ? 'text-red-700 bg-red-50 border-red-200' : 'text-slate-500 bg-slate-50 border-slate-200')}>{p.status}</span>
+                      <InlineSelect
+                        value={p.status}
+                        options={[
+                          { value: 'active',    label: 'active',    className: 'text-emerald-700 bg-emerald-50 border border-emerald-200' },
+                          { value: 'expired',   label: 'expired',   className: 'text-red-700 bg-red-50 border border-red-200' },
+                          { value: 'cancelled', label: 'cancelled', className: 'text-slate-500 bg-slate-50 border border-slate-200' },
+                        ]}
+                        onSave={async v => {
+                          await (supabase.from('insurance_policies') as any).update({ status: v }).eq('id', p.id)
+                          fetchPolicies()
+                        }}
+                      />
                     </td>
                   </tr>
                 )

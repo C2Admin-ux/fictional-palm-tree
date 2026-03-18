@@ -11,9 +11,10 @@ import {
   PRIORITY_STYLES, RECUR_LABELS, propertyColor,
 } from '@/lib/utils'
 import {
-  Plus, Filter, X, ChevronDown, Users, RefreshCw,
+  Plus, X, ChevronDown, RefreshCw, Users,
   Link as LinkIcon, AlertTriangle, Clock,
 } from 'lucide-react'
+import { InlineText, InlineSelect, InlineDate } from '@/components/ui/inline-edit'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -315,6 +316,7 @@ function TasksInner() {
                           onEdit={() => { setEditTask(task); setShowForm(true) }}
                           onDone={() => markDone(task)}
                           onDelete={() => deleteTask(task.id)}
+                          onRefresh={fetchTasks}
                         />
                       ))}
 
@@ -360,33 +362,61 @@ function TasksInner() {
 
 // ── Task Row ─────────────────────────────────────────────────
 
-function TaskRow({ task, contacts, onEdit, onDone, onDelete }: {
+function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
   task: TaskWithRelations
   contacts: Contact[]
   onEdit: () => void
   onDone: () => void
   onDelete: () => void
+  onRefresh: () => void
 }) {
+  const supabase = createClient()
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
   const taskContacts = task.contacts ?? []
-  const blockerTitle = task.blocked_by_task_id ? '(blocked)' : ''
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
+
+  async function patch(fields: Record<string, unknown>) {
+    await (supabase.from('tasks') as any).update(fields).eq('id', task.id)
+    onRefresh()
+  }
+
+  const STATUS_OPTS = [
+    { value: 'inbox',       label: 'Inbox',       className: 'text-indigo-700 bg-indigo-50 border border-indigo-200' },
+    { value: 'next_action', label: 'Next action', className: 'text-blue-700 bg-blue-50 border border-blue-200' },
+    { value: 'waiting',     label: 'Waiting',     className: 'text-purple-700 bg-purple-50 border border-purple-200' },
+    { value: 'blocked',     label: 'Blocked',     className: 'text-amber-700 bg-amber-50 border border-amber-200' },
+    { value: 'done',        label: 'Done',        className: 'text-slate-500 bg-slate-50 border border-slate-200' },
+  ]
+
+  const PRI_OPTS = [
+    { value: 'urgent', label: 'Urgent', dot: '#ef4444' },
+    { value: 'high',   label: 'High',   dot: '#f97316' },
+    { value: 'medium', label: 'Medium', dot: '#3b82f6' },
+    { value: 'low',    label: 'Low',    dot: '#94a3b8' },
+  ]
 
   return (
     <div className={cn(
       'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
       isDone && 'opacity-60'
     )}>
-      {/* Priority pip */}
-      <div className="w-1 self-stretch mr-3 flex-shrink-0 rounded-sm"
-        style={{ background: isDone ? 'transparent' : PRIORITY_DOT[task.priority] }} />
+      {/* Priority pip — click to change priority */}
+      <InlineSelect
+        value={task.priority}
+        options={PRI_OPTS}
+        onSave={v => patch({ priority: v })}
+        trigger={
+          <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
+            style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[task.priority] }} />
+        }
+      />
 
       {/* Checkbox */}
       <button onClick={onDone}
         className={cn(
-          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
+          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all flex-shrink-0',
           isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
         )}>
         {isDone && (
@@ -396,22 +426,28 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete }: {
         )}
       </button>
 
-      {/* Title */}
-      <div className="flex-1 min-w-0 py-2.5 cursor-pointer" onClick={onEdit}>
-        <div className={cn('text-sm text-slate-900 truncate', isDone && 'line-through text-slate-400')}>
-          {task.title}
-          {task.recur_freq && (
-            <span className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-1.5 py-0.5">
-              <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
-            </span>
-          )}
-          {task.auto_source === 'expiration' && (
-            <span className="ml-2 inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-              <Clock size={9} />Auto
-            </span>
-          )}
+      {/* Title — inline editable */}
+      <div className="flex-1 min-w-0 py-2.5">
+        <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
+          <InlineText
+            value={task.title}
+            onSave={v => patch({ title: v })}
+            displayClassName="font-medium"
+          />
+          <span className="inline-flex items-center gap-1.5 ml-1">
+            {task.recur_freq && (
+              <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-1.5 py-0.5">
+                <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
+              </span>
+            )}
+            {task.auto_source === 'expiration' && (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
+                <Clock size={9} />Auto
+              </span>
+            )}
+          </span>
         </div>
-        {(task.properties?.name || task.capex_projects?.title) && (
+        {(task.properties?.name || task.capex_projects?.title || task.blocked_by_task_id) && (
           <div className="flex items-center gap-2 mt-0.5">
             {task.properties?.name && (
               <span className="text-xs font-medium px-1.5 py-0.5 rounded"
@@ -421,44 +457,53 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete }: {
             )}
             {task.capex_projects?.title && (
               <span className="text-xs text-orange-600 flex items-center gap-1">
-                <LinkIcon size={9} />{task.capex_projects.title.slice(0, 24)}…
+                <LinkIcon size={9} />{task.capex_projects.title.slice(0, 24)}
               </span>
             )}
             {task.blocked_by_task_id && (
-              <span className="text-xs text-amber-600 flex items-center gap-1">
-                ⛓ blocked
-              </span>
+              <span className="text-xs text-amber-600">⛓ blocked</span>
             )}
           </div>
         )}
       </div>
 
-      {/* Status badge */}
-      <div className="w-24 hidden md:flex justify-center">
-        <span className={cn('badge text-xs', STATUS_STYLES[task.status])}>
-          {STATUS_LABELS[task.status]}
-        </span>
+      {/* Status — inline dropdown */}
+      <div className="w-28 hidden md:flex justify-center">
+        <InlineSelect
+          value={task.status}
+          options={STATUS_OPTS}
+          onSave={v => patch({ status: v, completed_at: v === 'done' ? new Date().toISOString() : null })}
+        />
       </div>
 
       {/* People avatars */}
-      <div className="w-28 hidden lg:flex justify-center items-center gap-1">
-        {taskContacts.slice(0, 4).map((c: Contact) => (
+      <div className="w-24 hidden lg:flex justify-center items-center gap-1">
+        {taskContacts.slice(0, 3).map((c: Contact) => (
           <span key={c.id} title={c.full_name}
             className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0"
             style={{ background: c.color_hex ?? '#64748b' }}>
             {c.initials ?? c.full_name.slice(0, 2).toUpperCase()}
           </span>
         ))}
-        {taskContacts.length > 4 && (
-          <span className="text-xs text-slate-400">+{taskContacts.length - 4}</span>
+        {taskContacts.length > 3 && (
+          <span className="text-xs text-slate-400">+{taskContacts.length - 3}</span>
         )}
+        <button onClick={onEdit}
+          className="w-6 h-6 rounded-full border border-dashed border-slate-300 flex items-center justify-center text-slate-300 hover:border-blue-400 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0">
+          <Plus size={10} />
+        </button>
       </div>
 
-      {/* Due date */}
-      <div className={cn('w-20 text-right text-xs flex-shrink-0',
-        overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}>
+      {/* Due date — inline date picker */}
+      <div className={cn('w-20 text-right flex-shrink-0',
+        overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
         {overdue && <AlertTriangle size={10} className="inline mr-1" />}
-        {task.due_date ? formatDateShort(task.due_date) : '—'}
+        <InlineDate
+          value={task.due_date}
+          onSave={v => patch({ due_date: v })}
+          className={cn('text-xs', overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}
+          emptyLabel="no date"
+        />
       </div>
 
       {/* Delete */}

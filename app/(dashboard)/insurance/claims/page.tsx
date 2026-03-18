@@ -6,6 +6,7 @@ import type { InsuranceClaim, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, ChevronDown, AlertTriangle, Search } from 'lucide-react'
+import { InlineSelect, InlineDate, InlineText } from '@/components/ui/inline-edit'
 
 const CLAIM_TYPES = ['property_damage','liability','loss_of_income','other'] as const
 const CLAIM_TYPE_LABELS: Record<string,string> = { property_damage:'Property Damage', liability:'Liability', loss_of_income:'Loss of Income', other:'Other' }
@@ -115,7 +116,16 @@ export default function InsuranceClaimsPage() {
                     <td className="px-4 py-2.5 text-xs font-mono text-slate-500">{c.claim_id ?? c.id.slice(0, 8)}</td>
                     <td className="px-3 py-2.5 text-xs text-slate-600">{(c as any).properties?.name ?? '—'}</td>
                     <td className="px-3 py-2.5"><span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{CLAIM_TYPE_LABELS[c.claim_type] ?? c.claim_type}</span></td>
-                    <td className="px-3 py-2.5"><span className={cn('badge text-xs', STATUS_STYLES[c.status])}>{c.status.replace('_', ' ')}</span></td>
+                    <td className="px-3 py-2.5">
+                      <InlineSelect
+                        value={c.status}
+                        options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: STATUS_STYLES[s] }))}
+                        onSave={async v => {
+                          await (supabase.from('insurance_claims') as any).update({ status: v }).eq('id', c.id)
+                          fetchClaims()
+                        }}
+                      />
+                    </td>
                     <td className="px-3 py-2.5 text-xs text-slate-600">{formatDate(c.date_reported)}</td>
                     <td className="px-3 py-2.5 text-center"><span className={cn('text-xs font-medium px-2 py-0.5 rounded-full', days > 60 ? 'bg-red-50 text-red-600' : days > 30 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-500')}>{days}d</span></td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(c.amount_claimed)}</td>
@@ -123,7 +133,15 @@ export default function InsuranceClaimsPage() {
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(c.amount_paid)}</td>
                     <td className={cn('px-3 py-2.5 text-xs text-right font-medium', outstanding > 0 ? 'text-amber-600' : 'text-slate-400')}>{outstanding > 0 ? formatCurrency(outstanding) : '—'}</td>
                     <td className="px-3 py-2.5 text-xs">
-                      {c.follow_up_date ? <span className={cn('font-medium', overdue ? 'text-red-600' : 'text-slate-600')}>{overdue && <AlertTriangle size={10} className="inline mr-1" />}{formatDate(c.follow_up_date)}</span> : <span className="text-slate-300">—</span>}
+                      <InlineDate
+                        value={c.follow_up_date}
+                        onSave={async v => {
+                          await (supabase.from('insurance_claims') as any).update({ follow_up_date: v }).eq('id', c.id)
+                          fetchClaims()
+                        }}
+                        className={cn(overdue ? 'text-red-600 font-medium' : 'text-slate-600')}
+                        emptyLabel="set date"
+                      />
                     </td>
                   </tr>
                 )

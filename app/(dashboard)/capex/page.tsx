@@ -6,6 +6,7 @@ import type { CapexProject, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_DOT } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, HardHat, ChevronDown, Search } from 'lucide-react'
+import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS, CAPEX_PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import Link from 'next/link'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
@@ -136,20 +137,49 @@ export default function CapexPage() {
               {displayed.map(p => {
                 const pct = p.budget && p.budget > 0 ? Math.min(Math.round((p.actual_spend ?? 0) / p.budget * 100), 100) : 0
                 const over = (p.actual_spend ?? 0) > (p.budget ?? Infinity)
+
+                async function patch(fields: Record<string, unknown>) {
+                  await (supabase.from('capex_projects') as any).update(fields).eq('id', p.id)
+                  fetchProjects()
+                }
+
                 return (
                   <tr key={p.id} className="hover:bg-slate-50 group">
                     <td className="px-4 py-2.5 text-xs text-slate-500">{p.properties?.name ?? '—'}</td>
                     <td className="px-3 py-2.5">
-                      <Link href={`/capex/${p.id}`} onClick={e => e.stopPropagation()}
-                        className="font-medium text-slate-900 hover:text-blue-600 text-sm">{p.title}</Link>
+                      <InlineText
+                        value={p.title}
+                        onSave={v => patch({ title: v })}
+                        displayClassName="font-medium text-slate-900 text-sm"
+                      />
                     </td>
                     <td className="px-3 py-2.5">
-                      {p.category && <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full capitalize">{p.category.replace('_', ' ')}</span>}
+                      <InlineSelect
+                        value={p.category ?? ''}
+                        options={CAPEX_CATEGORY_OPTIONS}
+                        onSave={v => patch({ category: v })}
+                        trigger={
+                          p.category
+                            ? <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full capitalize cursor-pointer hover:bg-slate-200 transition-colors">{p.category.replace('_', ' ')}</span>
+                            : <span className="text-xs text-slate-300 italic cursor-pointer hover:text-slate-500">set category</span>
+                        }
+                      />
                     </td>
                     <td className="px-3 py-2.5">
-                      <span className={cn('badge text-xs', CAPEX_STATUS_STYLES[p.status])}>{p.status.replace('_', ' ')}</span>
+                      <InlineSelect
+                        value={p.status}
+                        options={CAPEX_STATUS_OPTIONS}
+                        onSave={v => patch({ status: v })}
+                      />
                     </td>
-                    <td className="px-3 py-2.5 text-right text-sm text-slate-700">{formatCurrency(p.budget, true)}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <InlineText
+                        value={p.budget?.toString() ?? ''}
+                        onSave={v => patch({ budget: parseFloat(v) || null })}
+                        displayClassName={cn('text-sm text-slate-700', !p.budget && 'text-slate-300 italic')}
+                        placeholder="set budget"
+                      />
+                    </td>
                     <td className={cn('px-3 py-2.5 text-right text-sm font-medium', over ? 'text-red-600' : 'text-slate-700')}>{formatCurrency(p.actual_spend, true)}</td>
                     <td className="px-3 py-2.5 text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -159,8 +189,22 @@ export default function CapexPage() {
                         <span className={cn('text-xs w-8 text-right', over ? 'text-red-500' : 'text-slate-400')}>{pct}%</span>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-xs text-slate-500">{p.vendor_name ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-xs text-slate-500">{formatDate(p.target_completion)}</td>
+                    <td className="px-3 py-2.5">
+                      <InlineText
+                        value={p.vendor_name}
+                        onSave={v => patch({ vendor_name: v })}
+                        displayClassName="text-xs text-slate-600"
+                        placeholder="add vendor"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <InlineDate
+                        value={p.target_completion}
+                        onSave={v => patch({ target_completion: v })}
+                        className="text-xs text-slate-500"
+                        emptyLabel="set date"
+                      />
+                    </td>
                   </tr>
                 )
               })}
