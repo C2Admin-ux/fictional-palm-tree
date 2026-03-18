@@ -4,12 +4,12 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Property, Pmc, Contact } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
-import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check } from 'lucide-react'
+import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail } from 'lucide-react'
 
 const PMS_PLATFORMS = ['Entrata', 'Yardi', 'ResMan', 'AIM', 'Other']
 const PROPERTY_STATUSES = ['active', 'disposition', 'watchlist']
 
-type Tab = 'properties' | 'pmcs' | 'contacts'
+type Tab = 'properties' | 'pmcs' | 'contacts' | 'digest'
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('properties')
@@ -17,7 +17,8 @@ export default function SettingsPage() {
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'properties', label: 'Properties', icon: <Building2 size={14} /> },
     { id: 'pmcs',       label: 'PMCs',        icon: <Users size={14} /> },
-    { id: 'contacts',  label: 'Contacts',    icon: <UserCircle size={14} /> },
+    { id: 'contacts',   label: 'Contacts',    icon: <UserCircle size={14} /> },
+    { id: 'digest',     label: 'Digest',      icon: <Mail size={14} /> },
   ]
 
   return (
@@ -43,6 +44,7 @@ export default function SettingsPage() {
       {tab === 'properties' && <PropertiesTab />}
       {tab === 'pmcs' && <PmcsTab />}
       {tab === 'contacts' && <ContactsTab />}
+      {tab === 'digest' && <DigestTab />}
     </div>
   )
 }
@@ -504,6 +506,91 @@ function ContactFormModal({ contact, pmcs, onClose, onSave }: {
             <button type="submit" disabled={saving || !form.full_name} className="btn-primary">{saving ? 'Saving…' : contact ? 'Save' : 'Add contact'}</button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ── Digest Tab ───────────────────────────────────────────────
+
+function DigestTab() {
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<{ success?: boolean; message?: string; sections?: any } | null>(null)
+
+  async function sendTestDigest() {
+    setSending(true)
+    setResult(null)
+    try {
+      const res = await fetch('/api/digest', {
+        headers: { authorization: `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET ?? ''}` }
+      })
+      const data = await res.json()
+      if (data.success) {
+        setResult({ success: true, message: `Sent to ${data.sent_to}`, sections: data.sections })
+      } else {
+        setResult({ success: false, message: data.error ?? 'Unknown error' })
+      }
+    } catch (err: any) {
+      setResult({ success: false, message: err.message })
+    }
+    setSending(false)
+  }
+
+  return (
+    <div className="space-y-5 max-w-2xl">
+      <div className="card p-5 space-y-4">
+        <h3 className="text-sm font-semibold text-slate-700">Weekly Digest Configuration</h3>
+        <div className="space-y-3 text-sm text-slate-600">
+          {[
+            ['Schedule', 'Every Sunday at 6pm MT (Monday 1am UTC)'],
+            ['Recipient', 'nick@c2cpllc.com'],
+            ['Gmail scan', 'Snoozed emails due this week + unanswered threads expecting a reply'],
+            ['Platform items', 'Urgent/high tasks · Expiring insurance (≤60d) · Contract deadlines (≤60d) · Claims due this week'],
+          ].map(([label, value]) => (
+            <div key={label} className="flex gap-3">
+              <span className="w-32 flex-shrink-0 text-slate-400 font-medium">{label}</span>
+              <span>{value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card p-5 space-y-4">
+        <h3 className="text-sm font-semibold text-slate-700">Send Test Digest</h3>
+        <p className="text-sm text-slate-500">Triggers the digest immediately — useful for verifying your Resend API key and Gmail connection are working.</p>
+        <button onClick={sendTestDigest} disabled={sending} className="btn-primary">
+          <Mail size={14} />
+          {sending ? 'Sending…' : 'Send test digest now'}
+        </button>
+        {result && (
+          <div className={cn('p-3 rounded-lg text-sm', result.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200')}>
+            {result.success ? '✓ ' : '✗ '}{result.message}
+            {result.sections && (
+              <div className="mt-2 text-xs space-y-0.5 opacity-80">
+                {Object.entries(result.sections).map(([k, v]) => (
+                  <div key={k}>{k.replace(/_/g, ' ')}: {v as number}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="card p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-700">Required Environment Variables</h3>
+        <p className="text-sm text-slate-500">Add these in Vercel → Settings → Environment Variables if not already set:</p>
+        <div className="space-y-2">
+          {[
+            { name: 'RESEND_API_KEY', desc: 'From resend.com → API Keys', required: true },
+            { name: 'NEXT_PUBLIC_APP_URL', desc: 'Your Vercel deployment URL (for links in email)', required: false },
+          ].map(({ name, desc, required }) => (
+            <div key={name} className="flex items-start gap-3 p-2.5 bg-slate-50 rounded-lg">
+              <code className="text-xs font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded flex-shrink-0">{name}</code>
+              <span className="text-xs text-slate-500">{desc}</span>
+              {required && <span className="text-xs text-red-500 font-medium flex-shrink-0 ml-auto">Required</span>}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
