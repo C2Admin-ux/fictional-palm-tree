@@ -5,20 +5,20 @@ import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import {
-  LayoutDashboard, CheckSquare, HardHat, BarChart2,
-  FolderOpen, FileText, Shield, Building2, LogOut,
-  Users, ClipboardList, ChevronRight, Settings,
+  LayoutDashboard, CheckSquare, Wrench, TrendingUp,
+  FileSignature, Shield, FileBarChart, ClipboardCheck,
+  Settings, Building2, LogOut, ChevronRight,
 } from 'lucide-react'
 
 const NAV_PORTFOLIO = [
   { href: '/dashboard',          label: 'Dashboard',       icon: LayoutDashboard },
   { href: '/tasks',              label: 'Tasks',            icon: CheckSquare },
-  { href: '/capex',              label: 'CapEx',            icon: HardHat },
-  { href: '/performance',        label: 'PM Performance',   icon: BarChart2 },
-  { href: '/documents',          label: 'Contracts',        icon: FolderOpen },
+  { href: '/capex',              label: 'CapEx',            icon: Wrench },
+  { href: '/performance',        label: 'PM Performance',   icon: TrendingUp },
+  { href: '/documents',          label: 'Contracts',        icon: FileSignature },
   { href: '/insurance/policies', label: 'Insurance',        icon: Shield },
-  { href: '/reports',            label: 'Reports',          icon: FileText },
-  { href: '/inspections',        label: 'Inspections',      icon: ClipboardList },
+  { href: '/reports',            label: 'Reports',          icon: FileBarChart },
+  { href: '/inspections',        label: 'Inspections',      icon: ClipboardCheck },
   { href: '/settings',           label: 'Settings',         icon: Settings },
 ]
 
@@ -32,9 +32,9 @@ const PROPERTIES = [
   { id: 'b1000000-0000-0000-0000-000000000002', name: 'Pikes Place',      abbr: 'PP', color: '#D85A30' },
   { id: 'b1000000-0000-0000-0000-000000000003', name: 'Cottages on Vance',abbr: 'CV', color: '#7F77DD' },
   { id: 'b1000000-0000-0000-0000-000000000004', name: 'Main Street',      abbr: 'MS', color: '#BA7517' },
-  { id: 'b1000000-0000-0000-0000-000000000005', name: 'Property 5',       abbr: 'P5', color: '#64748b' },
-  { id: 'b1000000-0000-0000-0000-000000000006', name: 'Property 6',       abbr: 'P6', color: '#64748b' },
-  { id: 'b1000000-0000-0000-0000-000000000007', name: 'Property 7',       abbr: 'P7', color: '#64748b' },
+  { id: 'b1000000-0000-0000-0000-000000000005', name: 'De Cortez',        abbr: 'DC', color: '#0891b2' },
+  { id: 'b1000000-0000-0000-0000-000000000006', name: 'Pebble Creek',     abbr: 'PC', color: '#7c3aed' },
+  { id: 'b1000000-0000-0000-0000-000000000007', name: 'Debbie J II',      abbr: 'DJ', color: '#be185d' },
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
