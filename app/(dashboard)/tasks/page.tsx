@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
@@ -32,6 +33,14 @@ const SECTION_LABELS: Record<StatusFilter, string> = {
 }
 
 export default function TasksPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-slate-400">Loading…</div>}>
+      <TasksInner />
+    </Suspense>
+  )
+}
+
+function TasksInner() {
   const supabase = createClient()
   const searchParams = useSearchParams()
 
