@@ -8,8 +8,9 @@ import {
   occupancyColor, delinquencyColor, noiVarianceColor, workOrderCloseRateColor,
   TRAFFIC_LIGHT, TRAFFIC_DOT,
 } from '@/lib/utils'
-import { Plus, X, ChevronDown, BarChart2 } from 'lucide-react'
+import { Plus, X, ChevronDown, BarChart2, Search } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { useSort, Th } from '@/lib/utils/sort'
 
 export default function PerformancePage() {
   const supabase = createClient()
@@ -109,6 +110,7 @@ export default function PerformancePage() {
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">Delinquency</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">NOI Actual</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">NOI Budget</th>
+                <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">NOI Var</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">WO Close</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">Moves</th>
                 <th className="w-12" />
@@ -131,6 +133,7 @@ export default function PerformancePage() {
                     <MetricTd value={m ? formatPct(m.delinquency_pct) : null} color={delinquencyColor(m?.delinquency_pct)} />
                     <MetricTd value={m ? formatCurrency(m.noi_actual, true) : null} color={noiVarianceColor(m?.noi_actual, m?.noi_budget)} />
                     <MetricTd value={m ? formatCurrency(m.noi_budget, true) : null} color="gray" />
+                    <MetricTd value={m?.noi_actual && m?.noi_budget ? `${Math.round((m.noi_actual - m.noi_budget) / Math.abs(m.noi_budget) * 100)}%` : null} color={noiVarianceColor(m?.noi_actual, m?.noi_budget)} />
                     <MetricTd value={woRate != null ? formatPct(woRate) : null} color={workOrderCloseRateColor(m?.work_orders_opened, m?.work_orders_closed)} />
                     <td className="px-3 py-3 text-center text-xs text-slate-500">
                       {m ? `${m.move_ins ?? '—'} / ${m.move_outs ?? '—'}` : '—'}

@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, CheckSquare, HardHat, BarChart2,
   FolderOpen, FileText, Shield, Building2, LogOut,
-  Users, ClipboardList, ChevronRight,
+  Users, ClipboardList, ChevronRight, Settings,
 } from 'lucide-react'
 
 const NAV_PORTFOLIO = [
@@ -19,6 +19,7 @@ const NAV_PORTFOLIO = [
   { href: '/insurance/policies', label: 'Insurance',        icon: Shield },
   { href: '/reports',            label: 'Reports',          icon: FileText },
   { href: '/inspections',        label: 'Inspections',      icon: ClipboardList },
+  { href: '/settings',           label: 'Settings',         icon: Settings },
 ]
 
 const NAV_SOON = [
