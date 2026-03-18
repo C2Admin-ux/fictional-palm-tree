@@ -97,6 +97,14 @@ export function noiVarianceColor(
   return 'red'
 }
 
+export function workOrderCloseRateColor(opened: number | null | undefined, closed: number | null | undefined): TrafficLight {
+  if (opened == null || closed == null || opened === 0) return 'gray'
+  const rate = closed / opened
+  if (rate >= 0.9) return 'green'
+  if (rate >= 0.75) return 'yellow'
+  return 'red'
+}
+
 export function expiryColor(daysLeft: number | null): TrafficLight {
   if (daysLeft == null) return 'gray'
   if (daysLeft < 0) return 'red'
