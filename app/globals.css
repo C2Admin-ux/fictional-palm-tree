@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  :root { --sidebar-bg: #1a2332; }
+}
+
+@layer components {
+  .label { @apply block text-xs font-medium text-slate-500 mb-1.5; }
+  .input { @apply w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors placeholder:text-slate-400; }
+  .input-sm { @apply w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-xs text-slate-900 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-transparent; }
+  .btn-primary { @apply flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply flex items-center gap-2 px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-medium rounded-lg transition-colors; }
+  .btn-ghost { @apply px-3 py-1.5 text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors; }
+  .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border; }
+  .card { @apply bg-white border border-slate-200 rounded-xl; }
+  .card-hover { @apply bg-white border border-slate-200 rounded-xl hover:shadow-md transition-shadow; }
+  .page-header { @apply flex items-center justify-between mb-6; }
+  .page-title { @apply text-xl font-semibold text-slate-900; }
+  .section-title { @apply text-sm font-semibold text-slate-700 uppercase tracking-wide; }
+}
+
+@layer utilities {
+  .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+  .sidebar-item { @apply flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer; }
+  .sidebar-item-active { @apply bg-blue-600 text-white; }
+}
