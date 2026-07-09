@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -25,6 +25,13 @@ export default function InsurancePoliciesPage() {
   const [search, setSearch] = useState('')
   const { sort, dir, toggle, sortFn } = useSort<string>('expiry_date', 'asc')
 
+  // OCR / drag-drop state
+  const [dragOver, setDragOver] = useState(false)
+  const [extracting, setExtracting] = useState(false)
+  const [extractStatus, setExtractStatus] = useState('')
+  const [extractedPolicies, setExtractedPolicies] = useState<any[] | null>(null)
+  const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
+
   const fetchPolicies = useCallback(async () => {
     let q = (supabase.from('insurance_policies') as any).select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
@@ -38,6 +45,52 @@ export default function InsurancePoliciesPage() {
   useEffect(() => { fetchPolicies() }, [fetchPolicies])
   useEffect(() => { supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? [])) }, [])
 
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  async function handlePdfDrop(files: FileList | File[]) {
+    const file = Array.from(files).find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+    if (!file) { alert('Please drop a PDF file'); return }
+
+    setExtracting(true)
+    setExtractStatus('Reading document…')
+    try {
+      const base64 = await fileToBase64(file)
+      setExtractStatus('Extracting policy details with AI…')
+
+      const res = await fetch('/api/insurance/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
+      })
+      const data = await res.json()
+
+      if (data.error === 'not_an_insurance_document') {
+        alert("That doesn't look like an insurance document. Try a COI or policy declaration page.")
+        setExtracting(false)
+        return
+      }
+      if (!data.success) {
+        alert('Extraction failed: ' + (data.error ?? 'unknown error'))
+        setExtracting(false)
+        return
+      }
+
+      setExtractedPolicies(data.policies)
+      setExtractedFile({ name: file.name, base64 })
+    } catch (err: any) {
+      alert('Something went wrong: ' + err.message)
+    }
+    setExtracting(false)
+    setExtractStatus('')
+  }
+
   const displayed = [...policies]
     .filter(p => { if (!search) return true; const s = search.toLowerCase(); return p.carrier.toLowerCase().includes(s) || (p.properties?.name ?? '').toLowerCase().includes(s) || p.policy_number?.toLowerCase().includes(s) })
     .sort(sortFn)
@@ -46,10 +99,50 @@ export default function InsurancePoliciesPage() {
   const totalPremium = policies.filter(p => p.status === 'active').reduce((s, p) => s + (p.annual_premium ?? 0), 0)
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-5">
+    <div
+      className="p-6 max-w-7xl mx-auto space-y-5"
+      onDragOver={e => { e.preventDefault(); if (!extracting) setDragOver(true) }}
+      onDragLeave={e => { e.preventDefault(); setDragOver(false) }}
+      onDrop={e => { e.preventDefault(); setDragOver(false); if (!extracting) handlePdfDrop(e.dataTransfer.files) }}>
+
+      {/* Drag overlay */}
+      {dragOver && (
+        <div className="fixed inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-40 flex items-center justify-center pointer-events-none">
+          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center">
+            <Sparkles size={32} className="text-blue-500 mx-auto mb-2" />
+            <div className="text-lg font-semibold text-blue-700">Drop COI or policy PDF</div>
+            <div className="text-sm text-slate-500 mt-1">AI will extract and fill in the details</div>
+          </div>
+        </div>
+      )}
+
+      {/* Extracting overlay */}
+      {extracting && (
+        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
+            <Loader2 size={32} className="text-blue-500 mx-auto mb-3 animate-spin" />
+            <div className="text-base font-semibold text-slate-800">Reading your document</div>
+            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div><h1 className="page-title">Insurance Policies</h1><p className="text-sm text-slate-500 mt-0.5">{displayed.length} policies · {formatCurrency(totalPremium, true)}/yr</p></div>
-        <button onClick={() => { setEditPolicy(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
+        <div className="flex items-center gap-2">
+          <label className="btn-secondary cursor-pointer">
+            <Sparkles size={14} />Scan PDF
+            <input type="file" accept=".pdf" className="hidden"
+              onChange={e => { if (e.target.files?.length) handlePdfDrop(e.target.files); e.target.value = '' }} />
+          </label>
+          <button onClick={() => { setEditPolicy(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
+        </div>
+      </div>
+
+      {/* Hint banner */}
+      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        <Sparkles size={13} className="text-blue-500 flex-shrink-0" />
+        <span>Drag a COI or policy PDF anywhere on this page to auto-extract carrier, limits, dates, and agent info.</span>
       </div>
 
       {/* KPIs */}
@@ -158,6 +251,196 @@ export default function InsurancePoliciesPage() {
       )}
 
       {showForm && <PolicyFormModal policy={editPolicy} properties={properties} onClose={() => { setShowForm(false); setEditPolicy(null) }} onSave={() => { setShowForm(false); setEditPolicy(null); fetchPolicies() }} />}
+
+      {extractedPolicies && (
+        <ExtractionReviewModal
+          extractedPolicies={extractedPolicies}
+          extractedFile={extractedFile}
+          properties={properties}
+          onClose={() => { setExtractedPolicies(null); setExtractedFile(null) }}
+          onSaved={() => { setExtractedPolicies(null); setExtractedFile(null); fetchPolicies() }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, onClose, onSaved }: {
+  extractedPolicies: any[]
+  extractedFile: { name: string; base64: string } | null
+  properties: Property[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const supabase = createClient()
+
+  // Each extracted policy becomes an editable draft. Auto-match property from hint.
+  function matchProperty(hint: string | null): string {
+    if (!hint) return ''
+    const h = hint.toLowerCase()
+    const match = properties.find(p =>
+      h.includes(p.name.toLowerCase()) ||
+      (p.name.toLowerCase().split(' ')[0] && h.includes(p.name.toLowerCase().split(' ')[0])) ||
+      (p.address && h.includes((p.address as string).toLowerCase().slice(0, 10)))
+    )
+    return match?.id ?? ''
+  }
+
+  const [drafts, setDrafts] = useState(() =>
+    extractedPolicies.map(p => ({
+      property_id: matchProperty(p.property_hint),
+      policy_type: p.policy_type ?? 'gl',
+      carrier: p.carrier ?? '',
+      policy_number: p.policy_number ?? '',
+      effective_date: p.effective_date ?? '',
+      expiry_date: p.expiry_date ?? '',
+      per_occurrence: p.per_occurrence?.toString() ?? '',
+      aggregate_limit: p.aggregate_limit?.toString() ?? '',
+      building_coverage: p.building_coverage?.toString() ?? '',
+      deductible: p.deductible?.toString() ?? '',
+      annual_premium: p.annual_premium?.toString() ?? '',
+      agent_name: p.agent_name ?? '',
+      agent_phone: p.agent_phone ?? '',
+      agent_email: p.agent_email ?? '',
+      broker_agency: p.broker_agency ?? '',
+      certificate_holder: p.certificate_holder ?? '',
+      mortgagee: p.mortgagee ?? '',
+      notes: p.notes ?? '',
+      confidence: p.confidence ?? 'medium',
+      _include: true,
+    }))
+  )
+  const [saving, setSaving] = useState(false)
+
+  function updateDraft(i: number, key: string, value: any) {
+    setDrafts(d => d.map((draft, idx) => idx === i ? { ...draft, [key]: value } : draft))
+  }
+
+  async function saveAll() {
+    setSaving(true)
+    const n = (v: string) => v !== '' ? parseFloat(v) : null
+
+    // Upload the source PDF once to storage
+    let coi_file_path: string | null = null
+    let coi_file_name: string | null = null
+    if (extractedFile) {
+      try {
+        const bytes = Uint8Array.from(atob(extractedFile.base64), c => c.charCodeAt(0))
+        const path = `insurance/${Date.now()}-${extractedFile.name}`
+        const { error } = await supabase.storage.from('c2-documents').upload(path, bytes, { contentType: 'application/pdf' })
+        if (!error) { coi_file_path = path; coi_file_name = extractedFile.name }
+      } catch { /* non-fatal */ }
+    }
+
+    const toSave = drafts.filter(d => d._include)
+    const rows = toSave.map(d => ({
+      property_id: d.property_id || null,
+      policy_type: d.policy_type,
+      carrier: d.carrier,
+      policy_number: d.policy_number || null,
+      effective_date: d.effective_date || null,
+      expiry_date: d.expiry_date || null,
+      per_occurrence: n(d.per_occurrence),
+      aggregate_limit: n(d.aggregate_limit),
+      building_coverage: n(d.building_coverage),
+      deductible: n(d.deductible),
+      annual_premium: n(d.annual_premium),
+      agent_name: d.agent_name || null,
+      agent_phone: d.agent_phone || null,
+      agent_email: d.agent_email || null,
+      broker_agency: d.broker_agency || null,
+      certificate_holder: d.certificate_holder || null,
+      mortgagee: d.mortgagee || null,
+      notes: d.notes || null,
+      coi_file_path,
+      coi_file_name,
+      status: 'active',
+    }))
+
+    if (rows.length) await (supabase.from('insurance_policies') as any).insert(rows)
+    setSaving(false)
+    onSaved()
+  }
+
+  const includedCount = drafts.filter(d => d._include).length
+
+  const CONF_STYLE: Record<string, string> = {
+    high: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    medium: 'text-amber-700 bg-amber-50 border-amber-200',
+    low: 'text-red-700 bg-red-50 border-red-200',
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
+          <div className="flex items-center gap-2">
+            <Sparkles size={17} className="text-blue-500" />
+            <div>
+              <h2 className="font-semibold text-slate-900">Review Extracted {drafts.length > 1 ? `${drafts.length} Policies` : 'Policy'}</h2>
+              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
+            </div>
+          </div>
+          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+            <span>AI extraction isn&apos;t perfect. Double-check the <strong>expiry dates</strong> and <strong>property assignment</strong> — those drive your renewal alerts.</span>
+          </div>
+
+          {drafts.map((d, i) => (
+            <div key={i} className={cn('border rounded-xl p-4 space-y-3', d._include ? 'border-slate-200' : 'border-slate-100 bg-slate-50 opacity-60')}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" checked={d._include} onChange={e => updateDraft(i, '_include', e.target.checked)} className="w-4 h-4" />
+                  <span className="font-medium text-slate-800 text-sm">{POLICY_TYPE_LABELS[d.policy_type] ?? d.policy_type} — {d.carrier || 'Unknown carrier'}</span>
+                  <span className={cn('badge text-xs', CONF_STYLE[d.confidence] ?? CONF_STYLE.medium)}>{d.confidence} confidence</span>
+                </div>
+              </div>
+
+              {d._include && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="label">Property</label>
+                    <select value={d.property_id} onChange={e => updateDraft(i, 'property_id', e.target.value)} className={cn('input', !d.property_id && 'border-amber-300 bg-amber-50')}>
+                      <option value="">— assign —</option>
+                      {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Type</label>
+                    <select value={d.policy_type} onChange={e => updateDraft(i, 'policy_type', e.target.value)} className="input">
+                      {POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}
+                    </select>
+                  </div>
+                  <div><label className="label">Carrier</label><input value={d.carrier} onChange={e => updateDraft(i, 'carrier', e.target.value)} className="input" /></div>
+                  <div><label className="label">Policy #</label><input value={d.policy_number} onChange={e => updateDraft(i, 'policy_number', e.target.value)} className="input" /></div>
+                  <div><label className="label">Effective</label><input type="date" value={d.effective_date} onChange={e => updateDraft(i, 'effective_date', e.target.value)} className="input" /></div>
+                  <div><label className="label">Expiry ⚠</label><input type="date" value={d.expiry_date} onChange={e => updateDraft(i, 'expiry_date', e.target.value)} className={cn('input', !d.expiry_date && 'border-amber-300 bg-amber-50')} /></div>
+                  <div><label className="label">Per Occurrence</label><input type="number" value={d.per_occurrence} onChange={e => updateDraft(i, 'per_occurrence', e.target.value)} className="input" /></div>
+                  <div><label className="label">Aggregate</label><input type="number" value={d.aggregate_limit} onChange={e => updateDraft(i, 'aggregate_limit', e.target.value)} className="input" /></div>
+                  <div><label className="label">Premium</label><input type="number" value={d.annual_premium} onChange={e => updateDraft(i, 'annual_premium', e.target.value)} className="input" /></div>
+                  <div><label className="label">Agent</label><input value={d.agent_name} onChange={e => updateDraft(i, 'agent_name', e.target.value)} className="input" /></div>
+                  <div><label className="label">Agent Phone</label><input value={d.agent_phone} onChange={e => updateDraft(i, 'agent_phone', e.target.value)} className="input" /></div>
+                  <div><label className="label">Broker</label><input value={d.broker_agency} onChange={e => updateDraft(i, 'broker_agency', e.target.value)} className="input" /></div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 sticky bottom-0 bg-white">
+          <span className="text-xs text-slate-400">{includedCount} of {drafts.length} will be saved</span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="btn-ghost">Cancel</button>
+            <button onClick={saveAll} disabled={saving || includedCount === 0} className="btn-primary">
+              {saving ? 'Saving…' : <><Check size={14} />Save {includedCount} {includedCount === 1 ? 'policy' : 'policies'}</>}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
