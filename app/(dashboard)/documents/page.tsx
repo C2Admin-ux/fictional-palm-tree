@@ -55,6 +55,17 @@ type Contract = {
   revenue_share_details: string | null
   service_description: string | null
   equipment_details: string | null
+  service_frequency: string | null
+  service_line_items: string | null
+  per_service_cost: number | null
+  surcharges: string | null
+  early_termination_terms: string | null
+  container_details: string | null
+  pickup_schedule: string | null
+  inspection_frequency: string | null
+  coverage_scope: string | null
+  response_time_sla: string | null
+  emergency_call_fee: number | null
   file_path: string | null
   file_name: string | null
   status: string
@@ -559,6 +570,17 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
       revenue_share_details: c.revenue_share_details ?? '',
       service_description: c.service_description ?? '',
       equipment_details: c.equipment_details ?? '',
+      service_frequency: c.service_frequency ?? '',
+      service_line_items: c.service_line_items ?? '',
+      per_service_cost: c.per_service_cost?.toString() ?? '',
+      surcharges: c.surcharges ?? '',
+      early_termination_terms: c.early_termination_terms ?? '',
+      container_details: c.container_details ?? '',
+      pickup_schedule: c.pickup_schedule ?? '',
+      inspection_frequency: c.inspection_frequency ?? '',
+      coverage_scope: c.coverage_scope ?? '',
+      response_time_sla: c.response_time_sla ?? '',
+      emergency_call_fee: c.emergency_call_fee?.toString() ?? '',
       notes: c.notes ?? '',
       confidence: c.confidence ?? 'medium',
       _include: true,
@@ -623,6 +645,17 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
       revenue_share_details: d.revenue_share_details || null,
       service_description: d.service_description || null,
       equipment_details: d.equipment_details || null,
+      service_frequency: d.service_frequency || null,
+      service_line_items: d.service_line_items || null,
+      per_service_cost: n(d.per_service_cost),
+      surcharges: d.surcharges || null,
+      early_termination_terms: d.early_termination_terms || null,
+      container_details: d.container_details || null,
+      pickup_schedule: d.pickup_schedule || null,
+      inspection_frequency: d.inspection_frequency || null,
+      coverage_scope: d.coverage_scope || null,
+      response_time_sla: d.response_time_sla || null,
+      emergency_call_fee: n(d.emergency_call_fee),
       file_path, file_name,
       status: 'active',
       notes: d.notes || null,
@@ -721,11 +754,49 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
                     </div>
                   </div>
 
+                  {/* Service delivery — applies to all types */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div><label className="label">Frequency</label><input value={d.service_frequency} onChange={e => update(idx, 'service_frequency', e.target.value)} className="input" placeholder="2x/week" /></div>
                     <div><label className="label">Monthly $</label><input type="number" value={d.monthly_cost} onChange={e => update(idx, 'monthly_cost', e.target.value)} className="input" /></div>
-                    <div><label className="label">Rev Share %</label><input type="number" value={d.revenue_share_pct} onChange={e => update(idx, 'revenue_share_pct', e.target.value)} className="input" /></div>
-                    <div className="col-span-2"><label className="label">Rate Escalation</label><input value={d.rate_escalation} onChange={e => update(idx, 'rate_escalation', e.target.value)} className="input" /></div>
+                    <div><label className="label">Per-Service $</label><input type="number" value={d.per_service_cost} onChange={e => update(idx, 'per_service_cost', e.target.value)} className="input" placeholder="per haul/visit" /></div>
+                    <div><label className="label">Rate Escalation</label><input value={d.rate_escalation} onChange={e => update(idx, 'rate_escalation', e.target.value)} className="input" /></div>
                   </div>
+
+                  {/* Trash / waste */}
+                  {d.contract_type === 'trash' && (
+                    <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+                      <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Waste Service</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div><label className="label">Containers</label><input value={d.container_details} onChange={e => update(idx, 'container_details', e.target.value)} className="input" placeholder="1x3yd + 1x4yd" /></div>
+                        <div><label className="label">Pickup Schedule</label><input value={d.pickup_schedule} onChange={e => update(idx, 'pickup_schedule', e.target.value)} className="input" placeholder="3yd 2x/wk, 4yd 1x/wk" /></div>
+                        <div className="sm:col-span-2"><label className="label">Surcharges</label><input value={d.surcharges} onChange={e => update(idx, 'surcharges', e.target.value)} className="input" placeholder="fuel, environmental, admin — or exempt" /></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Mechanical: elevator / HVAC / plumbing / electrical */}
+                  {['elevator', 'hvac', 'plumbing', 'electrical'].includes(d.contract_type) && (
+                    <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+                      <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Maintenance Terms</div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="label">Inspection Freq.</label><input value={d.inspection_frequency} onChange={e => update(idx, 'inspection_frequency', e.target.value)} className="input" placeholder="monthly / annual cert" /></div>
+                        <div><label className="label">Coverage</label><input value={d.coverage_scope} onChange={e => update(idx, 'coverage_scope', e.target.value)} className="input" placeholder="parts + labor" /></div>
+                        <div><label className="label">Response SLA</label><input value={d.response_time_sla} onChange={e => update(idx, 'response_time_sla', e.target.value)} className="input" placeholder="4hr emergency" /></div>
+                        <div><label className="label">Emergency Fee $</label><input type="number" value={d.emergency_call_fee} onChange={e => update(idx, 'emergency_call_fee', e.target.value)} className="input" /></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Laundry */}
+                  {d.contract_type === 'laundry' && (
+                    <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+                      <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Laundry Terms</div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div><label className="label">Rev Share %</label><input type="number" value={d.revenue_share_pct} onChange={e => update(idx, 'revenue_share_pct', e.target.value)} className="input" /></div>
+                        <div><label className="label">Equipment</label><input value={d.equipment_details} onChange={e => update(idx, 'equipment_details', e.target.value)} className="input" placeholder="26 washers / 26 dryers" /></div>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -807,6 +878,17 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
     revenue_share_details:contract?.revenue_share_details ?? '',
     service_description:  contract?.service_description ?? '',
     equipment_details:    contract?.equipment_details ?? '',
+    service_frequency:    contract?.service_frequency ?? '',
+    service_line_items:   contract?.service_line_items ?? '',
+    per_service_cost:     contract?.per_service_cost?.toString() ?? '',
+    surcharges:           contract?.surcharges ?? '',
+    early_termination_terms: contract?.early_termination_terms ?? '',
+    container_details:    contract?.container_details ?? '',
+    pickup_schedule:      contract?.pickup_schedule ?? '',
+    inspection_frequency: contract?.inspection_frequency ?? '',
+    coverage_scope:       contract?.coverage_scope ?? '',
+    response_time_sla:    contract?.response_time_sla ?? '',
+    emergency_call_fee:   contract?.emergency_call_fee?.toString() ?? '',
     status:               contract?.status ?? 'active',
     notes:                contract?.notes ?? '',
   })
@@ -880,6 +962,17 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
       revenue_share_details: form.revenue_share_details || null,
       service_description: form.service_description || null,
       equipment_details: form.equipment_details || null,
+      service_frequency: form.service_frequency || null,
+      service_line_items: form.service_line_items || null,
+      per_service_cost: n(form.per_service_cost),
+      surcharges: form.surcharges || null,
+      early_termination_terms: form.early_termination_terms || null,
+      container_details: form.container_details || null,
+      pickup_schedule: form.pickup_schedule || null,
+      inspection_frequency: form.inspection_frequency || null,
+      coverage_scope: form.coverage_scope || null,
+      response_time_sla: form.response_time_sla || null,
+      emergency_call_fee: n(form.emergency_call_fee),
       file_path, file_name,
       status: form.status,
       notes: form.notes || null,
@@ -1018,23 +1111,67 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
             </div>
           </div>
 
-          {/* Financials */}
+          {/* Financials — all types */}
           <div>
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Financials</div>
             <div className="grid grid-cols-2 gap-3">
               {F('monthly_cost', 'Monthly Cost ($)', 'number', '0.00')}
               {F('annual_cost', 'Annual Cost ($)', 'number', '0.00')}
-              {F('revenue_share_pct', 'Revenue Share (%)', 'number', '0')}
-              {F('rate_escalation', 'Rate Escalation', 'text', 'e.g. CPI annually')}
+              {F('rate_escalation', 'Rate Escalation', 'text', 'e.g. CPI annually, +10% 2027')}
             </div>
-            {form.revenue_share_pct && (
-              <div className="mt-3">{TA('revenue_share_details', 'Revenue Share Details')}</div>
-            )}
           </div>
 
-          {/* Service + equipment */}
-          {TA('service_description', 'Service Description', 'What services are provided?')}
-          {TA('equipment_details', 'Equipment Details', 'Equipment makes, models, quantities…')}
+          {/* Service delivery — all types */}
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Service</div>
+            <div className="grid grid-cols-2 gap-3">
+              {F('service_frequency', 'Frequency', 'text', '2x/week, monthly…')}
+              {F('per_service_cost', 'Per-Service Cost ($)', 'number', 'per haul/visit/call')}
+            </div>
+            <div className="mt-3">{TA('service_description', 'Service Description', 'What services are provided?')}</div>
+          </div>
+
+          {/* Trash / waste */}
+          {form.contract_type === 'trash' && (
+            <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+              <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Waste Service</div>
+              <div className="grid grid-cols-2 gap-3">
+                {F('container_details', 'Containers', 'text', '1x3yd + 1x4yd')}
+                {F('pickup_schedule', 'Pickup Schedule', 'text', '3yd 2x/wk, 4yd 1x/wk')}
+              </div>
+              <div className="mt-3">{F('surcharges', 'Surcharges', 'text', 'fuel, environmental, admin — or exempt')}</div>
+            </div>
+          )}
+
+          {/* Mechanical */}
+          {['elevator', 'hvac', 'plumbing', 'electrical'].includes(form.contract_type) && (
+            <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+              <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Maintenance Terms</div>
+              <div className="grid grid-cols-2 gap-3">
+                {F('inspection_frequency', 'Inspection Freq.', 'text', 'monthly / annual cert')}
+                {F('coverage_scope', 'Coverage', 'text', 'parts + labor')}
+                {F('response_time_sla', 'Response SLA', 'text', '4hr emergency')}
+                {F('emergency_call_fee', 'Emergency Fee ($)', 'number', '0.00')}
+              </div>
+            </div>
+          )}
+
+          {/* Laundry */}
+          {form.contract_type === 'laundry' && (
+            <div className="border border-slate-200 bg-slate-50/60 rounded-lg p-3">
+              <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Laundry Terms</div>
+              <div className="grid grid-cols-2 gap-3">
+                {F('revenue_share_pct', 'Revenue Share (%)', 'number', '0')}
+                {TA('equipment_details', 'Equipment', 'makes, models, counts')}
+              </div>
+              {form.revenue_share_pct && (
+                <div className="mt-3">{TA('revenue_share_details', 'Revenue Share Details')}</div>
+              )}
+            </div>
+          )}
+
+          {/* Early termination — all types */}
+          {TA('early_termination_terms', 'Early Termination / Liquidated Damages', 'buyout or penalty language…')}
 
           {/* Vendor contact */}
           <div>
