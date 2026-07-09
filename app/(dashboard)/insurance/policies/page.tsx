@@ -360,8 +360,42 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
       status: 'active',
     }))
 
-    if (rows.length) await (supabase.from('insurance_policies') as any).insert(rows)
+    // Duplicate check: fetch existing policies and compare on
+    // carrier + policy_number + effective_date (case-insensitive).
+    const { data: existing } = await (supabase.from('insurance_policies') as any)
+      .select('carrier, policy_number, effective_date')
+
+    function fingerprint(carrier: string | null, policyNo: string | null, eff: string | null) {
+      return `${(carrier ?? '').trim().toLowerCase()}|${(policyNo ?? '').trim().toLowerCase()}|${eff ?? ''}`
+    }
+    const existingKeys = new Set(
+      (existing ?? [])
+        .filter((e: any) => e.policy_number)
+        .map((e: any) => fingerprint(e.carrier, e.policy_number, e.effective_date))
+    )
+
+    const seenInBatch = new Set<string>()
+    const skipped: string[] = []
+    const deduped = rows.filter(r => {
+      if (!r.policy_number) return true  // no policy number → can't dedupe, allow
+      const key = fingerprint(r.carrier, r.policy_number, r.effective_date)
+      if (existingKeys.has(key) || seenInBatch.has(key)) {
+        skipped.push(`${r.carrier} ${r.policy_number}`)
+        return false
+      }
+      seenInBatch.add(key)
+      return true
+    })
+
+    if (deduped.length) await (supabase.from('insurance_policies') as any).insert(deduped)
+
     setSaving(false)
+    if (skipped.length) {
+      alert(
+        `${deduped.length} saved. ${skipped.length} skipped as duplicate${skipped.length > 1 ? 's' : ''} ` +
+        `(already in your tracker):\n\n${skipped.join('\n')}`
+      )
+    }
     onSaved()
   }
 
@@ -460,8 +494,24 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
     const payload: any = { property_id: form.property_id || null, policy_type: form.policy_type, carrier: form.carrier, policy_number: form.policy_number || null, agent_name: form.agent_name || null, agent_phone: form.agent_phone || null, agent_email: form.agent_email || null, broker_agency: form.broker_agency || null, per_occurrence: n(form.per_occurrence), aggregate_limit: n(form.aggregate_limit), building_coverage: n(form.building_coverage), deductible: n(form.deductible), annual_premium: n(form.annual_premium), effective_date: form.effective_date || null, expiry_date: form.expiry_date, certificate_holder: form.certificate_holder || null, mortgagee: form.mortgagee || null, notes: form.notes || null, status: 'active' }
-    if (policy) await (supabase.from('insurance_policies') as any).update(payload).eq('id', policy.id)
-    else await (supabase.from('insurance_policies') as any).insert(payload)
+    if (policy) {
+      await (supabase.from('insurance_policies') as any).update(payload).eq('id', policy.id)
+    } else {
+      // Duplicate check on new policies: carrier + policy_number + effective_date
+      if (form.policy_number) {
+        const { data: dupes } = await (supabase.from('insurance_policies') as any)
+          .select('id')
+          .ilike('carrier', form.carrier)
+          .ilike('policy_number', form.policy_number)
+          .eq('effective_date', form.effective_date || null)
+        if (dupes && dupes.length > 0) {
+          setSaving(false)
+          alert(`A policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} is already in your tracker. Duplicate not saved.`)
+          return
+        }
+      }
+      await (supabase.from('insurance_policies') as any).insert(payload)
+    }
     setSaving(false); onSave()
   }
   const F = (key: string, label: string, type = 'text') => <div><label className="label">{label}</label><input type={type} value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} className="input" /></div>
