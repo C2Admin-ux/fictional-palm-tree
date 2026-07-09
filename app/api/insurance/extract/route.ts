@@ -52,7 +52,10 @@ export async function POST(req: NextRequest) {
 
     const apiKey = process.env.ANTHROPIC_API_KEY
     if (!apiKey) {
-      return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 })
+      return NextResponse.json({
+        error: 'API key not configured',
+        detail: 'ANTHROPIC_API_KEY is not set in the environment. Add it in Vercel → Settings → Environment Variables, then redeploy.',
+      }, { status: 500 })
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {

@@ -77,7 +77,10 @@ export default function InsurancePoliciesPage() {
         return
       }
       if (!data.success) {
-        alert('Extraction failed: ' + (data.error ?? 'unknown error'))
+        const reason = data.detail
+          ? `${data.error}: ${typeof data.detail === 'string' ? data.detail.slice(0, 200) : JSON.stringify(data.detail).slice(0, 200)}`
+          : (data.error ?? 'unknown error')
+        alert('Extraction failed — ' + reason)
         setExtracting(false)
         return
       }
