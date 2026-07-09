@@ -7,6 +7,7 @@ import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
 import {
   Plus, X, Upload, AlertTriangle, ChevronDown,
   ChevronUp, Download, Trash2, FileText, Search,
+  Sparkles, Check, Loader2, Clock,
 } from 'lucide-react'
 
 const CONTRACT_TYPES = [
@@ -81,6 +82,12 @@ export default function ContractsPage() {
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [dragOver, setDragOver] = useState(false)
 
+  // OCR state
+  const [extracting, setExtracting] = useState(false)
+  const [extractStatus, setExtractStatus] = useState('')
+  const [extractedContracts, setExtractedContracts] = useState<any[] | null>(null)
+  const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
+
   const fetchContracts = useCallback(async () => {
     let q = (supabase.from('contracts') as any)
       .select('*, properties(name)')
@@ -110,8 +117,10 @@ export default function ContractsPage() {
   const expiringSoon = contracts.filter(c => {
     const d = daysUntil(c.expiration_date); return d != null && d >= 0 && d <= 90
   })
+  // Warn when within 90 days of the cancellation-notice deadline (the date by
+  // which written notice must be sent to avoid auto-renewal).
   const cancelDeadlineSoon = contracts.filter(c => {
-    const d = daysUntil(c.cancel_deadline); return d != null && d >= 0 && d <= 60
+    const d = daysUntil(c.cancel_deadline); return d != null && d >= 0 && d <= 90
   })
 
   function handleSort(field: SortField) {
@@ -131,19 +140,58 @@ export default function ContractsPage() {
     fetchContracts()
   }
 
-  // Drag-drop onto the page opens form with file pre-loaded
-  function handleDrop(e: React.DragEvent) {
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  // Drag-drop onto the page runs OCR extraction, then opens a review modal
+  async function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file) {
-      setEditContract(null)
-      setShowForm(true)
-      // Pass file via session storage so modal can pick it up
-      sessionStorage.setItem('pending_contract_file', file.name)
-      // Store actual file reference
-      ;(window as any).__pendingContractFile = file
+    const file = Array.from(e.dataTransfer.files).find(
+      f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    )
+    if (!file) { alert('Please drop a PDF file'); return }
+    await runExtraction(file)
+  }
+
+  async function runExtraction(file: File) {
+    setExtracting(true)
+    setExtractStatus('Reading document…')
+    try {
+      const base64 = await fileToBase64(file)
+      setExtractStatus('Extracting contract details with AI…')
+      const res = await fetch('/api/contracts/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
+      })
+      const data = await res.json()
+
+      if (data.error === 'not_a_contract') {
+        alert("That doesn't look like a contract. Try a service agreement or vendor contract PDF.")
+        setExtracting(false); return
+      }
+      if (!data.success) {
+        const reason = data.detail
+          ? `${data.error}: ${typeof data.detail === 'string' ? data.detail.slice(0, 200) : JSON.stringify(data.detail).slice(0, 200)}`
+          : (data.error ?? 'unknown error')
+        alert('Extraction failed — ' + reason)
+        setExtracting(false); return
+      }
+
+      setExtractedContracts(data.contracts)
+      setExtractedFile({ name: file.name, base64 })
+    } catch (err: any) {
+      alert('Something went wrong: ' + err.message)
     }
+    setExtracting(false)
+    setExtractStatus('')
   }
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -175,9 +223,20 @@ export default function ContractsPage() {
       {dragOver && (
         <div className="fixed inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-40 flex items-center justify-center pointer-events-none">
           <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center">
-            <Upload size={32} className="text-blue-500 mx-auto mb-2" />
-            <div className="text-lg font-semibold text-blue-700">Drop to add contract</div>
-            <div className="text-sm text-slate-500 mt-1">PDF, Word, or image accepted</div>
+            <Sparkles size={32} className="text-blue-500 mx-auto mb-2" />
+            <div className="text-lg font-semibold text-blue-700">Drop contract PDF</div>
+            <div className="text-sm text-slate-500 mt-1">AI will extract and fill in the details</div>
+          </div>
+        </div>
+      )}
+
+      {/* Extracting overlay */}
+      {extracting && (
+        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
+            <Loader2 size={32} className="text-blue-500 mx-auto mb-3 animate-spin" />
+            <div className="text-base font-semibold text-slate-800">Reading your contract</div>
+            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
           </div>
         </div>
       )}
@@ -187,12 +246,25 @@ export default function ContractsPage() {
         <div>
           <h1 className="page-title">Contracts</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {contracts.length} contracts · drag a file anywhere to add new
+            {contracts.length} contracts · drag a PDF anywhere to auto-extract
           </p>
         </div>
-        <button onClick={() => { setEditContract(null); setShowForm(true) }} className="btn-primary">
-          <Plus size={14} />Add Contract
-        </button>
+        <div className="flex items-center gap-2">
+          <label className="btn-secondary cursor-pointer">
+            <Sparkles size={14} />Scan PDF
+            <input type="file" accept=".pdf" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) runExtraction(f); e.target.value = '' }} />
+          </label>
+          <button onClick={() => { setEditContract(null); setShowForm(true) }} className="btn-primary">
+            <Plus size={14} />Add Contract
+          </button>
+        </div>
+      </div>
+
+      {/* Hint banner */}
+      <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        <Sparkles size={13} className="text-blue-500 flex-shrink-0" />
+        <span>Drag a vendor contract PDF anywhere on this page to auto-extract vendor, dates, cancellation terms, and pricing.</span>
       </div>
 
       {/* Alert banners */}
@@ -201,7 +273,7 @@ export default function ContractsPage() {
           <div className="flex items-center gap-2 mb-1.5">
             <AlertTriangle size={13} className="text-red-600 flex-shrink-0" />
             <span className="text-sm font-semibold text-red-800">
-              {cancelDeadlineSoon.length} cancellation deadline{cancelDeadlineSoon.length > 1 ? 's' : ''} within 60 days
+              {cancelDeadlineSoon.length} cancellation deadline{cancelDeadlineSoon.length > 1 ? 's' : ''} within 90 days
             </span>
           </div>
           {cancelDeadlineSoon.map(c => {
@@ -420,6 +492,256 @@ export default function ContractsPage() {
           onSave={() => { setShowForm(false); setEditContract(null); fetchContracts() }}
         />
       )}
+
+      {extractedContracts && (
+        <ContractExtractionReviewModal
+          extractedContracts={extractedContracts}
+          extractedFile={extractedFile}
+          properties={properties}
+          onClose={() => { setExtractedContracts(null); setExtractedFile(null) }}
+          onSaved={() => { setExtractedContracts(null); setExtractedFile(null); fetchContracts() }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ContractExtractionReviewModal({ extractedContracts, extractedFile, properties, onClose, onSaved }: {
+  extractedContracts: any[]
+  extractedFile: { name: string; base64: string } | null
+  properties: Property[]
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const supabase = createClient()
+
+  function matchProperty(hint: string | null): string {
+    if (!hint) return ''
+    const h = hint.toLowerCase()
+    const m = properties.find(p =>
+      h.includes(p.name.toLowerCase()) ||
+      (p.name.toLowerCase().split(' ')[0] && h.includes(p.name.toLowerCase().split(' ')[0]))
+    )
+    return m?.id ?? ''
+  }
+
+  // Derive cancel deadline = expiration_date − cancel_notice_days
+  function deriveCancelDeadline(expiration: string | null, noticeDays: number | null): string {
+    if (!expiration || !noticeDays) return ''
+    const d = new Date(expiration + 'T00:00:00')
+    d.setDate(d.getDate() - noticeDays)
+    return d.toISOString().slice(0, 10)
+  }
+
+  const [drafts, setDrafts] = useState(() =>
+    extractedContracts.map(c => ({
+      property_id: matchProperty(c.property_hint),
+      title: c.title ?? '',
+      vendor_name: c.vendor_name ?? '',
+      contract_type: c.contract_type ?? 'other',
+      vendor_contact_name: c.vendor_contact_name ?? '',
+      vendor_contact_email: c.vendor_contact_email ?? '',
+      vendor_contact_phone: c.vendor_contact_phone ?? '',
+      account_number: c.account_number ?? '',
+      agreement_number: c.agreement_number ?? '',
+      execution_date: c.execution_date ?? '',
+      commencement_date: c.commencement_date ?? '',
+      expiration_date: c.expiration_date ?? '',
+      auto_renews: c.auto_renews ?? false,
+      renewal_term_months: c.renewal_term_months?.toString() ?? '',
+      cancel_notice_days: c.cancel_notice_days?.toString() ?? '',
+      cancel_deadline: deriveCancelDeadline(c.expiration_date, c.cancel_notice_days),
+      cancel_method: c.cancel_method ?? 'written',
+      monthly_cost: c.monthly_cost?.toString() ?? '',
+      annual_cost: c.annual_cost?.toString() ?? '',
+      rate_escalation: c.rate_escalation ?? '',
+      revenue_share_pct: c.revenue_share_pct?.toString() ?? '',
+      revenue_share_details: c.revenue_share_details ?? '',
+      service_description: c.service_description ?? '',
+      equipment_details: c.equipment_details ?? '',
+      notes: c.notes ?? '',
+      confidence: c.confidence ?? 'medium',
+      _include: true,
+    }))
+  )
+  const [saving, setSaving] = useState(false)
+
+  function update(i: number, key: string, value: any) {
+    setDrafts(d => d.map((draft, idx) => {
+      if (idx !== i) return draft
+      const next = { ...draft, [key]: value }
+      // Re-derive cancel deadline when expiration or notice days change
+      if (key === 'expiration_date' || key === 'cancel_notice_days') {
+        const days = parseInt(key === 'cancel_notice_days' ? value : next.cancel_notice_days)
+        next.cancel_deadline = deriveCancelDeadline(
+          key === 'expiration_date' ? value : next.expiration_date,
+          isNaN(days) ? null : days
+        )
+      }
+      return next
+    }))
+  }
+
+  async function saveAll() {
+    setSaving(true)
+    const n = (v: string) => v !== '' ? parseFloat(v) : null
+    const i = (v: string) => v !== '' ? parseInt(v) : null
+
+    let file_path: string | null = null
+    let file_name: string | null = null
+    if (extractedFile) {
+      try {
+        const bytes = Uint8Array.from(atob(extractedFile.base64), c => c.charCodeAt(0))
+        const path = `contracts/${Date.now()}-${extractedFile.name}`
+        const { error } = await supabase.storage.from('c2-documents').upload(path, bytes, { contentType: 'application/pdf' })
+        if (!error) { file_path = path; file_name = extractedFile.name }
+      } catch { /* non-fatal */ }
+    }
+
+    const rows = drafts.filter(d => d._include).map(d => ({
+      property_id: d.property_id || null,
+      title: d.title,
+      vendor_name: d.vendor_name,
+      contract_type: d.contract_type,
+      vendor_contact_name: d.vendor_contact_name || null,
+      vendor_contact_email: d.vendor_contact_email || null,
+      vendor_contact_phone: d.vendor_contact_phone || null,
+      account_number: d.account_number || null,
+      agreement_number: d.agreement_number || null,
+      execution_date: d.execution_date || null,
+      commencement_date: d.commencement_date || null,
+      expiration_date: d.expiration_date || null,
+      auto_renews: d.auto_renews,
+      renewal_term_months: i(d.renewal_term_months),
+      cancel_notice_days: i(d.cancel_notice_days),
+      cancel_deadline: d.cancel_deadline || null,
+      cancel_method: d.cancel_method || null,
+      monthly_cost: n(d.monthly_cost),
+      annual_cost: n(d.annual_cost),
+      rate_escalation: d.rate_escalation || null,
+      revenue_share_pct: n(d.revenue_share_pct),
+      revenue_share_details: d.revenue_share_details || null,
+      service_description: d.service_description || null,
+      equipment_details: d.equipment_details || null,
+      file_path, file_name,
+      status: 'active',
+      notes: d.notes || null,
+    }))
+
+    if (rows.length) await (supabase.from('contracts') as any).insert(rows)
+    setSaving(false)
+    onSaved()
+  }
+
+  const includedCount = drafts.filter(d => d._include).length
+  const CONF_STYLE: Record<string, string> = {
+    high: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    medium: 'text-amber-700 bg-amber-50 border-amber-200',
+    low: 'text-red-700 bg-red-50 border-red-200',
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
+          <div className="flex items-center gap-2">
+            <Sparkles size={17} className="text-blue-500" />
+            <div>
+              <h2 className="font-semibold text-slate-900">Review Extracted Contract{drafts.length > 1 ? 's' : ''}</h2>
+              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
+            </div>
+          </div>
+          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+            <span>Double-check the <strong>expiration date</strong> and <strong>cancellation notice period</strong> — these drive your renewal deadline alerts. The cancel-by date is auto-calculated from them.</span>
+          </div>
+
+          {drafts.map((d, idx) => (
+            <div key={idx} className={cn('border rounded-xl p-4 space-y-3', d._include ? 'border-slate-200' : 'border-slate-100 bg-slate-50 opacity-60')}>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" checked={d._include} onChange={e => update(idx, '_include', e.target.checked)} className="w-4 h-4" />
+                <span className="font-medium text-slate-800 text-sm">{d.vendor_name || 'Unknown vendor'} — {TYPE_LABELS[d.contract_type] ?? d.contract_type}</span>
+                <span className={cn('badge text-xs', CONF_STYLE[d.confidence] ?? CONF_STYLE.medium)}>{d.confidence} confidence</span>
+              </div>
+
+              {d._include && (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="label">Property</label>
+                      <select value={d.property_id} onChange={e => update(idx, 'property_id', e.target.value)} className="input">
+                        <option value="">Portfolio-wide</option>
+                        {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Type</label>
+                      <select value={d.contract_type} onChange={e => update(idx, 'contract_type', e.target.value)} className="input">
+                        {CONTRACT_TYPES.filter(t => t !== 'insurance').map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
+                      </select>
+                    </div>
+                    <div><label className="label">Vendor</label><input value={d.vendor_name} onChange={e => update(idx, 'vendor_name', e.target.value)} className="input" /></div>
+                    <div className="col-span-2 sm:col-span-3"><label className="label">Title</label><input value={d.title} onChange={e => update(idx, 'title', e.target.value)} className="input" /></div>
+                    <div><label className="label">Executed</label><input type="date" value={d.execution_date} onChange={e => update(idx, 'execution_date', e.target.value)} className="input" /></div>
+                    <div><label className="label">Commencement</label><input type="date" value={d.commencement_date} onChange={e => update(idx, 'commencement_date', e.target.value)} className="input" /></div>
+                    <div><label className="label">Expiration ⚠</label><input type="date" value={d.expiration_date} onChange={e => update(idx, 'expiration_date', e.target.value)} className={cn('input', !d.expiration_date && 'border-amber-300 bg-amber-50')} /></div>
+                  </div>
+
+                  {/* Cancellation block — highlighted since it's the key output */}
+                  <div className="border border-blue-200 bg-blue-50/50 rounded-lg p-3">
+                    <div className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                      <Clock size={11} />Cancellation Terms
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div><label className="label">Notice (days)</label><input type="number" value={d.cancel_notice_days} onChange={e => update(idx, 'cancel_notice_days', e.target.value)} className="input" /></div>
+                      <div>
+                        <label className="label">Method</label>
+                        <select value={d.cancel_method} onChange={e => update(idx, 'cancel_method', e.target.value)} className="input">
+                          <option value="written">Written</option>
+                          <option value="certified_mail">Certified Mail</option>
+                          <option value="email">Email</option>
+                          <option value="any">Any Written</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label">Cancel By (auto)</label>
+                        <input type="date" value={d.cancel_deadline} onChange={e => update(idx, 'cancel_deadline', e.target.value)} className="input font-medium" />
+                      </div>
+                      <div>
+                        <label className="label">Auto-renews?</label>
+                        <select value={d.auto_renews ? 'true' : 'false'} onChange={e => update(idx, 'auto_renews', e.target.value === 'true')} className="input">
+                          <option value="true">Yes</option>
+                          <option value="false">No</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div><label className="label">Monthly $</label><input type="number" value={d.monthly_cost} onChange={e => update(idx, 'monthly_cost', e.target.value)} className="input" /></div>
+                    <div><label className="label">Rev Share %</label><input type="number" value={d.revenue_share_pct} onChange={e => update(idx, 'revenue_share_pct', e.target.value)} className="input" /></div>
+                    <div className="col-span-2"><label className="label">Rate Escalation</label><input value={d.rate_escalation} onChange={e => update(idx, 'rate_escalation', e.target.value)} className="input" /></div>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 sticky bottom-0 bg-white">
+          <span className="text-xs text-slate-400">{includedCount} of {drafts.length} will be saved</span>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="btn-ghost">Cancel</button>
+            <button onClick={saveAll} disabled={saving || includedCount === 0} className="btn-primary">
+              {saving ? 'Saving…' : <><Check size={14} />Save {includedCount > 1 ? `${includedCount} contracts` : 'contract'}</>}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
