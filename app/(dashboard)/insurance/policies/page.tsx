@@ -361,24 +361,26 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
     }))
 
     // Duplicate check: fetch existing policies and compare on
-    // carrier + policy_number + effective_date (case-insensitive).
+    // property + carrier + policy_number + effective_date (case-insensitive).
+    // Property is included so a master/blanket policy covering multiple
+    // properties can be entered once per property without being blocked.
     const { data: existing } = await (supabase.from('insurance_policies') as any)
-      .select('carrier, policy_number, effective_date')
+      .select('property_id, carrier, policy_number, effective_date')
 
-    function fingerprint(carrier: string | null, policyNo: string | null, eff: string | null) {
-      return `${(carrier ?? '').trim().toLowerCase()}|${(policyNo ?? '').trim().toLowerCase()}|${eff ?? ''}`
+    function fingerprint(propertyId: string | null, carrier: string | null, policyNo: string | null, eff: string | null) {
+      return `${propertyId ?? ''}|${(carrier ?? '').trim().toLowerCase()}|${(policyNo ?? '').trim().toLowerCase()}|${eff ?? ''}`
     }
     const existingKeys = new Set(
       (existing ?? [])
         .filter((e: any) => e.policy_number)
-        .map((e: any) => fingerprint(e.carrier, e.policy_number, e.effective_date))
+        .map((e: any) => fingerprint(e.property_id, e.carrier, e.policy_number, e.effective_date))
     )
 
     const seenInBatch = new Set<string>()
     const skipped: string[] = []
     const deduped = rows.filter(r => {
       if (!r.policy_number) return true  // no policy number → can't dedupe, allow
-      const key = fingerprint(r.carrier, r.policy_number, r.effective_date)
+      const key = fingerprint(r.property_id, r.carrier, r.policy_number, r.effective_date)
       if (existingKeys.has(key) || seenInBatch.has(key)) {
         skipped.push(`${r.carrier} ${r.policy_number}`)
         return false
@@ -497,16 +499,24 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
     if (policy) {
       await (supabase.from('insurance_policies') as any).update(payload).eq('id', policy.id)
     } else {
-      // Duplicate check on new policies: carrier + policy_number + effective_date
+      // Duplicate check on new policies: property + carrier + policy_number + effective_date.
+      // Property included so master/blanket policies can be entered per-property.
       if (form.policy_number) {
-        const { data: dupes } = await (supabase.from('insurance_policies') as any)
+        let dupeQuery = (supabase.from('insurance_policies') as any)
           .select('id')
           .ilike('carrier', form.carrier)
           .ilike('policy_number', form.policy_number)
           .eq('effective_date', form.effective_date || null)
+        dupeQuery = form.property_id
+          ? dupeQuery.eq('property_id', form.property_id)
+          : dupeQuery.is('property_id', null)
+        const { data: dupes } = await dupeQuery
         if (dupes && dupes.length > 0) {
           setSaving(false)
-          alert(`A policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} is already in your tracker. Duplicate not saved.`)
+          const propLabel = form.property_id
+            ? (properties.find(p => p.id === form.property_id)?.name ?? 'this property')
+            : 'portfolio-wide'
+          alert(`A policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} already exists for ${propLabel}. Duplicate not saved.`)
           return
         }
       }
