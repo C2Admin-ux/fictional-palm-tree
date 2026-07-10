@@ -7,7 +7,7 @@ import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
 import {
   Plus, X, Upload, AlertTriangle, ChevronDown,
   ChevronUp, Download, Trash2, FileText, Search,
-  Sparkles, Check, Loader2, Clock,
+  Sparkles, Check, Loader2, Clock, Pencil, Archive,
 } from 'lucide-react'
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
 
@@ -226,9 +226,18 @@ export default function ContractsPage() {
     if (data?.signedUrl) window.open(data.signedUrl, '_blank')
   }
 
-  async function deleteContract(id: string) {
-    if (!confirm('Delete this contract?')) return
-    await supabase.from('contracts').delete().eq('id', id)
+  async function deleteContract(contract: Contract) {
+    if (!confirm(`Permanently delete the ${contract.vendor_name} contract "${contract.title}"? This cannot be undone.`)) return
+    if (contract.file_path) {
+      try { await supabase.storage.from('c2-documents').remove([contract.file_path]) } catch { /* non-fatal */ }
+    }
+    await supabase.from('contracts').delete().eq('id', contract.id)
+    fetchContracts()
+  }
+
+  async function archiveContract(contract: Contract) {
+    const next = contract.status === 'archived' ? 'active' : 'archived'
+    await (supabase.from('contracts') as any).update({ status: next }).eq('id', contract.id)
     fetchContracts()
   }
 
@@ -433,6 +442,7 @@ export default function ContractsPage() {
           <option value="expired">Expired</option>
           <option value="terminated">Terminated</option>
           <option value="pending">Pending</option>
+          <option value="archived">Archived</option>
           <option value="superseded">Archived (superseded)</option>
         </Sel>
         {(filterProp || filterType || filterStatus !== 'active' || search) && (
@@ -561,12 +571,26 @@ export default function ContractsPage() {
                         {contract.file_path && (
                           <button
                             onClick={e => { e.stopPropagation(); downloadFile(contract) }}
+                            title="Download file"
                             className="text-slate-400 hover:text-blue-500 p-1">
                             <Download size={13} />
                           </button>
                         )}
                         <button
-                          onClick={e => { e.stopPropagation(); deleteContract(contract.id) }}
+                          onClick={e => { e.stopPropagation(); setEditContract(contract); setShowForm(true) }}
+                          title="Edit"
+                          className="text-slate-400 hover:text-blue-500 p-1">
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); archiveContract(contract) }}
+                          title={contract.status === 'archived' ? 'Unarchive' : 'Archive'}
+                          className="text-slate-400 hover:text-amber-500 p-1">
+                          <Archive size={13} />
+                        </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); deleteContract(contract) }}
+                          title="Delete"
                           className="text-slate-400 hover:text-red-400 p-1">
                           <Trash2 size={13} />
                         </button>

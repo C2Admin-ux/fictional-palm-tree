@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2, Download } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
@@ -127,6 +127,23 @@ export default function InsurancePoliciesPage() {
     exportToExcel(rows, 'C2_Insurance_Policies', 'Policies')
   }
 
+  async function archivePolicy(p: PolicyWithProp) {
+    const next = p.status === 'archived' ? 'active' : 'archived'
+    await (supabase.from('insurance_policies') as any).update({ status: next }).eq('id', p.id)
+    fetchPolicies()
+  }
+
+  async function deletePolicy(p: PolicyWithProp) {
+    if (!confirm(`Permanently delete the ${p.carrier} ${p.policy_type.toUpperCase()} policy? This cannot be undone.`)) return
+    // Remove the stored COI file too, if any
+    const coiPath = (p as any).coi_file_path
+    if (coiPath) {
+      try { await supabase.storage.from('c2-documents').remove([coiPath]) } catch { /* non-fatal */ }
+    }
+    await (supabase.from('insurance_policies') as any).delete().eq('id', p.id)
+    fetchPolicies()
+  }
+
   return (
     <div
       className="p-6 max-w-7xl mx-auto space-y-5"
@@ -177,21 +194,6 @@ export default function InsurancePoliciesPage() {
         <span>Drag a COI or policy PDF anywhere on this page to auto-extract carrier, limits, dates, and agent info.</span>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: 'Total Policies', value: String(policies.length) },
-          { label: 'Expiring ≤ 90d', value: String(expiring.length), warn: expiring.length > 0 },
-          { label: 'Annual Premium', value: formatCurrency(totalPremium, true) },
-          { label: 'Expired', value: String(policies.filter(p => p.status === 'expired').length), warn: policies.some(p => p.status === 'expired') },
-        ].map(({ label, value, warn }) => (
-          <div key={label} className="card p-4">
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-            <div className={cn('text-2xl font-semibold', warn ? 'text-red-600' : 'text-slate-900')}>{value}</div>
-          </div>
-        ))}
-      </div>
-
       {expiring.length > 0 && (
         <div className="p-3 border border-amber-200 bg-amber-50 rounded-xl">
           <div className="flex items-center gap-2 mb-1.5"><AlertTriangle size={13} className="text-amber-600" /><span className="text-sm font-semibold text-amber-800">{expiring.length} polic{expiring.length === 1 ? 'y' : 'ies'} expiring within 90 days</span></div>
@@ -212,7 +214,7 @@ export default function InsurancePoliciesPage() {
         <div className="relative"><Search size={13} className="absolute left-2.5 top-2 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search carrier…" /></div>
         <Sel value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</Sel>
         <Sel value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option></Sel>
+        <Sel value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></Sel>
         {(filterProp || filterType || filterStatus !== 'active' || search) && <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><X size={11} />Clear</button>}
         <span className="ml-auto text-xs text-slate-400">{displayed.length} shown</span>
       </div>
@@ -236,6 +238,7 @@ export default function InsurancePoliciesPage() {
                 <Th label="Aggregate" field="aggregate_limit" current={sort} dir={dir} onSort={toggle} align="right" />
                 <Th label="Premium" field="annual_premium" current={sort} dir={dir} onSort={toggle} align="right" />
                 <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
+                <th className="w-20" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -267,12 +270,30 @@ export default function InsurancePoliciesPage() {
                           { value: 'active',    label: 'active',    className: 'text-emerald-700 bg-emerald-50 border border-emerald-200' },
                           { value: 'expired',   label: 'expired',   className: 'text-red-700 bg-red-50 border border-red-200' },
                           { value: 'cancelled', label: 'cancelled', className: 'text-slate-500 bg-slate-50 border border-slate-200' },
+                          { value: 'archived',  label: 'archived',  className: 'text-slate-500 bg-slate-100 border border-slate-300' },
                         ]}
                         onSave={async v => {
                           await (supabase.from('insurance_policies') as any).update({ status: v }).eq('id', p.id)
                           fetchPolicies()
                         }}
                       />
+                    </td>
+                    <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                      <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => { setEditPolicy(p); setShowForm(true) }}
+                          title="Edit" className="p-1 text-slate-400 hover:text-blue-500">
+                          <Pencil size={13} />
+                        </button>
+                        <button onClick={() => archivePolicy(p)}
+                          title={p.status === 'archived' ? 'Unarchive' : 'Archive'}
+                          className="p-1 text-slate-400 hover:text-amber-500">
+                          <Archive size={13} />
+                        </button>
+                        <button onClick={() => deletePolicy(p)}
+                          title="Delete" className="p-1 text-slate-400 hover:text-red-500">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
