@@ -6,9 +6,11 @@ import { createClient } from '@supabase/supabase-js'
 // { "crons": [{ "path": "/api/tasks/expiration", "schedule": "0 6 * * *" }] }
 
 export async function GET(req: NextRequest) {
-  // Verify this is called by Vercel Cron (or us)
+  // Verify this is called by Vercel Cron (or us).
+  // Fail closed: if CRON_SECRET is unset, reject rather than run this
+  // service-role, data-writing endpoint openly.
   const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
