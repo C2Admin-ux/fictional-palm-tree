@@ -9,6 +9,7 @@ import {
   ChevronUp, Download, Trash2, FileText, Search,
   Sparkles, Check, Loader2, Clock,
 } from 'lucide-react'
+import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
 
 const CONTRACT_TYPES = [
   'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
@@ -69,6 +70,8 @@ type Contract = {
   file_path: string | null
   file_name: string | null
   status: string
+  superseded_by: string | null
+  superseded_at: string | null
   notes: string | null
   created_at: string
   updated_at: string
@@ -76,6 +79,45 @@ type Contract = {
 }
 
 type SortField = 'expiration_date' | 'cancel_deadline' | 'vendor_name' | 'contract_type' | 'monthly_cost'
+
+// When a newer contract is added for the same property + vendor + type,
+// archive any older ACTIVE contracts (status -> 'superseded') and link them
+// to the replacement. "Older" = earlier commencement/execution date.
+async function supersedeOlderContracts(
+  supabase: ReturnType<typeof createClient>,
+  newContract: { id: string; property_id: string | null; vendor_name: string; contract_type: string; commencement_date: string | null; execution_date: string | null }
+) {
+  const newDate = newContract.commencement_date ?? newContract.execution_date
+  if (!newDate) return  // can't determine ordering without a date
+
+  // Find candidate older contracts: same property, vendor, type, still active,
+  // and not the row we just inserted.
+  let q = (supabase.from('contracts') as any)
+    .select('id, commencement_date, execution_date')
+    .eq('contract_type', newContract.contract_type)
+    .ilike('vendor_name', newContract.vendor_name)
+    .eq('status', 'active')
+    .neq('id', newContract.id)
+  q = newContract.property_id
+    ? q.eq('property_id', newContract.property_id)
+    : q.is('property_id', null)
+
+  const { data: candidates } = await q
+  if (!candidates?.length) return
+
+  const toArchive = candidates
+    .filter((c: any) => {
+      const oldDate = c.commencement_date ?? c.execution_date
+      return oldDate && oldDate < newDate  // strictly older
+    })
+    .map((c: any) => c.id)
+
+  if (toArchive.length) {
+    await (supabase.from('contracts') as any)
+      .update({ status: 'superseded', superseded_by: newContract.id, superseded_at: new Date().toISOString() })
+      .in('id', toArchive)
+  }
+}
 type SortDir = 'asc' | 'desc'
 
 export default function ContractsPage() {
@@ -133,6 +175,45 @@ export default function ContractsPage() {
   const cancelDeadlineSoon = contracts.filter(c => {
     const d = daysUntil(c.cancel_deadline); return d != null && d >= 0 && d <= 90
   })
+
+  function exportContracts() {
+    const rows = displayed.map(c => ({
+      'Property': c.properties?.name ?? 'Portfolio-wide',
+      'Vendor': c.vendor_name,
+      'Title': c.title,
+      'Type': titleCase(c.contract_type),
+      'Status': titleCase(c.status),
+      'Executed': fmtDate(c.execution_date),
+      'Commencement': fmtDate(c.commencement_date),
+      'Expiration': fmtDate(c.expiration_date),
+      'Auto-Renews': yesNo(c.auto_renews),
+      'Renewal Term (mo)': c.renewal_term_months ?? '',
+      'Cancel Notice (days)': c.cancel_notice_days ?? '',
+      'Cancel Method': titleCase(c.cancel_method),
+      'Cancel Deadline': fmtDate(c.cancel_deadline),
+      'Monthly Cost': c.monthly_cost ?? '',
+      'Annual Cost': c.annual_cost ?? '',
+      'Per-Service Cost': (c as any).per_service_cost ?? '',
+      'Rate Escalation': c.rate_escalation ?? '',
+      'Surcharges': (c as any).surcharges ?? '',
+      'Revenue Share %': c.revenue_share_pct ?? '',
+      'Service Frequency': (c as any).service_frequency ?? '',
+      'Containers': (c as any).container_details ?? '',
+      'Pickup Schedule': (c as any).pickup_schedule ?? '',
+      'Inspection Freq.': (c as any).inspection_frequency ?? '',
+      'Coverage Scope': (c as any).coverage_scope ?? '',
+      'Response SLA': (c as any).response_time_sla ?? '',
+      'Emergency Fee': (c as any).emergency_call_fee ?? '',
+      'Early Termination': (c as any).early_termination_terms ?? '',
+      'Account #': c.account_number ?? '',
+      'Agreement #': c.agreement_number ?? '',
+      'Vendor Contact': c.vendor_contact_name ?? '',
+      'Vendor Phone': c.vendor_contact_phone ?? '',
+      'Vendor Email': c.vendor_contact_email ?? '',
+      'Notes': c.notes ?? '',
+    }))
+    exportToExcel(rows, 'C2_Contracts', 'Contracts')
+  }
 
   function handleSort(field: SortField) {
     if (sort === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -261,6 +342,9 @@ export default function ContractsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={exportContracts} className="btn-secondary" disabled={displayed.length === 0}>
+            <Download size={14} />Export
+          </button>
           <label className="btn-secondary cursor-pointer">
             <Sparkles size={14} />Scan PDF
             <input type="file" accept=".pdf" className="hidden"
@@ -349,6 +433,7 @@ export default function ContractsPage() {
           <option value="expired">Expired</option>
           <option value="terminated">Terminated</option>
           <option value="pending">Pending</option>
+          <option value="superseded">Archived (superseded)</option>
         </Sel>
         {(filterProp || filterType || filterStatus !== 'active' || search) && (
           <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }}
@@ -661,7 +746,15 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
       notes: d.notes || null,
     }))
 
-    if (rows.length) await (supabase.from('contracts') as any).insert(rows)
+    if (rows.length) {
+      const { data: inserted } = await (supabase.from('contracts') as any).insert(rows).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date')
+      // Archive older active contracts that this batch supersedes
+      if (inserted) {
+        for (const newC of inserted) {
+          await supersedeOlderContracts(supabase, newC)
+        }
+      }
+    }
     setSaving(false)
     onSaved()
   }
@@ -981,7 +1074,8 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
     if (contract) {
       await (supabase.from('contracts') as any).update(payload).eq('id', contract.id)
     } else {
-      await (supabase.from('contracts') as any).insert(payload)
+      const { data: inserted } = await (supabase.from('contracts') as any).insert(payload).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date').single()
+      if (inserted) await supersedeOlderContracts(supabase, inserted)
     }
 
     setSaving(false)

@@ -5,8 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2 } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2, Download } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
+import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
 const POLICY_TYPE_LABELS: Record<string,string> = { gl:'General Liability', property:'Property', umbrella:'Umbrella', workers_comp:"Workers' Comp", auto:'Commercial Auto', other:'Other' }
@@ -101,6 +102,31 @@ export default function InsurancePoliciesPage() {
   const expiring = displayed.filter(p => { const d = daysUntil(p.expiry_date); return d != null && d <= 90 })
   const totalPremium = policies.filter(p => p.status === 'active').reduce((s, p) => s + (p.annual_premium ?? 0), 0)
 
+  function exportPolicies() {
+    const rows = displayed.map(p => ({
+      'Property': (p as any).properties?.name ?? 'Portfolio-wide',
+      'Type': titleCase(p.policy_type),
+      'Carrier': p.carrier,
+      'Policy #': p.policy_number ?? '',
+      'Effective': fmtDate(p.effective_date),
+      'Expiry': fmtDate(p.expiry_date),
+      'Per Occurrence': p.per_occurrence ?? '',
+      'Aggregate': p.aggregate_limit ?? '',
+      'Building Coverage': (p as any).building_coverage ?? '',
+      'Deductible': (p as any).deductible ?? '',
+      'Annual Premium': p.annual_premium ?? '',
+      'Agent': (p as any).agent_name ?? '',
+      'Agent Phone': (p as any).agent_phone ?? '',
+      'Agent Email': (p as any).agent_email ?? '',
+      'Broker': (p as any).broker_agency ?? '',
+      'Certificate Holder': (p as any).certificate_holder ?? '',
+      'Mortgagee': (p as any).mortgagee ?? '',
+      'Status': titleCase(p.status),
+      'Notes': (p as any).notes ?? '',
+    }))
+    exportToExcel(rows, 'C2_Insurance_Policies', 'Policies')
+  }
+
   return (
     <div
       className="p-6 max-w-7xl mx-auto space-y-5"
@@ -133,6 +159,9 @@ export default function InsurancePoliciesPage() {
       <div className="flex items-center justify-between">
         <div><h1 className="page-title">Insurance Policies</h1><p className="text-sm text-slate-500 mt-0.5">{displayed.length} policies · {formatCurrency(totalPremium, true)}/yr</p></div>
         <div className="flex items-center gap-2">
+          <button onClick={exportPolicies} className="btn-secondary" disabled={displayed.length === 0}>
+            <Download size={14} />Export
+          </button>
           <label className="btn-secondary cursor-pointer">
             <Sparkles size={14} />Scan PDF
             <input type="file" accept=".pdf" className="hidden"
