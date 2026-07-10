@@ -9,7 +9,7 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['pmcs']['Row']>
       }
       properties: {
-        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; created_at: string }
+        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: any; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['properties']['Row']> & { name: string }
         Update: Partial<Database['public']['Tables']['properties']['Row']>
       }

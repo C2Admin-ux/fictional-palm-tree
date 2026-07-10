@@ -7,6 +7,7 @@ import {
   TRAFFIC_LIGHT, STATUS_LABELS, STATUS_STYLES, CAPEX_STATUS_STYLES, daysUntil,
 } from '@/lib/utils'
 import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft } from 'lucide-react'
+import BuildingTab from './building-tab'
 
 export const dynamic = 'force-dynamic'
 
@@ -64,6 +65,7 @@ export default async function PropertyPage({
     { id: 'tasks',     label: `Tasks (${propTasks.length})` },
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
+    { id: 'building',  label: 'Building' },
     { id: 'documents', label: `Documents (${propDocs.length})` },
   ]
 
@@ -130,7 +132,19 @@ export default async function PropertyPage({
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'overview' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-6xl">
+          <div className="max-w-6xl space-y-6">
+            {/* Compact building stat strip — quiet reference facts */}
+            {(prop.gross_sf || prop.year_built || prop.parking_total || prop.units_total) && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm">
+                {prop.units_total != null && <StatChip label="Units" value={prop.units_total} />}
+                {prop.year_built != null && <StatChip label="Built" value={prop.year_built} />}
+                {prop.gross_sf != null && <StatChip label="Gross SF" value={prop.gross_sf.toLocaleString()} />}
+                {prop.parking_total != null && <StatChip label="Parking" value={prop.parking_total} />}
+                <Link href={`/properties/${params.id}?tab=building`}
+                  className="ml-auto text-xs text-blue-600 hover:underline whitespace-nowrap">Building details →</Link>
+              </div>
+            )}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
               {/* Tasks */}
               <div className="card p-4">
@@ -248,6 +262,7 @@ export default async function PropertyPage({
               )}
             </div>
           </div>
+          </div>
         )}
 
         {tab === 'tasks' && (
@@ -358,6 +373,31 @@ export default async function PropertyPage({
           </div>
         )}
 
+        {tab === 'building' && (
+          <BuildingTab
+            propertyId={params.id}
+            initialFacts={{
+              year_built: prop.year_built,
+              year_renovated: prop.year_renovated,
+              gross_sf: prop.gross_sf,
+              net_rentable_sf: prop.net_rentable_sf,
+              land_acres: prop.land_acres,
+              num_buildings: prop.num_buildings,
+              num_stories: prop.num_stories,
+              parking_total: prop.parking_total,
+              parking_covered: prop.parking_covered,
+              parking_uncovered: prop.parking_uncovered,
+              construction_type: prop.construction_type,
+              roof_type: prop.roof_type,
+              unit_mix: prop.unit_mix,
+              pca_report_date: prop.pca_report_date,
+              pca_assessor: prop.pca_assessor,
+              pca_file_path: prop.pca_file_path,
+              pca_file_name: prop.pca_file_name,
+            }}
+          />
+        )}
+
         {tab === 'documents' && (
           <div className="max-w-3xl">
             <div className="flex justify-between items-center mb-4">
@@ -394,5 +434,14 @@ export default async function PropertyPage({
         )}
       </div>
     </div>
+  )
+}
+
+function StatChip({ label, value }: { label: string; value: string | number }) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-xs text-slate-400 uppercase tracking-wide">{label}</span>
+      <span className="text-sm font-semibold text-slate-800">{value}</span>
+    </span>
   )
 }
