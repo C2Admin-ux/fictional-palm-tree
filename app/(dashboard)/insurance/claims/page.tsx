@@ -8,6 +8,7 @@ import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, AlertTriangle, Search } from 'lucide-react'
 import { InlineSelect, InlineDate, InlineText } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
 
 const CLAIM_TYPES = ['property_damage','liability','loss_of_income','other'] as const
 const CLAIM_TYPE_LABELS: Record<string,string> = { property_damage:'Property Damage', liability:'Liability', loss_of_income:'Loss of Income', other:'Other' }
@@ -170,10 +171,8 @@ function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWi
     setSaving(false); onSave()
   }
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white"><h2 className="font-semibold">{claim ? 'Edit Claim' : 'New Claim'}</h2><button onClick={onClose}><X size={18} className="text-slate-400" /></button></div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+    <Modal title={claim ? 'Edit Claim' : 'New Claim'} onClose={onClose} maxWidth="2xl">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Claim ID</label><input value={form.claim_id} onChange={e => setForm(f => ({ ...f, claim_id: e.target.value }))} className="input" placeholder="e.g. 2026-001" /></div>
@@ -198,7 +197,6 @@ function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWi
           <div><label className="label">Notes</label><textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input min-h-[60px] resize-none" /></div>
           <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={onClose} className="btn-ghost">Cancel</button><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : claim ? 'Save' : 'Create'}</button></div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

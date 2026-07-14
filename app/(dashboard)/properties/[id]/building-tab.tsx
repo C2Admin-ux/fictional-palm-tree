@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import { Sparkles, Loader2, Upload, X, Check, Building2, Download, Trash2, Pencil, Plus } from 'lucide-react'
+import { Modal } from '@/components/ui/modal'
 
 type PcaItem = {
   id?: string
@@ -349,19 +350,18 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review PCA Extraction</h2>
-              <p className="text-xs text-slate-400">{review.file.name} · {items.length} detail items found</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review PCA Extraction</h2>
+            <p className="text-xs text-slate-400">{review.file.name} · {items.length} detail items found</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Key Facts</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -417,7 +417,6 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
             {saving ? 'Saving…' : <><Check size={14} />Save building data</>}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

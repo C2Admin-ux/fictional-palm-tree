@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { Property, Pmc, Contact } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
 import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail } from 'lucide-react'
+import { Modal } from '@/components/ui/modal'
 
 const PMS_PLATFORMS = ['Entrata', 'Yardi', 'ResMan', 'AIM', 'Other']
 const PROPERTY_STATUSES = ['active', 'disposition', 'watchlist']
@@ -476,12 +477,7 @@ function ContactFormModal({ contact, pmcs, onClose, onSave }: {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-          <h2 className="font-semibold">{contact ? 'Edit Contact' : 'New Contact'}</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400" /></button>
-        </div>
+    <Modal title={contact ? 'Edit Contact' : 'New Contact'} onClose={onClose} maxWidth="md">
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2"><label className="label">Full Name *</label><input required value={form.full_name} onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))} className="input" /></div>
@@ -506,8 +502,7 @@ function ContactFormModal({ contact, pmcs, onClose, onSave }: {
             <button type="submit" disabled={saving || !form.full_name} className="btn-primary">{saving ? 'Saving…' : contact ? 'Save' : 'Add contact'}</button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

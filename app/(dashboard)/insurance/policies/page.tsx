@@ -8,6 +8,7 @@ import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, Shield, AlertTriangle, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -461,19 +462,18 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review Extracted {drafts.length > 1 ? `${drafts.length} Policies` : 'Policy'}</h2>
-              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review Extracted {drafts.length > 1 ? `${drafts.length} Policies` : 'Policy'}</h2>
+            <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -530,8 +530,7 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -573,10 +572,8 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
   }
   const F = (key: string, label: string, type = 'text') => <div><label className="label">{label}</label><input type={type} value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} className="input" /></div>
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white"><h2 className="font-semibold">{policy ? 'Edit Policy' : 'Add Policy'}</h2><button onClick={onClose}><X size={18} className="text-slate-400" /></button></div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+    <Modal title={policy ? 'Edit Policy' : 'Add Policy'} onClose={onClose} maxWidth="2xl">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Portfolio-wide</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Policy Type *</label><select required value={form.policy_type} onChange={e => setForm(f => ({ ...f, policy_type: e.target.value }))} className="input">{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</select></div>
@@ -588,7 +585,6 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
           <div><label className="label">Notes</label><textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input min-h-[60px] resize-none" /></div>
           <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={onClose} className="btn-ghost">Cancel</button><button type="submit" disabled={saving || !form.carrier || !form.expiry_date} className="btn-primary">{saving ? 'Saving…' : policy ? 'Save' : 'Add policy'}</button></div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
 import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
 
 const CONTRACT_TYPES = [
   'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
@@ -792,19 +793,18 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review Extracted Contract{drafts.length > 1 ? 's' : ''}</h2>
-              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review Extracted Contract{drafts.length > 1 ? 's' : ''}</h2>
+            <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -930,8 +930,7 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1112,13 +1111,7 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <h2 className="font-semibold text-slate-900">{contract ? 'Edit Contract' : 'New Contract'}</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
-        </div>
-
+    <Modal title={contract ? 'Edit Contract' : 'New Contract'} onClose={onClose} maxWidth="2xl">
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
           {/* File drop zone */}
           <div
@@ -1311,7 +1304,6 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

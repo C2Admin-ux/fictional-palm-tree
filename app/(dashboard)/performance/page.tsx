@@ -8,9 +8,10 @@ import {
   occupancyColor, delinquencyColor, noiVarianceColor, workOrderCloseRateColor,
   TRAFFIC_LIGHT, TRAFFIC_DOT,
 } from '@/lib/utils'
-import { Plus, X, ChevronDown, BarChart2, Search } from 'lucide-react'
+import { Plus, ChevronDown, BarChart2, Search } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useSort, Th } from '@/lib/utils/sort'
+import { Modal } from '@/components/ui/modal'
 
 export default function PerformancePage() {
   const supabase = createClient()
@@ -295,13 +296,8 @@ function MetricFormModal({ properties, metric, defaultMonth, onClose, onSave }: 
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white">
-          <h2 className="font-semibold text-slate-900">{metric ? 'Edit Metrics' : 'Enter Monthly Metrics'}</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
-        </div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
+    <Modal title={metric ? 'Edit Metrics' : 'Enter Monthly Metrics'} onClose={onClose} maxWidth="2xl">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Property *</label>
@@ -366,7 +362,6 @@ function MetricFormModal({ properties, metric, defaultMonth, onClose, onSave }: 
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

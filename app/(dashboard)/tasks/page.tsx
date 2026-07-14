@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -754,13 +755,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <h2 className="font-semibold text-slate-900">{task ? 'Edit Task' : 'New Task'}</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
-        </div>
-
+    <Modal title={task ? 'Edit Task' : 'New Task'} onClose={onClose} maxWidth="xl">
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           {/* Title */}
           <div>
@@ -969,8 +964,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
