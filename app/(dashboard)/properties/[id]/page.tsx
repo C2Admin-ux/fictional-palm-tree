@@ -34,12 +34,14 @@ export default async function PropertyPage({
     { data: metrics },
     { data: documents },
     { data: policies },
+    { data: permits },
   ] = await Promise.all([
     supabase.from('tasks').select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('insurance_policies').select('*').eq('property_id', params.id).eq('status', 'active'),
+    supabase.from('property_permits').select('*').eq('property_id', params.id).order('issued_date', { ascending: false, nullsFirst: false }),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -47,6 +49,7 @@ export default async function PropertyPage({
   const propMetrics = (metrics ?? []) as any[]
   const propDocs = (documents ?? []) as any[]
   const propPolicies = (policies ?? []) as any[]
+  const propPermits = permits ?? []
   const latestMetric = propMetrics[0]
   const p = property as any
   const pmc = p.pmcs
@@ -60,6 +63,7 @@ export default async function PropertyPage({
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
     { id: 'building',  label: 'Building' },
+    { id: 'permits',   label: `Permits (${propPermits.length})` },
     { id: 'documents', label: `Documents (${propDocs.length})` },
   ]
 
@@ -83,6 +87,7 @@ export default async function PropertyPage({
               {p.city}, {p.state}
               {p.units_total ? ` · ${p.units_total} units` : ''}
               {pmc ? ` · ${pmc.name}` : ''}
+              {p.parcel_number ? ` · Parcel ${p.parcel_number}` : ''}
             </p>
           </div>
           {latestMetric && (
@@ -390,6 +395,68 @@ export default async function PropertyPage({
               pca_file_name: prop.pca_file_name,
             }}
           />
+        )}
+
+        {tab === 'permits' && (
+          <div className="max-w-5xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-sm font-semibold text-slate-700">
+                {propPermits.length} municipal permits
+                {p.parcel_number ? <span className="font-normal text-slate-400"> · parcel {p.parcel_number}</span> : ''}
+              </h2>
+            </div>
+            {propPermits.length === 0
+              ? <p className="text-sm text-slate-400 italic">
+                  No permit records yet. Permits are pulled from the city&apos;s permit portal during onboarding.
+                </p>
+              : (
+                <div className="card overflow-auto">
+                  <table className="w-full text-sm min-w-[760px]">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50">
+                        {['Permit No', 'Type', 'Description', 'Address', 'Status', 'Issued'].map(h => (
+                          <th key={h} className="text-left px-4 py-2 text-xs font-medium text-slate-500">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {propPermits.map(pr => {
+                        const status = (pr.status ?? '').toUpperCase()
+                        const statusCls = status.startsWith('EXPIRED')
+                          ? 'text-red-700 bg-red-50 border-red-200'
+                          : status === 'ISSUED' || status === 'APPROVED'
+                            ? 'text-blue-700 bg-blue-50 border-blue-200'
+                            : 'text-slate-500 bg-slate-50 border-slate-200'
+                        return (
+                          <tr key={pr.id} className="hover:bg-slate-50 align-top">
+                            <td className="px-4 py-2.5 font-medium text-slate-700 whitespace-nowrap">{pr.permit_no}</td>
+                            <td className="px-4 py-2.5 whitespace-nowrap">
+                              {pr.permit_type ?? '—'}
+                              {pr.subtype ? <span className="block text-xs text-slate-400">{pr.subtype}</span> : null}
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-600">
+                              {pr.description ?? '—'}
+                              {pr.notes ? <span className="block text-xs text-slate-400">{pr.notes}</span> : null}
+                            </td>
+                            <td className="px-4 py-2.5 whitespace-nowrap text-slate-500">{pr.address ?? '—'}</td>
+                            <td className="px-4 py-2.5">
+                              {pr.status ? <span className={`badge ${statusCls}`}>{pr.status}</span> : '—'}
+                            </td>
+                            <td className="px-4 py-2.5 whitespace-nowrap text-slate-500">
+                              {pr.issued_date ? formatDate(pr.issued_date) : '—'}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            }
+            {propPermits[0]?.source && (
+              <p className="text-xs text-slate-400 mt-3">Source: {propPermits[0].source}</p>
+            )}
+          </div>
         )}
 
         {tab === 'documents' && (
