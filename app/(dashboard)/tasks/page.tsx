@@ -15,6 +15,7 @@ import {
   Link as LinkIcon, AlertTriangle, Clock,
 } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -209,33 +210,33 @@ function TasksInner() {
 
         <div className="w-px h-4 bg-slate-200 mx-1" />
 
-        <select value={filterProp} onChange={e => setFilterProp(e.target.value)}
-          className={cn('input-sm w-auto', filterProp && 'border-blue-400 bg-blue-50 text-blue-700')}>
+        <FilterSelect value={filterProp} onChange={setFilterProp}
+          className={cn('w-auto', filterProp && 'border-blue-400 bg-blue-50 text-blue-700')}>
           <option value="">All properties</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        </FilterSelect>
 
-        <select value={filterCapex} onChange={e => setFilterCapex(e.target.value)}
-          className={cn('input-sm w-auto max-w-[160px]', filterCapex && 'border-orange-400 bg-orange-50 text-orange-700')}>
+        <FilterSelect value={filterCapex} onChange={setFilterCapex}
+          className={cn('w-auto max-w-[160px]', filterCapex && 'border-orange-400 bg-orange-50 text-orange-700')}>
           <option value="">All CapEx projects</option>
           {capexProjects.map(c => (
             <option key={c.id} value={c.id}>{c.title}</option>
           ))}
-        </select>
+        </FilterSelect>
 
-        <select value={filterContact} onChange={e => setFilterContact(e.target.value)}
-          className={cn('input-sm w-auto', filterContact && 'border-purple-400 bg-purple-50 text-purple-700')}>
+        <FilterSelect value={filterContact} onChange={setFilterContact}
+          className={cn('w-auto', filterContact && 'border-purple-400 bg-purple-50 text-purple-700')}>
           <option value="">All people</option>
           {contacts.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-        </select>
+        </FilterSelect>
 
-        <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)}
-          className={cn('input-sm w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
+        <FilterSelect value={filterPriority} onChange={setFilterPriority}
+          className={cn('w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
           <option value="">All priorities</option>
           {['urgent', 'high', 'medium', 'low'].map(p => (
             <option key={p} value={p}>{p}</option>
           ))}
-        </select>
+        </FilterSelect>
 
         {hasActiveFilter && (
           <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority('') }}

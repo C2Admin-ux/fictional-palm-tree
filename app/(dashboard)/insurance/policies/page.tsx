@@ -5,8 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -212,9 +213,9 @@ export default function InsurancePoliciesPage() {
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative"><Search size={13} className="absolute left-2.5 top-2 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search carrier…" /></div>
-        <Sel value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</Sel>
-        <Sel value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></Sel>
+        <FilterSelect value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</FilterSelect>
+        <FilterSelect value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</FilterSelect>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></FilterSelect>
         {(filterProp || filterType || filterStatus !== 'active' || search) && <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><X size={11} />Clear</button>}
         <span className="ml-auto text-xs text-slate-400">{displayed.length} shown</span>
       </div>
@@ -532,10 +533,6 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
       </div>
     </div>
   )
-}
-
-function Sel({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return <div className="relative"><select value={value} onChange={e => onChange(e.target.value)} className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">{children}</select><ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" /></div>
 }
 
 function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: PolicyWithProp | null; properties: Property[]; onClose: () => void; onSave: () => void }) {

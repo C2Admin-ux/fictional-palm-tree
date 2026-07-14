@@ -5,8 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_DOT } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, HardHat, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, HardHat, Search } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS, CAPEX_PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
 import Link from 'next/link'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
@@ -88,19 +89,19 @@ export default function CapexPage() {
             className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Search…" />
         </div>
-        <Sel value={filterProp} onChange={setFilterProp}>
+        <FilterSelect value={filterProp} onChange={setFilterProp}>
           <option value="">All properties</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}>
+        </FilterSelect>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}>
           <option value="active">Active</option>
           <option value="all">All statuses</option>
           {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-        </Sel>
-        <Sel value={filterCategory} onChange={setFilterCategory}>
+        </FilterSelect>
+        <FilterSelect value={filterCategory} onChange={setFilterCategory}>
           <option value="">All categories</option>
           {CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
-        </Sel>
+        </FilterSelect>
         {(filterProp || filterStatus !== 'active' || filterCategory || search) && (
           <button onClick={() => { setFilterProp(''); setFilterStatus('active'); setFilterCategory(''); setSearch('') }}
             className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
@@ -218,18 +219,6 @@ export default function CapexPage() {
           onClose={() => setShowForm(false)}
           onSave={() => { setShowForm(false); fetchProjects() }} />
       )}
-    </div>
-  )
-}
-
-function Sel({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return (
-    <div className="relative">
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">
-        {children}
-      </select>
-      <ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" />
     </div>
   )
 }
