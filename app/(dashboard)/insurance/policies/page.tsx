@@ -34,10 +34,10 @@ export default function InsurancePoliciesPage() {
   const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
 
   const fetchPolicies = useCallback(async () => {
-    let q = (supabase.from('insurance_policies') as any).select('*, properties(name)')
+    let q = supabase.from('insurance_policies').select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('policy_type', filterType)
-    if (filterStatus !== 'all') q = q.eq('status', filterStatus)
+    if (filterStatus !== 'all') q = q.eq('status', filterStatus as InsurancePolicy['status'])
     const { data } = await q
     setPolicies(data ?? [])
     setLoading(false)
@@ -129,7 +129,7 @@ export default function InsurancePoliciesPage() {
 
   async function archivePolicy(p: PolicyWithProp) {
     const next = p.status === 'archived' ? 'active' : 'archived'
-    await (supabase.from('insurance_policies') as any).update({ status: next }).eq('id', p.id)
+    await supabase.from('insurance_policies').update({ status: next }).eq('id', p.id)
     fetchPolicies()
   }
 
@@ -140,7 +140,7 @@ export default function InsurancePoliciesPage() {
     if (coiPath) {
       try { await supabase.storage.from('c2-documents').remove([coiPath]) } catch { /* non-fatal */ }
     }
-    await (supabase.from('insurance_policies') as any).delete().eq('id', p.id)
+    await supabase.from('insurance_policies').delete().eq('id', p.id)
     fetchPolicies()
   }
 
@@ -273,7 +273,7 @@ export default function InsurancePoliciesPage() {
                           { value: 'archived',  label: 'archived',  className: 'text-slate-500 bg-slate-100 border border-slate-300' },
                         ]}
                         onSave={async v => {
-                          await (supabase.from('insurance_policies') as any).update({ status: v }).eq('id', p.id)
+                          await supabase.from('insurance_policies').update({ status: v as InsurancePolicy['status'] }).eq('id', p.id)
                           fetchPolicies()
                         }}
                       />
@@ -407,14 +407,14 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
       notes: d.notes || null,
       coi_file_path,
       coi_file_name,
-      status: 'active',
+      status: 'active' as const,
     }))
 
     // Duplicate check: fetch existing policies and compare on
     // property + carrier + policy_number + effective_date (case-insensitive).
     // Property is included so a master/blanket policy covering multiple
     // properties can be entered once per property without being blocked.
-    const { data: existing } = await (supabase.from('insurance_policies') as any)
+    const { data: existing } = await supabase.from('insurance_policies')
       .select('property_id, carrier, policy_number, effective_date')
 
     function fingerprint(propertyId: string | null, carrier: string | null, policyNo: string | null, eff: string | null) {
@@ -439,7 +439,7 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
       return true
     })
 
-    if (deduped.length) await (supabase.from('insurance_policies') as any).insert(deduped)
+    if (deduped.length) await supabase.from('insurance_policies').insert(deduped)
 
     setSaving(false)
     if (skipped.length) {
@@ -547,16 +547,16 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
     e.preventDefault(); setSaving(true)
     const payload: any = { property_id: form.property_id || null, policy_type: form.policy_type, carrier: form.carrier, policy_number: form.policy_number || null, agent_name: form.agent_name || null, agent_phone: form.agent_phone || null, agent_email: form.agent_email || null, broker_agency: form.broker_agency || null, per_occurrence: n(form.per_occurrence), aggregate_limit: n(form.aggregate_limit), building_coverage: n(form.building_coverage), deductible: n(form.deductible), annual_premium: n(form.annual_premium), effective_date: form.effective_date || null, expiry_date: form.expiry_date, certificate_holder: form.certificate_holder || null, mortgagee: form.mortgagee || null, notes: form.notes || null, status: 'active' }
     if (policy) {
-      await (supabase.from('insurance_policies') as any).update(payload).eq('id', policy.id)
+      await supabase.from('insurance_policies').update(payload).eq('id', policy.id)
     } else {
       // Duplicate check on new policies: property + carrier + policy_number + effective_date.
       // Property included so master/blanket policies can be entered per-property.
       if (form.policy_number) {
-        let dupeQuery = (supabase.from('insurance_policies') as any)
+        let dupeQuery = supabase.from('insurance_policies')
           .select('id')
           .ilike('carrier', form.carrier)
           .ilike('policy_number', form.policy_number)
-          .eq('effective_date', form.effective_date || null)
+          .eq('effective_date', (form.effective_date || null) as string)
         dupeQuery = form.property_id
           ? dupeQuery.eq('property_id', form.property_id)
           : dupeQuery.is('property_id', null)
@@ -570,7 +570,7 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
           return
         }
       }
-      await (supabase.from('insurance_policies') as any).insert(payload)
+      await supabase.from('insurance_policies').insert(payload)
     }
     setSaving(false); onSave()
   }

@@ -92,7 +92,7 @@ async function supersedeOlderContracts(
 
   // Find candidate older contracts: same property, vendor, type, still active,
   // and not the row we just inserted.
-  let q = (supabase.from('contracts') as any)
+  let q = supabase.from('contracts')
     .select('id, commencement_date, execution_date')
     .eq('contract_type', newContract.contract_type)
     .ilike('vendor_name', newContract.vendor_name)
@@ -113,7 +113,7 @@ async function supersedeOlderContracts(
     .map((c: any) => c.id)
 
   if (toArchive.length) {
-    await (supabase.from('contracts') as any)
+    await supabase.from('contracts')
       .update({ status: 'superseded', superseded_by: newContract.id, superseded_at: new Date().toISOString() })
       .in('id', toArchive)
   }
@@ -142,7 +142,7 @@ export default function ContractsPage() {
   const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
 
   const fetchContracts = useCallback(async () => {
-    let q = (supabase.from('contracts') as any)
+    let q = supabase.from('contracts')
       .select('*, properties(name)')
       .order(sort, { ascending: sortDir === 'asc', nullsFirst: false })
     if (filterProp) q = q.eq('property_id', filterProp)
@@ -237,7 +237,7 @@ export default function ContractsPage() {
 
   async function archiveContract(contract: Contract) {
     const next = contract.status === 'archived' ? 'active' : 'archived'
-    await (supabase.from('contracts') as any).update({ status: next }).eq('id', contract.id)
+    await supabase.from('contracts').update({ status: next }).eq('id', contract.id)
     fetchContracts()
   }
 
@@ -771,7 +771,7 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
     }))
 
     if (rows.length) {
-      const { data: inserted } = await (supabase.from('contracts') as any).insert(rows).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date')
+      const { data: inserted } = await supabase.from('contracts').insert(rows).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date')
       // Archive older active contracts that this batch supersedes
       if (inserted) {
         for (const newC of inserted) {
@@ -1096,9 +1096,9 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
     }
 
     if (contract) {
-      await (supabase.from('contracts') as any).update(payload).eq('id', contract.id)
+      await supabase.from('contracts').update(payload).eq('id', contract.id)
     } else {
-      const { data: inserted } = await (supabase.from('contracts') as any).insert(payload).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date').single()
+      const { data: inserted } = await supabase.from('contracts').insert(payload).select('id, property_id, vendor_name, contract_type, commencement_date, execution_date').single()
       if (inserted) await supersedeOlderContracts(supabase, inserted)
     }
 

@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
         .eq('status', 'active')
         .lte('expiry_date', new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
         .order('expiry_date', { ascending: true }),
-      (supabase.from('contracts') as any)
+      supabase.from('contracts')
         .select('*, properties(name)')
         .eq('status', 'active')
         .or(`expiration_date.lte.${new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)},cancel_deadline.lte.${new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)}`)

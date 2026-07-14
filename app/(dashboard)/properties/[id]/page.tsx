@@ -41,11 +41,11 @@ export default async function PropertyPage({
     { data: documents },
     { data: policies },
   ] = await Promise.all([
-    (supabase.from('tasks') as any).select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
-    (supabase.from('capex_projects') as any).select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
-    (supabase.from('pm_metrics') as any).select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
-    (supabase.from('documents') as any).select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
-    (supabase.from('insurance_policies') as any).select('*').eq('property_id', params.id).eq('status', 'active'),
+    supabase.from('tasks').select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
+    supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
+    supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
+    supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
+    supabase.from('insurance_policies').select('*').eq('property_id', params.id).eq('status', 'active'),
   ])
 
   const propTasks = (tasks ?? []) as any[]

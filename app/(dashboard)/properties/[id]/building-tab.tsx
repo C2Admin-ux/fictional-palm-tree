@@ -51,7 +51,7 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   const [review, setReview] = useState<{ facts: Facts; items: PcaItem[]; file: { name: string; base64: string } } | null>(null)
 
   const fetchItems = useCallback(async () => {
-    const { data } = await (supabase.from('property_pca_items') as any)
+    const { data } = await supabase.from('property_pca_items')
       .select('*').eq('property_id', propertyId).order('category').order('sort_order')
     setItems(data ?? [])
     setLoading(false)
@@ -99,7 +99,7 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   }
 
   async function deleteItem(id: string) {
-    await (supabase.from('property_pca_items') as any).delete().eq('id', id)
+    await supabase.from('property_pca_items').delete().eq('id', id)
     fetchItems()
   }
 
@@ -303,7 +303,7 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
     const num = (v: any) => (v === '' || v == null ? null : Number(v))
 
     // Update property facts
-    await (supabase.from('properties') as any).update({
+    await supabase.from('properties').update({
       year_built: num(facts.year_built),
       year_renovated: num(facts.year_renovated),
       gross_sf: num(facts.gross_sf),
@@ -334,7 +334,7 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
         rul_years: it.rul_years ?? null,
         sort_order: i,
       }))
-      await (supabase.from('property_pca_items') as any).insert(rows)
+      await supabase.from('property_pca_items').insert(rows)
     }
 
     setSaving(false)

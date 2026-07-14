@@ -26,10 +26,10 @@ export default function CapexPage() {
   const { sort, dir, toggle, sortFn } = useSort<string>('created_at', 'desc')
 
   const fetchProjects = useCallback(async () => {
-    let q = (supabase.from('capex_projects') as any).select('*, properties(name)')
+    let q = supabase.from('capex_projects').select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterStatus === 'active') q = q.in('status', ['planning', 'approved', 'in_progress'])
-    else if (filterStatus !== 'all') q = q.eq('status', filterStatus)
+    else if (filterStatus !== 'all') q = q.eq('status', filterStatus as CapexProject['status'])
     if (filterCategory) q = q.eq('category', filterCategory)
     const { data } = await q
     setProjects(data ?? [])
@@ -139,7 +139,7 @@ export default function CapexPage() {
                 const over = (p.actual_spend ?? 0) > (p.budget ?? Infinity)
 
                 async function patch(fields: Record<string, unknown>) {
-                  await (supabase.from('capex_projects') as any).update(fields).eq('id', p.id)
+                  await supabase.from('capex_projects').update(fields).eq('id', p.id)
                   fetchProjects()
                 }
 
@@ -236,13 +236,13 @@ function Sel({ value, onChange, children }: { value: string; onChange: (v: strin
 
 function CapexFormModal({ properties, onClose, onSave }: { properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
-  const [form, setForm] = useState({ title: '', property_id: '', category: '', status: 'planning', priority: 'medium', budget: '', vendor_name: '', vendor_contact: '', start_date: '', target_completion: '', notes: '' })
+  const [form, setForm] = useState({ title: '', property_id: '', category: '', status: 'planning' as CapexProject['status'], priority: 'medium' as CapexProject['priority'], budget: '', vendor_name: '', vendor_contact: '', start_date: '', target_completion: '', notes: '' })
   const [saving, setSaving] = useState(false)
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!form.property_id) return
     setSaving(true)
-    await (supabase.from('capex_projects') as any).insert({ title: form.title, property_id: form.property_id, category: form.category || null, status: form.status, priority: form.priority, budget: form.budget ? parseFloat(form.budget) : null, vendor_name: form.vendor_name || null, vendor_contact: form.vendor_contact || null, start_date: form.start_date || null, target_completion: form.target_completion || null, notes: form.notes || null })
+    await supabase.from('capex_projects').insert({ title: form.title, property_id: form.property_id, category: form.category || null, status: form.status, priority: form.priority, budget: form.budget ? parseFloat(form.budget) : null, vendor_name: form.vendor_name || null, vendor_contact: form.vendor_contact || null, start_date: form.start_date || null, target_completion: form.target_completion || null, notes: form.notes || null })
     setSaving(false); onSave()
   }
   return (
@@ -257,7 +257,7 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property *</label><select required value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Category</label><select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} className="input"><option value="">None</option>{CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}</select></div>
-            <div><label className="label">Status</label><select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="input">{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</select></div>
+            <div><label className="label">Status</label><select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as CapexProject['status'] }))} className="input">{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</select></div>
             <div><label className="label">Budget ($)</label><input type="number" value={form.budget} onChange={e => setForm(f => ({ ...f, budget: e.target.value }))} className="input" placeholder="0" /></div>
             <div><label className="label">Vendor</label><input value={form.vendor_name} onChange={e => setForm(f => ({ ...f, vendor_name: e.target.value }))} className="input" /></div>
             <div><label className="label">Target Completion</label><input type="date" value={form.target_completion} onChange={e => setForm(f => ({ ...f, target_completion: e.target.value }))} className="input" /></div>
