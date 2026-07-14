@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { anthropicConfigured, anthropicJson, anthropicNotConfigured, callAnthropic } from '@/lib/anthropic'
+import { getSessionUser, unauthorized } from '@/lib/api-auth'
 
 // Extracts structured insurance policy fields from a COI / policy PDF.
 // Receives base64 PDF, sends to Claude as a document, returns parsed JSON.
@@ -44,47 +46,35 @@ Return format: {"policies": [ {...}, {...} ]}`
 
 export async function POST(req: NextRequest) {
   try {
+    // Cheap checks before parsing the multi-MB PDF body: env config first,
+    // then session (this endpoint spends Anthropic tokens per call).
+    if (!anthropicConfigured()) return anthropicNotConfigured()
+    if (!(await getSessionUser())) return unauthorized()
+
     const { pdf_base64, filename } = await req.json()
 
     if (!pdf_base64) {
       return NextResponse.json({ error: 'No PDF data provided' }, { status: 400 })
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      return NextResponse.json({
-        error: 'API key not configured',
-        detail: 'ANTHROPIC_API_KEY is not set in the environment. Add it in Vercel → Settings → Environment Variables, then redeploy.',
-      }, { status: 500 })
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: {
-                  type: 'base64',
-                  media_type: 'application/pdf',
-                  data: pdf_base64,
-                },
+    const response = await callAnthropic({
+      max_tokens: 3000, // headroom for claude-sonnet-5's ~30% heavier tokenizer
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: pdf_base64,
               },
-              { type: 'text', text: EXTRACTION_PROMPT },
-            ],
-          },
-        ],
-      }),
+            },
+            { type: 'text', text: EXTRACTION_PROMPT },
+          ],
+        },
+      ],
     })
 
     if (!response.ok) {
@@ -93,19 +83,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Extraction failed', detail: errText }, { status: 502 })
     }
 
-    const data = await response.json()
-    const textContent = (data.content ?? [])
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text)
-      .join('')
-
-    // Parse the JSON out of the response
-    const jsonMatch = textContent.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
+    const parsed = anthropicJson(await response.json())
+    if (!parsed) {
       return NextResponse.json({ error: 'Could not parse extraction result' }, { status: 502 })
     }
-
-    const parsed = JSON.parse(jsonMatch[0])
 
     if (parsed.error === 'not_an_insurance_document') {
       return NextResponse.json({ error: 'not_an_insurance_document', filename }, { status: 422 })
