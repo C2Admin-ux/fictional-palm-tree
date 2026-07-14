@@ -543,7 +543,7 @@ function DigestTab() {
         <h3 className="text-sm font-semibold text-slate-700">Weekly Digest Configuration</h3>
         <div className="space-y-3 text-sm text-slate-600">
           {[
-            ['Schedule', 'Every Sunday at 6pm MT (Monday 1am UTC)'],
+            ['Schedule', 'ON HOLD — automatic Sunday digest is paused (cron removed from vercel.json); manual send below still works'],
             ['Recipient', 'nick@c2cpllc.com'],
             ['Gmail scan', 'OFF — disabled until a Gmail MCP credential is set up (see GMAIL_SCAN_ENABLED in api/digest)'],
             ['Platform items', 'Urgent/high tasks · Expiring insurance (≤60d) · Contract deadlines (≤60d) · Claims due this week'],

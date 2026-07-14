@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-// Called by Vercel Cron: every night at 6am UTC
-// Configure in vercel.json:
-// { "crons": [{ "path": "/api/tasks/expiration", "schedule": "0 6 * * *" }] }
+// ────────────────────────────────────────────────────────────
+// NIGHTLY TASK CREATION: ON HOLD (2026-07-13, per Nick)
+// The nightly cron has been removed from vercel.json, so this route is no
+// longer triggered automatically. It remains callable server-to-server with
+// Bearer CRON_SECRET. To re-enable the schedule, add back to vercel.json:
+//   { "path": "/api/tasks/expiration", "schedule": "0 6 * * *" }   // 6am UTC nightly
+// ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   // Verify this is called by Vercel Cron (or us).

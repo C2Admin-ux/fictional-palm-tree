@@ -18,8 +18,14 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://fictional-palm-tree-
 // ────────────────────────────────────────────────────────────
 const GMAIL_SCAN_ENABLED = false
 
-// Vercel cron: every Sunday at 6pm MT = Monday 1am UTC
-// vercel.json: { "path": "/api/digest", "schedule": "0 1 * * 1" }
+// ────────────────────────────────────────────────────────────
+// SCHEDULED DIGEST: ON HOLD (2026-07-13, per Nick)
+// The Sunday-evening cron has been removed from vercel.json, so this route
+// is no longer triggered automatically. It remains callable manually via
+// the Settings → Digest → "Send test digest" button (session-authenticated).
+// To re-enable the schedule, add back to vercel.json "crons":
+//   { "path": "/api/digest", "schedule": "0 1 * * 1" }   // Sun 6pm MT = Mon 1am UTC
+// ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   // Auth check — two accepted paths, both fail closed:
