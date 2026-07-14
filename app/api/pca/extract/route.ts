@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { anthropicConfigured, anthropicText, callAnthropic } from '@/lib/anthropic'
+import { createClient } from '@/lib/supabase/server'
 
 // Extracts structured data from a Property Condition Assessment (PCA) /
 // Property Condition Report (PCR) PDF.
@@ -53,33 +55,35 @@ Return the JSON object.`
 
 export async function POST(req: NextRequest) {
   try {
+    // Require a logged-in session — middleware no longer gates /api/*, and
+    // this endpoint spends Anthropic tokens per call.
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const { pdf_base64, filename } = await req.json()
     if (!pdf_base64) return NextResponse.json({ error: 'No PDF data provided' }, { status: 400 })
 
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
+    if (!anthropicConfigured()) {
       return NextResponse.json({
         error: 'API key not configured',
         detail: 'ANTHROPIC_API_KEY is not set. Add it in Vercel → Settings → Environment Variables, then redeploy.',
       }, { status: 500 })
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf_base64 } },
-              { type: 'text', text: EXTRACTION_PROMPT },
-            ],
-          },
-        ],
-      }),
+    const response = await callAnthropic({
+      max_tokens: 8000,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf_base64 } },
+            { type: 'text', text: EXTRACTION_PROMPT },
+          ],
+        },
+      ],
     })
 
     if (!response.ok) {
@@ -89,7 +93,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await response.json()
-    const textContent = (data.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+    const textContent = anthropicText(data)
     const jsonMatch = textContent.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return NextResponse.json({ error: 'Could not parse extraction result' }, { status: 502 })
 

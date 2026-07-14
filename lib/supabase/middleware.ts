@@ -23,7 +23,13 @@ export async function updateSession(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  if (!user && !request.nextUrl.pathname.startsWith('/auth')) {
+  // Redirect unauthenticated PAGE requests to login. API routes are exempt:
+  // they enforce their own auth (session check or Bearer CRON_SECRET) and a
+  // redirect would break server-to-server callers — Vercel Cron sends a
+  // bearer token but no session cookie, so redirecting /api/* here silently
+  // prevented the scheduled digest/expiration crons from ever executing.
+  const isApi = request.nextUrl.pathname.startsWith('/api')
+  if (!user && !isApi && !request.nextUrl.pathname.startsWith('/auth')) {
     const url = request.nextUrl.clone()
     url.pathname = '/auth/login'
     return NextResponse.redirect(url)

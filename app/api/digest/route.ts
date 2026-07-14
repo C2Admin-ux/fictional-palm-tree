@@ -1,19 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { Resend } from 'resend'
+import { anthropicText, callAnthropic } from '@/lib/anthropic'
+import { createClient as createSessionClient } from '@/lib/supabase/server'
 
 // ── Config ───────────────────────────────────────────────────
-const RECIPIENT = 'nick@c2cpllc.com'
+const RECIPIENT = process.env.DIGEST_EMAIL ?? 'nick@c2cpllc.com'
 const DIGEST_FROM = 'C2 Capital Digest <digest@c2capital.co>'
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://fictional-palm-tree-ebon.vercel.app'
+
+// ────────────────────────────────────────────────────────────
+// GMAIL SCAN: DISABLED (2026-07-13)
+// The inbox-scan section of the digest is turned OFF until a Gmail MCP
+// OAuth credential is provisioned — without it the scan can't read the
+// inbox and would only add latency/cost. To re-enable: set this to true
+// and supply the Gmail MCP authorization in scanGmailForFollowUps().
+// ────────────────────────────────────────────────────────────
+const GMAIL_SCAN_ENABLED = false
 
 // Vercel cron: every Sunday at 6pm MT = Monday 1am UTC
 // vercel.json: { "path": "/api/digest", "schedule": "0 1 * * 1" }
 
 export async function GET(req: NextRequest) {
-  // Auth check — fail closed: if CRON_SECRET is unset, reject rather than run open.
+  // Auth check — two accepted paths, both fail closed:
+  //  1. Vercel Cron:  Bearer CRON_SECRET (server-to-server)
+  //  2. Manual "send test digest" from Settings: a logged-in app session
+  //     (cookie-based — the cron secret is never shipped to the browser)
   const authHeader = req.headers.get('authorization')
-  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const cronOk = !!process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`
+  if (!cronOk) {
+    const session = await createSessionClient()
+    const { data: { user } } = await session.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
   }
 
   const supabase = createClient(
@@ -58,13 +78,15 @@ export async function GET(req: NextRequest) {
 
     const propNames = (properties ?? []).map((p: any) => p.name)
 
-    // ── 2. Scan Gmail via Claude API ───────────────────────
+    // ── 2. Scan Gmail via Claude API (currently DISABLED — see flag at top) ──
     let gmailItems: GmailItem[] = []
-    try {
-      gmailItems = await scanGmailForFollowUps(propNames)
-    } catch (err) {
-      console.error('Gmail scan failed:', err)
-      // Non-fatal — digest sends without Gmail section
+    if (GMAIL_SCAN_ENABLED) {
+      try {
+        gmailItems = await scanGmailForFollowUps(propNames)
+      } catch (err) {
+        console.error('Gmail scan failed:', err)
+        // Non-fatal — digest sends without Gmail section
+      }
     }
 
     // ── 3. Build and send email ────────────────────────────
@@ -121,18 +143,11 @@ async function scanGmailForFollowUps(propertyNames: string[]): Promise<GmailItem
   const sevenDaysAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
 
   // Call Claude API with Gmail MCP to scan inbox.
-  // NOTE: the Gmail MCP server still requires an OAuth credential to authenticate
-  // (authorization_token below). Until that is supplied, the scan returns no items.
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'mcp-client-2025-11-20',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+  // NOTE: only reached when GMAIL_SCAN_ENABLED is true. The Gmail MCP server
+  // additionally requires an OAuth credential (authorization_token on the
+  // mcp_servers entry) — until that is supplied, the scan returns no items.
+  const response = await callAnthropic(
+    {
       max_tokens: 4000,
       tools: [{ type: 'mcp_toolset', mcp_server_name: 'gmail' }],
       system: `You are an assistant helping a multifamily real estate asset manager scan his Gmail inbox.
@@ -173,16 +188,14 @@ Return ONLY valid JSON. No preamble, no explanation outside the JSON.`,
           name: 'gmail',
         }
       ],
-    }),
-  })
+    },
+    { betas: ['mcp-client-2025-11-20'] }
+  )
 
   const data = await response.json()
 
   // Extract JSON from response
-  const textBlocks = (data.content ?? [])
-    .filter((b: any) => b.type === 'text')
-    .map((b: any) => b.text)
-    .join('')
+  const textBlocks = anthropicText(data)
 
   // Parse the JSON response
   const jsonMatch = textBlocks.match(/\{[\s\S]*\}/)
@@ -414,8 +427,8 @@ function buildEmailHtml({ tasks, policies, contracts, claims, gmailItems }: {
   <!-- Footer -->
   <div class="footer">
     C2 Capital Portfolio Platform &nbsp;·&nbsp;
-    <a href="${process.env.NEXT_PUBLIC_APP_URL ?? 'https://fictional-palm-tree.vercel.app'}/dashboard">Open Dashboard</a>
-    &nbsp;·&nbsp; <a href="${process.env.NEXT_PUBLIC_APP_URL ?? 'https://fictional-palm-tree.vercel.app'}/tasks">View All Tasks</a>
+    <a href="${APP_URL}/dashboard">Open Dashboard</a>
+    &nbsp;·&nbsp; <a href="${APP_URL}/tasks">View All Tasks</a>
   </div>
 
 </div>

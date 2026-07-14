@@ -521,9 +521,10 @@ function DigestTab() {
     setSending(true)
     setResult(null)
     try {
-      const res = await fetch('/api/digest', {
-        headers: { authorization: `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET ?? ''}` }
-      })
+      // Authenticated by the logged-in session cookie — the digest route
+      // accepts either Bearer CRON_SECRET (Vercel cron) or a valid session.
+      // The cron secret is never shipped to the browser.
+      const res = await fetch('/api/digest')
       const data = await res.json()
       if (data.success) {
         setResult({ success: true, message: `Sent to ${data.sent_to}`, sections: data.sections })
@@ -544,7 +545,7 @@ function DigestTab() {
           {[
             ['Schedule', 'Every Sunday at 6pm MT (Monday 1am UTC)'],
             ['Recipient', 'nick@c2cpllc.com'],
-            ['Gmail scan', 'Snoozed emails due this week + unanswered threads expecting a reply'],
+            ['Gmail scan', 'OFF — disabled until a Gmail MCP credential is set up (see GMAIL_SCAN_ENABLED in api/digest)'],
             ['Platform items', 'Urgent/high tasks · Expiring insurance (≤60d) · Contract deadlines (≤60d) · Claims due this week'],
           ].map(([label, value]) => (
             <div key={label} className="flex gap-3">
@@ -557,7 +558,7 @@ function DigestTab() {
 
       <div className="card p-5 space-y-4">
         <h3 className="text-sm font-semibold text-slate-700">Send Test Digest</h3>
-        <p className="text-sm text-slate-500">Triggers the digest immediately — useful for verifying your Resend API key and Gmail connection are working.</p>
+        <p className="text-sm text-slate-500">Triggers the digest immediately — useful for verifying your Resend API key is working. (Gmail scan is currently disabled, so that section will be empty.)</p>
         <button onClick={sendTestDigest} disabled={sending} className="btn-primary">
           <Mail size={14} />
           {sending ? 'Sending…' : 'Send test digest now'}
@@ -582,6 +583,10 @@ function DigestTab() {
         <div className="space-y-2">
           {[
             { name: 'RESEND_API_KEY', desc: 'From resend.com → API Keys', required: true },
+            { name: 'CRON_SECRET', desc: 'Long random string — auths the Vercel cron calls (server-only)', required: true },
+            { name: 'ANTHROPIC_API_KEY', desc: 'From console.anthropic.com — powers the document OCR extractors', required: true },
+            { name: 'SUPABASE_SERVICE_ROLE_KEY', desc: 'Supabase → Settings → API (server-only, bypasses RLS)', required: true },
+            { name: 'DIGEST_EMAIL', desc: 'Recipient for the weekly digest', required: false },
             { name: 'NEXT_PUBLIC_APP_URL', desc: 'Your Vercel deployment URL (for links in email)', required: false },
           ].map(({ name, desc, required }) => (
             <div key={name} className="flex items-start gap-3 p-2.5 bg-slate-50 rounded-lg">
