@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import { Sparkles, Loader2, Upload, X, Check, Building2, Download, Trash2, Pencil, Plus } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
+import { EmptyState } from '@/components/ui/empty-state'
 
 type PcaItem = {
   id?: string
@@ -160,11 +161,12 @@ export default function BuildingTab({ propertyId, initialFacts }: {
       </div>
 
       {!hasData && !loading && (
-        <div className="py-16 text-center card border-dashed">
-          <Building2 size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400 mb-1">No building data yet</p>
-          <p className="text-xs text-slate-300">Drag a PCA report PDF here, or use “Scan PCA PDF”</p>
-        </div>
+        <EmptyState
+          icon={<Building2 size={32} />}
+          title="No building data yet"
+          hint="Drag a PCA report PDF here, or use “Scan PCA PDF”"
+          className="border-dashed"
+        />
       )}
 
       {/* Key facts grid */}

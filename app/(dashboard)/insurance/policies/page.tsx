@@ -9,6 +9,8 @@ import { Plus, X, Shield, AlertTriangle, Search, Upload, Sparkles, FileText, Che
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
+import { DaysLeftBadge } from '@/components/ui/days-left-badge'
+import { EmptyState } from '@/components/ui/empty-state'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -223,7 +225,7 @@ export default function InsurancePoliciesPage() {
 
       {/* Table */}
       {loading ? <div className="py-12 text-center text-sm text-slate-400">Loading…</div> : displayed.length === 0 ? (
-        <div className="py-12 text-center card"><Shield size={32} className="text-slate-200 mx-auto mb-3" /><p className="text-sm text-slate-400">No policies found</p></div>
+        <EmptyState icon={<Shield size={32} />} title="No policies found" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
@@ -246,7 +248,6 @@ export default function InsurancePoliciesPage() {
             <tbody className="divide-y divide-slate-50">
               {displayed.map(p => {
                 const days = daysUntil(p.expiry_date)
-                const urgent = (days ?? 999) <= 30
                 const warn = (days ?? 999) <= 90
                 const expired = p.status === 'expired' || (days ?? 999) <= 0
                 return (
@@ -258,9 +259,9 @@ export default function InsurancePoliciesPage() {
                     <td className="px-3 py-2.5 text-xs text-slate-500">{formatDate(p.effective_date)}</td>
                     <td className={cn('px-3 py-2.5 text-xs font-medium', expired ? 'text-red-600' : warn ? 'text-amber-600' : 'text-slate-700')}>{formatDate(p.expiry_date)}</td>
                     <td className="px-3 py-2.5 text-center">
-                      <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-full', expired ? 'bg-red-50 text-red-600' : urgent ? 'bg-red-50 text-red-500' : warn ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-500')}>
-                        {expired ? 'EXPIRED' : days != null ? `${days}d` : '—'}
-                      </span>
+                      {expired
+                        ? <span className="badge text-red-700 bg-red-50 border-red-200">EXPIRED</span>
+                        : <DaysLeftBadge date={p.expiry_date} red={30} yellow={90} green={90} overdueLabel="EXPIRED" />}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.per_occurrence, true)}</td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.aggregate_limit, true)}</td>

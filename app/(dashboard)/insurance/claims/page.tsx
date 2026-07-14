@@ -3,17 +3,18 @@
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { InsuranceClaim, Property } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, CLAIM_STATUS_STYLES } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, AlertTriangle, Search } from 'lucide-react'
 import { InlineSelect, InlineDate, InlineText } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
+import { StatTile } from '@/components/ui/stat-tile'
+import { EmptyState } from '@/components/ui/empty-state'
 
 const CLAIM_TYPES = ['property_damage','liability','loss_of_income','other'] as const
 const CLAIM_TYPE_LABELS: Record<string,string> = { property_damage:'Property Damage', liability:'Liability', loss_of_income:'Loss of Income', other:'Other' }
 const STATUSES = ['reported','under_review','negotiating','settlement','closed','denied'] as const
-const STATUS_STYLES: Record<string,string> = { reported:'text-blue-700 bg-blue-50 border-blue-200', under_review:'text-amber-700 bg-amber-50 border-amber-200', negotiating:'text-purple-700 bg-purple-50 border-purple-200', settlement:'text-emerald-700 bg-emerald-50 border-emerald-200', closed:'text-slate-500 bg-slate-50 border-slate-200', denied:'text-red-700 bg-red-50 border-red-200' }
 type ClaimWithProp = InsuranceClaim & { properties?: { name: string } | null }
 
 export default function InsuranceClaimsPage() {
@@ -70,10 +71,7 @@ export default function InsuranceClaimsPage() {
           { label: 'Outstanding', value: formatCurrency(totalOutstanding, true), warn: totalOutstanding > 0 },
           { label: 'Follow-up Today', value: String(claims.filter(c => c.follow_up_date && new Date(c.follow_up_date) <= new Date()).length), warn: claims.some(c => c.follow_up_date && new Date(c.follow_up_date) <= new Date()) },
         ].map(({ label, value, warn }) => (
-          <div key={label} className="card p-4">
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-            <div className={cn('text-2xl font-semibold', warn ? 'text-amber-600' : 'text-slate-900')}>{value}</div>
-          </div>
+          <StatTile key={label} label={label} value={warn ? <span className="text-amber-600">{value}</span> : value} />
         ))}
       </div>
 
@@ -89,7 +87,7 @@ export default function InsuranceClaimsPage() {
 
       {/* Table */}
       {loading ? <div className="py-12 text-center text-sm text-slate-400">Loading…</div> : displayed.length === 0 ? (
-        <div className="py-12 text-center card"><p className="text-sm text-slate-400">No claims match this filter</p></div>
+        <EmptyState title="No claims match this filter" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[950px]">
@@ -121,7 +119,7 @@ export default function InsuranceClaimsPage() {
                     <td className="px-3 py-2.5">
                       <InlineSelect
                         value={c.status}
-                        options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: STATUS_STYLES[s] }))}
+                        options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: CLAIM_STATUS_STYLES[s] }))}
                         onSave={async v => {
                           await supabase.from('insurance_claims').update({ status: v }).eq('id', c.id)
                           fetchClaims()

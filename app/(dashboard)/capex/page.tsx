@@ -9,6 +9,8 @@ import { Plus, X, HardHat, Search } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS, CAPEX_PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
+import { StatTile } from '@/components/ui/stat-tile'
+import { EmptyState } from '@/components/ui/empty-state'
 import Link from 'next/link'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
@@ -75,10 +77,7 @@ export default function CapexPage() {
           { label: 'Actual Spend', value: formatCurrency(totalSpend, true) },
           { label: '% Used', value: totalBudget > 0 ? `${Math.round(totalSpend / totalBudget * 100)}%` : '—' },
         ].map(({ label, value }) => (
-          <div key={label} className="card p-4">
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-            <div className="text-2xl font-semibold text-slate-900">{value}</div>
-          </div>
+          <StatTile key={label} label={label} value={value} />
         ))}
       </div>
 
@@ -115,10 +114,7 @@ export default function CapexPage() {
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : displayed.length === 0 ? (
-        <div className="py-12 text-center card">
-          <HardHat size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400">No projects match your filters</p>
-        </div>
+        <EmptyState icon={<HardHat size={32} />} title="No projects match your filters" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[800px]">

@@ -12,6 +12,8 @@ import {
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
+import { EmptyState } from '@/components/ui/empty-state'
+import { DaysLeftBadge } from '@/components/ui/days-left-badge'
 
 const CONTRACT_TYPES = [
   'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
@@ -460,11 +462,11 @@ export default function ContractsPage() {
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : displayed.length === 0 ? (
-        <div className="py-16 text-center card">
-          <FileText size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400 mb-2">No contracts yet</p>
-          <p className="text-xs text-slate-300">Drag a contract file anywhere on the page to get started</p>
-        </div>
+        <EmptyState
+          icon={<FileText size={32} />}
+          title="No contracts yet"
+          hint="Drag a contract file anywhere on the page to get started"
+        />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
@@ -519,10 +521,7 @@ export default function ContractsPage() {
                             expUrgent ? 'text-red-600' : expWarn ? 'text-amber-600' : 'text-slate-700')}>
                             {formatDate(contract.expiration_date)}
                           </div>
-                          <div className={cn('text-xs',
-                            expUrgent ? 'text-red-500' : expWarn ? 'text-amber-500' : 'text-slate-400')}>
-                            {expDays! <= 0 ? 'EXPIRED' : `${expDays}d`}
-                          </div>
+                          <DaysLeftBadge date={contract.expiration_date} red={30} yellow={90} green={90} overdueLabel="EXPIRED" className="mt-0.5" />
                         </div>
                       ) : <span className="text-slate-300 text-xs">No expiry</span>}
                     </td>
@@ -534,9 +533,11 @@ export default function ContractsPage() {
                             cancelUrgent ? 'text-red-600' : cancelWarn ? 'text-amber-600' : 'text-slate-700')}>
                             {formatDate(contract.cancel_deadline)}
                           </div>
-                          <div className={cn('text-xs',
-                            cancelUrgent ? 'text-red-500' : cancelWarn ? 'text-amber-500' : 'text-slate-400')}>
-                            {cancelDays! <= 0 ? 'PASSED' : `${cancelDays}d · ${CANCEL_METHOD_LABELS[contract.cancel_method ?? ''] ?? ''}`}
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <DaysLeftBadge date={contract.cancel_deadline} red={30} yellow={60} green={60} overdueLabel="PASSED" />
+                            {cancelDays != null && cancelDays > 0 && (
+                              <span className="text-xs text-slate-400">{CANCEL_METHOD_LABELS[contract.cancel_method ?? ''] ?? ''}</span>
+                            )}
                           </div>
                         </div>
                       ) : <span className="text-slate-300 text-xs">—</span>}

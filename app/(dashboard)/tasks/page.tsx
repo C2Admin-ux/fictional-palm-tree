@@ -14,9 +14,10 @@ import {
   Plus, X, ChevronDown, RefreshCw, Users,
   Link as LinkIcon, AlertTriangle, Clock,
 } from 'lucide-react'
-import { InlineText, InlineSelect, InlineDate } from '@/components/ui/inline-edit'
+import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
+import { StatusBadge } from '@/components/ui/badge'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -384,21 +385,6 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
     onRefresh()
   }
 
-  const STATUS_OPTS = [
-    { value: 'inbox',       label: 'Inbox',       className: 'text-indigo-700 bg-indigo-50 border border-indigo-200' },
-    { value: 'next_action', label: 'Next action', className: 'text-blue-700 bg-blue-50 border border-blue-200' },
-    { value: 'waiting',     label: 'Waiting',     className: 'text-purple-700 bg-purple-50 border border-purple-200' },
-    { value: 'blocked',     label: 'Blocked',     className: 'text-amber-700 bg-amber-50 border border-amber-200' },
-    { value: 'done',        label: 'Done',        className: 'text-slate-500 bg-slate-50 border border-slate-200' },
-  ]
-
-  const PRI_OPTS = [
-    { value: 'urgent', label: 'Urgent', dot: '#ef4444' },
-    { value: 'high',   label: 'High',   dot: '#f97316' },
-    { value: 'medium', label: 'Medium', dot: '#3b82f6' },
-    { value: 'low',    label: 'Low',    dot: '#94a3b8' },
-  ]
-
   return (
     <div className={cn(
       'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
@@ -407,7 +393,7 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
       {/* Priority pip — click to change priority */}
       <InlineSelect
         value={task.priority}
-        options={PRI_OPTS}
+        options={PRIORITY_OPTIONS}
         onSave={v => patch({ priority: v })}
         trigger={
           <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
@@ -473,7 +459,7 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
       <div className="w-28 hidden md:flex justify-center">
         <InlineSelect
           value={task.status}
-          options={STATUS_OPTS}
+          options={STATUS_OPTIONS}
           onSave={v => patch({ status: v, completed_at: v === 'done' ? new Date().toISOString() : null })}
         />
       </div>
@@ -622,9 +608,7 @@ function AgendaView({ tasks, contacts, agendaPerson, setAgendaPerson, onMarkDone
                           {t.properties.name}
                         </span>
                       )}
-                      <span className={cn('badge text-xs', STATUS_STYLES[t.status])}>
-                        {STATUS_LABELS[t.status]}
-                      </span>
+                      <StatusBadge value={t.status} className="text-xs" />
                       {t.due_date && (
                         <span className={cn('text-xs', isOverdue(t.due_date) ? 'text-red-600 font-medium' : 'text-slate-400')}>
                           {isOverdue(t.due_date) ? 'Overdue · ' : ''}{formatDateShort(t.due_date)}

@@ -5,6 +5,7 @@ import {
 } from '@/lib/utils'
 import Link from 'next/link'
 import { AlertTriangle, CheckSquare, HardHat, TrendingUp, Building2, Shield } from 'lucide-react'
+import { StatTile } from '@/components/ui/stat-tile'
 
 export const dynamic = 'force-dynamic'
 
@@ -66,11 +67,11 @@ export default async function DashboardPage() {
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <KpiCard label="Portfolio Occupancy" value={avgOccupancy != null ? formatPct(avgOccupancy) : '—'} sub={`${propsWithMetrics.length}/${props.length} reporting`} icon={<Building2 size={15} />} color={occupancyColor(avgOccupancy)} />
-        <KpiCard label="Open Tasks" value={String(openTasks.length)} sub={overdueCount > 0 ? `${overdueCount} overdue` : 'none overdue'} icon={<CheckSquare size={15} />} alert={overdueCount > 0} href="/tasks" />
-        <KpiCard label="Active CapEx" value={String(capex.length)} sub={formatCurrency(totalCapexBudget, true) + ' budget'} icon={<HardHat size={15} />} href="/capex" />
-        <KpiCard label="Insurance Expiring" value={String(expiringPolicies.length)} sub="Within 90 days" icon={<Shield size={15} />} alert={expiringPolicies.length > 0} href="/insurance/policies" />
-        <KpiCard label="Open Claims" value={String(openClaims.length)} sub={formatCurrency(totalClaimed, true) + ' claimed'} icon={<TrendingUp size={15} />} href="/insurance/claims" />
+        <StatTile label="Portfolio Occupancy" value={avgOccupancy != null ? formatPct(avgOccupancy) : '—'} sub={`${propsWithMetrics.length}/${props.length} reporting`} icon={<Building2 size={15} />} />
+        <StatTile label="Open Tasks" value={String(openTasks.length)} sub={overdueCount > 0 ? `${overdueCount} overdue` : 'none overdue'} icon={<CheckSquare size={15} />} alert={overdueCount > 0} href="/tasks" />
+        <StatTile label="Active CapEx" value={String(capex.length)} sub={formatCurrency(totalCapexBudget, true) + ' budget'} icon={<HardHat size={15} />} href="/capex" />
+        <StatTile label="Insurance Expiring" value={String(expiringPolicies.length)} sub="Within 90 days" icon={<Shield size={15} />} alert={expiringPolicies.length > 0} href="/insurance/policies" />
+        <StatTile label="Open Claims" value={String(openClaims.length)} sub={formatCurrency(totalClaimed, true) + ' claimed'} icon={<TrendingUp size={15} />} href="/insurance/claims" />
       </div>
 
       {/* Property cards */}
@@ -208,24 +209,6 @@ export default async function DashboardPage() {
       )}
     </div>
   )
-}
-
-function KpiCard({ label, value, sub, icon, color, alert, href }: {
-  label: string; value: string; sub?: string; icon?: React.ReactNode
-  color?: string; alert?: boolean; href?: string
-}) {
-  const inner = (
-    <div className="card p-4 h-full">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</span>
-        <span className={alert ? 'text-red-400' : 'text-slate-300'}>{icon}</span>
-      </div>
-      <div className={`text-2xl font-semibold mt-1 ${alert ? 'text-red-600' : 'text-slate-900'}`}>{value}</div>
-      {sub && <div className="text-xs text-slate-400 mt-0.5">{sub}</div>}
-    </div>
-  )
-  if (href) return <Link href={href} className="block hover:shadow-md transition-shadow rounded-xl h-full">{inner}</Link>
-  return inner
 }
 
 function MetricCell({ label, value, color }: { label: string; value: string; color: string }) {
