@@ -4,6 +4,7 @@
 .DS_Store
 .env*.local
 .vercel
+.claude/
 *.tsbuildinfo
 next-env.d.ts
 /coverage
