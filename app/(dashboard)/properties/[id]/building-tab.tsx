@@ -3,9 +3,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
-import { Sparkles, Loader2, Upload, X, Check, Building2, Download, Trash2, Pencil, Plus } from 'lucide-react'
+import { Sparkles, Check, Building2, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import { DragOverlay } from '@/components/ui/drag-overlay'
+import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
+import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 
 type PcaItem = {
   id?: string
@@ -47,9 +50,6 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   const [facts, setFacts] = useState<Facts>(initialFacts)
   const [items, setItems] = useState<PcaItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [dragOver, setDragOver] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [extractStatus, setExtractStatus] = useState('')
   const [review, setReview] = useState<{ facts: Facts; items: PcaItem[]; file: { name: string; base64: string } } | null>(null)
 
   const fetchItems = useCallback(async () => {
@@ -61,44 +61,25 @@ export default function BuildingTab({ propertyId, initialFacts }: {
 
   useEffect(() => { fetchItems() }, [fetchItems])
 
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((res, rej) => {
-      const r = new FileReader()
-      r.onload = () => res((r.result as string).split(',')[1])
-      r.onerror = rej
-      r.readAsDataURL(file)
-    })
-  }
+  const pdf = usePdfExtraction<ExtractResponse & { facts?: Facts; items?: PcaItem[] }>({
+    endpoint: '/api/pca/extract',
+    readingMessage: 'Reading PCA report…',
+    extractingMessage: 'Extracting building data with AI…',
+    onSuccess: (data, file) => {
+      setReview({ facts: data.facts ?? {}, items: data.items ?? [], file })
+    },
+  })
+  const { error: extractError, setError: setExtractError } = pdf
 
-  async function runExtraction(file: File) {
-    setExtracting(true)
-    setExtractStatus('Reading PCA report…')
-    try {
-      const base64 = await fileToBase64(file)
-      setExtractStatus('Extracting building data with AI…')
-      const res = await fetch('/api/pca/extract', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
-      })
-      const data = await res.json()
-      if (data.error === 'not_a_pca') { alert("That doesn't look like a property condition assessment."); setExtracting(false); return }
-      if (!data.success) {
-        const reason = data.detail ? `${data.error}: ${String(data.detail).slice(0, 200)}` : (data.error ?? 'unknown')
-        alert('Extraction failed — ' + reason); setExtracting(false); return
-      }
-      setReview({ facts: data.facts, items: data.items, file: { name: file.name, base64 } })
-    } catch (err: any) {
-      alert('Something went wrong: ' + err.message)
-    }
-    setExtracting(false); setExtractStatus('')
-  }
-
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault(); setDragOver(false)
-    const file = Array.from(e.dataTransfer.files).find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
-    if (file) runExtraction(file)
-    else alert('Please drop a PDF file')
-  }
+  useEffect(() => {
+    if (!extractError) return
+    alert(extractError === 'not_a_pca'
+      ? "That doesn't look like a property condition assessment."
+      : extractError === 'Please drop a PDF file'
+        ? extractError
+        : 'Extraction failed — ' + extractError)
+    setExtractError(null)
+  }, [extractError, setExtractError])
 
   async function deleteItem(id: string) {
     await supabase.from('property_pca_items').delete().eq('id', id)
@@ -116,30 +97,11 @@ export default function BuildingTab({ propertyId, initialFacts }: {
 
   return (
     <div
-      onDragOver={e => { e.preventDefault(); if (!extracting) setDragOver(true) }}
-      onDragLeave={e => { e.preventDefault(); setDragOver(false) }}
-      onDrop={onDrop}
+      {...pdf.dragProps}
       className="space-y-5 relative">
 
-      {dragOver && (
-        <div className="absolute inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-30 rounded-xl flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-2xl px-6 py-4 shadow-xl text-center">
-            <Sparkles size={28} className="text-blue-500 mx-auto mb-1" />
-            <div className="font-semibold text-blue-700">Drop PCA report</div>
-            <div className="text-xs text-slate-500">AI extracts building data</div>
-          </div>
-        </div>
-      )}
-
-      {extracting && (
-        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
-            <Loader2 size={30} className="text-blue-500 mx-auto mb-3 animate-spin" />
-            <div className="font-semibold text-slate-800">Reading PCA report</div>
-            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
-          </div>
-        </div>
-      )}
+      {pdf.dragOver && <DragOverlay position="absolute" title="Drop PCA report" hint="AI extracts building data" />}
+      {pdf.extracting && <ExtractingOverlay title="Reading PCA report" status={pdf.status} />}
 
       {/* Header + upload */}
       <div className="flex items-center justify-between">
@@ -155,8 +117,7 @@ export default function BuildingTab({ propertyId, initialFacts }: {
         </div>
         <label className="btn-secondary cursor-pointer">
           <Sparkles size={14} />{hasData ? 'Re-scan PCA' : 'Scan PCA PDF'}
-          <input type="file" accept=".pdf" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) runExtraction(f); e.target.value = '' }} />
+          <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
         </label>
       </div>
 

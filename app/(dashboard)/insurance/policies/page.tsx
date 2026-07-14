@@ -5,12 +5,15 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, Search, Sparkles, Check, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { DaysLeftBadge } from '@/components/ui/days-left-badge'
 import { EmptyState } from '@/components/ui/empty-state'
+import { DragOverlay } from '@/components/ui/drag-overlay'
+import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
+import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -31,11 +34,28 @@ export default function InsurancePoliciesPage() {
   const { sort, dir, toggle, sortFn } = useSort<string>('expiry_date', 'asc')
 
   // OCR / drag-drop state
-  const [dragOver, setDragOver] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [extractStatus, setExtractStatus] = useState('')
   const [extractedPolicies, setExtractedPolicies] = useState<any[] | null>(null)
   const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
+
+  const pdf = usePdfExtraction<ExtractResponse & { policies?: any[] }>({
+    endpoint: '/api/insurance/extract',
+    extractingMessage: 'Extracting policy details with AI…',
+    onSuccess: (data, file) => {
+      setExtractedPolicies(data.policies ?? [])
+      setExtractedFile(file)
+    },
+  })
+  const { error: extractError, setError: setExtractError } = pdf
+
+  useEffect(() => {
+    if (!extractError) return
+    alert(extractError === 'not_an_insurance_document'
+      ? "That doesn't look like an insurance document. Try a COI or policy declaration page."
+      : extractError === 'Please drop a PDF file'
+        ? extractError
+        : 'Extraction failed — ' + extractError)
+    setExtractError(null)
+  }, [extractError, setExtractError])
 
   const fetchPolicies = useCallback(async () => {
     let q = supabase.from('insurance_policies').select('*, properties(name)')
@@ -49,55 +69,6 @@ export default function InsurancePoliciesPage() {
 
   useEffect(() => { fetchPolicies() }, [fetchPolicies])
   useEffect(() => { supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? [])) }, [])
-
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve((reader.result as string).split(',')[1])
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-  }
-
-  async function handlePdfDrop(files: FileList | File[]) {
-    const file = Array.from(files).find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
-    if (!file) { alert('Please drop a PDF file'); return }
-
-    setExtracting(true)
-    setExtractStatus('Reading document…')
-    try {
-      const base64 = await fileToBase64(file)
-      setExtractStatus('Extracting policy details with AI…')
-
-      const res = await fetch('/api/insurance/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
-      })
-      const data = await res.json()
-
-      if (data.error === 'not_an_insurance_document') {
-        alert("That doesn't look like an insurance document. Try a COI or policy declaration page.")
-        setExtracting(false)
-        return
-      }
-      if (!data.success) {
-        const reason = data.detail
-          ? `${data.error}: ${typeof data.detail === 'string' ? data.detail.slice(0, 200) : JSON.stringify(data.detail).slice(0, 200)}`
-          : (data.error ?? 'unknown error')
-        alert('Extraction failed — ' + reason)
-        setExtracting(false)
-        return
-      }
-
-      setExtractedPolicies(data.policies)
-      setExtractedFile({ name: file.name, base64 })
-    } catch (err: any) {
-      alert('Something went wrong: ' + err.message)
-    }
-    setExtracting(false)
-    setExtractStatus('')
-  }
 
   const displayed = [...policies]
     .filter(p => { if (!search) return true; const s = search.toLowerCase(); return p.carrier.toLowerCase().includes(s) || (p.properties?.name ?? '').toLowerCase().includes(s) || p.policy_number?.toLowerCase().includes(s) })
@@ -151,31 +122,10 @@ export default function InsurancePoliciesPage() {
   return (
     <div
       className="p-6 max-w-7xl mx-auto space-y-5"
-      onDragOver={e => { e.preventDefault(); if (!extracting) setDragOver(true) }}
-      onDragLeave={e => { e.preventDefault(); setDragOver(false) }}
-      onDrop={e => { e.preventDefault(); setDragOver(false); if (!extracting) handlePdfDrop(e.dataTransfer.files) }}>
+      {...pdf.dragProps}>
 
-      {/* Drag overlay */}
-      {dragOver && (
-        <div className="fixed inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-40 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center">
-            <Sparkles size={32} className="text-blue-500 mx-auto mb-2" />
-            <div className="text-lg font-semibold text-blue-700">Drop COI or policy PDF</div>
-            <div className="text-sm text-slate-500 mt-1">AI will extract and fill in the details</div>
-          </div>
-        </div>
-      )}
-
-      {/* Extracting overlay */}
-      {extracting && (
-        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
-            <Loader2 size={32} className="text-blue-500 mx-auto mb-3 animate-spin" />
-            <div className="text-base font-semibold text-slate-800">Reading your document</div>
-            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
-          </div>
-        </div>
-      )}
+      {pdf.dragOver && <DragOverlay title="Drop COI or policy PDF" />}
+      {pdf.extracting && <ExtractingOverlay status={pdf.status} />}
 
       <div className="flex items-center justify-between">
         <div><h1 className="page-title">Insurance Policies</h1><p className="text-sm text-slate-500 mt-0.5">{displayed.length} policies · {formatCurrency(totalPremium, true)}/yr</p></div>
@@ -185,8 +135,7 @@ export default function InsurancePoliciesPage() {
           </button>
           <label className="btn-secondary cursor-pointer">
             <Sparkles size={14} />Scan PDF
-            <input type="file" accept=".pdf" className="hidden"
-              onChange={e => { if (e.target.files?.length) handlePdfDrop(e.target.files); e.target.value = '' }} />
+            <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
           </label>
           <button onClick={() => { setEditPolicy(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
         </div>
