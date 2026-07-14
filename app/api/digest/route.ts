@@ -10,9 +10,9 @@ const DIGEST_FROM = 'C2 Capital Digest <digest@c2capital.co>'
 // vercel.json: { "path": "/api/digest", "schedule": "0 1 * * 1" }
 
 export async function GET(req: NextRequest) {
-  // Auth check
+  // Auth check — fail closed: if CRON_SECRET is unset, reject rather than run open.
   const authHeader = req.headers.get('authorization')
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
@@ -120,13 +120,21 @@ async function scanGmailForFollowUps(propertyNames: string[]): Promise<GmailItem
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const sevenDaysAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
 
-  // Call Claude API with Gmail MCP to scan inbox
+  // Call Claude API with Gmail MCP to scan inbox.
+  // NOTE: the Gmail MCP server still requires an OAuth credential to authenticate
+  // (authorization_token below). Until that is supplied, the scan returns no items.
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'mcp-client-2025-11-20',
+    },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4000,
+      tools: [{ type: 'mcp_toolset', mcp_server_name: 'gmail' }],
       system: `You are an assistant helping a multifamily real estate asset manager scan his Gmail inbox.
 Your job is to find emails that need a follow-up response.
 
