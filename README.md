@@ -1,36 +1,75 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# C2Admin
 
-## Getting Started
+Internal real-estate portfolio management platform for C2 Capital. Modules:
 
-First, run the development server:
+- **Dashboard** — portfolio overview
+- **Tasks** — action items, including auto-generated expiration tasks
+- **CapEx** — capital-expenditure tracking
+- **Insurance** — policies and claims
+- **Documents / Contracts** — uploads with Claude-powered OCR extraction
+- **Performance** — property-manager performance
+- **Properties** — property records and PCA / building data
+- **Inspections, Reports, Settings**
+
+## Stack
+
+- [Next.js 14](https://nextjs.org) App Router, TypeScript (`strict`)
+- Tailwind CSS with design tokens in `app/globals.css`
+- [Supabase](https://supabase.com) — Postgres, Auth, Storage (`lib/supabase/`)
+- Anthropic API for document extraction — all calls go through `lib/anthropic.ts`
+- [Resend](https://resend.com) for outbound email (digest)
+
+## Local setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/C2Admin-ux/c2-repo.git
+cd c2-repo
+npm install
+cp .env.example .env.local   # then fill in real values
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Every variable the code reads is documented in [.env.example](.env.example).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Script              | What it does                       |
+| ------------------- | ---------------------------------- |
+| `npm run dev`       | Start the dev server               |
+| `npm run build`     | Production build                   |
+| `npm run start`     | Serve the production build         |
+| `npm run lint`      | ESLint (`next lint`)               |
+| `npm run typecheck` | TypeScript check (`tsc --noEmit`)  |
 
-## Learn More
+## Deployment
 
-To learn more about Next.js, take a look at the following resources:
+Push to `main` → Vercel builds and deploys automatically. Environment
+variables live in Vercel → Settings → Environment Variables.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## API-route auth model
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Two credentials, both validated per-route via `lib/api-auth.ts`:
 
-## Deploy on Vercel
+- **Session** — logged-in Supabase user (browser-facing routes).
+- **Bearer `CRON_SECRET`** — server-to-server / Vercel Cron calls
+  (`isCronRequest()` is fail-closed: no secret configured means no access).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`middleware.ts` (via `lib/supabase/middleware.ts`) is deny-by-default:
+unauthenticated page requests redirect to `/auth/login`; unauthenticated API
+requests get 401 JSON. Requests carrying an `Authorization` header pass
+through to the route, which still validates the credential itself —
+middleware never grants access on its own.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Automation currently ON HOLD
+
+As of 2026-07-13 all scheduled automation is intentionally disabled:
+
+- **Both crons removed from `vercel.json`** (`"crons": []`):
+  - Weekly digest — route still callable manually from Settings → Digest.
+    Re-enable notes at the top of `app/api/digest/route.ts`.
+  - Nightly expiration-task creation — still callable with Bearer
+    `CRON_SECRET`. Re-enable notes (including the snooze-clearing step that
+    must be recreated) at the top of `app/api/tasks/expiration/route.ts`.
+- **Gmail inbox scan disabled** — `GMAIL_SCAN_ENABLED = false` in
+  `app/api/digest/route.ts` until a Gmail MCP OAuth credential
+  (`GMAIL_MCP_AUTH_TOKEN`) is provisioned.
