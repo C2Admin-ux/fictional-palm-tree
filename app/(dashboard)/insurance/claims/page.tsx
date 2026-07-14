@@ -28,7 +28,7 @@ export default function InsuranceClaimsPage() {
   const { sort, dir, toggle, sortFn } = useSort<string>('date_reported', 'desc')
 
   const fetchClaims = useCallback(async () => {
-    let q = (supabase.from('insurance_claims') as any).select('*, properties(name)')
+    let q = supabase.from('insurance_claims').select('*, properties(name)')
     if (filterStatus === 'open') q = q.not('status', 'in', '("closed","denied")')
     else if (filterStatus !== 'all') q = q.eq('status', filterStatus)
     if (filterProp) q = q.eq('property_id', filterProp)
@@ -121,7 +121,7 @@ export default function InsuranceClaimsPage() {
                         value={c.status}
                         options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: STATUS_STYLES[s] }))}
                         onSave={async v => {
-                          await (supabase.from('insurance_claims') as any).update({ status: v }).eq('id', c.id)
+                          await supabase.from('insurance_claims').update({ status: v }).eq('id', c.id)
                           fetchClaims()
                         }}
                       />
@@ -136,7 +136,7 @@ export default function InsuranceClaimsPage() {
                       <InlineDate
                         value={c.follow_up_date}
                         onSave={async v => {
-                          await (supabase.from('insurance_claims') as any).update({ follow_up_date: v }).eq('id', c.id)
+                          await supabase.from('insurance_claims').update({ follow_up_date: v }).eq('id', c.id)
                           fetchClaims()
                         }}
                         className={cn(overdue ? 'text-red-600 font-medium' : 'text-slate-600')}
@@ -168,8 +168,8 @@ function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWi
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
     const payload: any = { property_id: form.property_id || null, claim_id: form.claim_id || null, claim_type: form.claim_type, status: form.status, priority: form.priority, unit_number: form.unit_number || null, description: form.description || null, date_of_loss: form.date_of_loss || null, date_reported: form.date_reported || null, amount_claimed: n(form.amount_claimed), amount_approved: n(form.amount_approved), amount_paid: n(form.amount_paid), adjuster_name: form.adjuster_name || null, adjuster_phone: form.adjuster_phone || null, adjuster_email: form.adjuster_email || null, next_action: form.next_action || null, follow_up_date: form.follow_up_date || null, notes: form.notes || null }
-    if (claim) await (supabase.from('insurance_claims') as any).update(payload).eq('id', claim.id)
-    else await (supabase.from('insurance_claims') as any).insert(payload)
+    if (claim) await supabase.from('insurance_claims').update(payload).eq('id', claim.id)
+    else await supabase.from('insurance_claims').insert(payload)
     setSaving(false); onSave()
   }
   return (

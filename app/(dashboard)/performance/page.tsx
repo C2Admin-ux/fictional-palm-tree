@@ -277,9 +277,9 @@ function MetricFormModal({ properties, metric, defaultMonth, onClose, onSave }: 
       notes:                form.notes || null,
     }
     if (metric) {
-      await (supabase.from('pm_metrics') as any).update(payload).eq('id', metric.id)
+      await supabase.from('pm_metrics').update(payload).eq('id', metric.id)
     } else {
-      await (supabase.from('pm_metrics') as any).upsert(payload, { onConflict: 'property_id,period_month' })
+      await supabase.from('pm_metrics').upsert(payload, { onConflict: 'property_id,period_month' })
     }
     setSaving(false)
     onSave()

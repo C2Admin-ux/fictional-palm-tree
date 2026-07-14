@@ -153,7 +153,7 @@ function TasksInner() {
 
   async function markDone(task: TaskWithRelations) {
     const newStatus = task.status === 'done' ? 'next_action' : 'done'
-    await (supabase.from('tasks') as any).update({
+    await supabase.from('tasks').update({
       status: newStatus,
       completed_at: newStatus === 'done' ? new Date().toISOString() : null,
     }).eq('id', task.id)
@@ -378,7 +378,7 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
 
   async function patch(fields: Record<string, unknown>) {
-    await (supabase.from('tasks') as any).update(fields).eq('id', task.id)
+    await supabase.from('tasks').update(fields).eq('id', task.id)
     onRefresh()
   }
 
@@ -723,18 +723,18 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
 
     let taskId: string
     if (task) {
-      await (supabase.from('tasks') as any).update(payload).eq('id', task.id)
+      await supabase.from('tasks').update(payload).eq('id', task.id)
       taskId = task.id
     } else {
-      const { data } = await (supabase.from('tasks') as any).insert(payload).select('id').single()
+      const { data } = await supabase.from('tasks').insert(payload).select('id').single()
       taskId = (data as any)?.id
     }
 
     // Sync contacts
     if (taskId) {
-      await (supabase.from('task_contacts') as any).delete().eq('task_id', taskId)
+      await supabase.from('task_contacts').delete().eq('task_id', taskId)
       if (selectedContacts.length > 0) {
-        await (supabase.from('task_contacts') as any).insert(
+        await supabase.from('task_contacts').insert(
           selectedContacts.map(cid => ({ task_id: taskId, contact_id: cid }))
         )
       }

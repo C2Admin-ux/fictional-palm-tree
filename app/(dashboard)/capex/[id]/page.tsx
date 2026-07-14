@@ -25,7 +25,7 @@ export default function CapexDetailPage() {
   const [editMode, setEditMode] = useState(false)
   const [form, setForm] = useState<Partial<CapexProject>>({})
   const [addingLine, setAddingLine] = useState(false)
-  const [newLine, setNewLine] = useState({ description: '', vendor: '', amount: '', invoice_date: '', invoice_number: '', status: 'pending' })
+  const [newLine, setNewLine] = useState({ description: '', vendor: '', amount: '', invoice_date: '', invoice_number: '', status: 'pending' as CapexLineItem['status'] })
   const [saving, setSaving] = useState(false)
 
   async function fetchAll() {
@@ -45,7 +45,7 @@ export default function CapexDetailPage() {
 
   async function saveProject() {
     setSaving(true)
-    await (supabase.from('capex_projects') as any).update({
+    await supabase.from('capex_projects').update({
       title: form.title, status: form.status, priority: form.priority,
       category: form.category, budget: form.budget, committed: form.committed,
       vendor_name: form.vendor_name, vendor_contact: form.vendor_contact,
@@ -60,7 +60,7 @@ export default function CapexDetailPage() {
   async function addLineItem() {
     if (!newLine.description || !newLine.amount) return
     setSaving(true)
-    await (supabase.from('capex_line_items') as any).insert({
+    await supabase.from('capex_line_items').insert({
       project_id: id,
       description: newLine.description,
       vendor: newLine.vendor || null,
@@ -76,7 +76,7 @@ export default function CapexDetailPage() {
   }
 
   async function toggleLineStatus(line: CapexLineItem) {
-    await (supabase.from('capex_line_items') as any)
+    await supabase.from('capex_line_items')
       .update({ status: line.status === 'paid' ? 'pending' : 'paid' })
       .eq('id', line.id)
     fetchAll()
@@ -203,7 +203,7 @@ export default function CapexDetailPage() {
                   <input type="number" placeholder="Amount *" value={newLine.amount} onChange={e => setNewLine(n => ({ ...n, amount: e.target.value }))} className="input-sm" />
                   <input type="date" value={newLine.invoice_date} onChange={e => setNewLine(n => ({ ...n, invoice_date: e.target.value }))} className="input-sm" />
                   <input placeholder="Invoice #" value={newLine.invoice_number} onChange={e => setNewLine(n => ({ ...n, invoice_number: e.target.value }))} className="input-sm" />
-                  <select value={newLine.status} onChange={e => setNewLine(n => ({ ...n, status: e.target.value }))} className="input-sm">
+                  <select value={newLine.status} onChange={e => setNewLine(n => ({ ...n, status: e.target.value as CapexLineItem['status'] }))} className="input-sm">
                     <option value="pending">Pending</option>
                     <option value="paid">Paid</option>
                   </select>

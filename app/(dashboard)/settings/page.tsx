@@ -66,7 +66,7 @@ function PropertiesTab() {
 
   const fetch = useCallback(async () => {
     const [{ data: props }, { data: p }] = await Promise.all([
-      (supabase.from('properties') as any).select('*').order('name'),
+      supabase.from('properties').select('*').order('name'),
       supabase.from('pmcs').select('*').order('name'),
     ])
     setProperties(props ?? [])
@@ -88,7 +88,7 @@ function PropertiesTab() {
   async function saveProperty(id: string) {
     setSaving(id)
     const draft = drafts[id]
-    await (supabase.from('properties') as any).update({
+    await supabase.from('properties').update({
       name: draft.name,
       address: draft.address,
       city: draft.city,
@@ -110,7 +110,7 @@ function PropertiesTab() {
   async function addProperty() {
     if (!addForm.name) return
     setAddSaving(true)
-    await (supabase.from('properties') as any).insert({
+    await supabase.from('properties').insert({
       name: addForm.name,
       address: addForm.address || null,
       city: addForm.city || null,
@@ -119,7 +119,7 @@ function PropertiesTab() {
       units_total: addForm.units_total ? parseInt(addForm.units_total) : null,
       pmc_id: addForm.pmc_id || null,
       pms_platform: addForm.pms_platform || null,
-      status: addForm.status,
+      status: addForm.status as Property['status'],
     })
     setAddSaving(false)
     setShowAdd(false)
@@ -280,13 +280,13 @@ function PmcsTab() {
   async function save(id: string) {
     setSaving(id)
     const d = drafts[id]
-    await (supabase.from('pmcs') as any).update({ name: d.name, primary_contact_name: d.primary_contact_name, primary_contact_email: d.primary_contact_email, primary_contact_phone: d.primary_contact_phone, fee_structure: d.fee_structure, notes: (d as any).notes }).eq('id', id)
+    await supabase.from('pmcs').update({ name: d.name, primary_contact_name: d.primary_contact_name, primary_contact_email: d.primary_contact_email, primary_contact_phone: d.primary_contact_phone, fee_structure: d.fee_structure, notes: (d as any).notes }).eq('id', id)
     setSaving(null); setEditing(null); fetch()
   }
 
   async function addPmc() {
     if (!addForm.name) return
-    await (supabase.from('pmcs') as any).insert({ name: addForm.name, primary_contact_name: addForm.primary_contact_name || null, primary_contact_email: addForm.primary_contact_email || null, primary_contact_phone: addForm.primary_contact_phone || null, fee_structure: addForm.fee_structure || null, notes: addForm.notes || null })
+    await supabase.from('pmcs').insert({ name: addForm.name, primary_contact_name: addForm.primary_contact_name || null, primary_contact_email: addForm.primary_contact_email || null, primary_contact_phone: addForm.primary_contact_phone || null, fee_structure: addForm.fee_structure || null, notes: addForm.notes || null })
     setShowAdd(false); setAddForm({ name: '', primary_contact_name: '', primary_contact_email: '', primary_contact_phone: '', fee_structure: '', notes: '' }); fetch()
   }
 
@@ -470,8 +470,8 @@ function ContactFormModal({ contact, pmcs, onClose, onSave }: {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
     const payload: any = { full_name: form.full_name, initials: form.initials || form.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase(), role: form.role || null, email: form.email || null, phone: form.phone || null, pmc_id: form.pmc_id || null, color_hex: form.color_hex }
-    if (contact) await (supabase.from('contacts') as any).update(payload).eq('id', contact.id)
-    else await (supabase.from('contacts') as any).insert(payload)
+    if (contact) await supabase.from('contacts').update(payload).eq('id', contact.id)
+    else await supabase.from('contacts').insert(payload)
     setSaving(false); onSave()
   }
 

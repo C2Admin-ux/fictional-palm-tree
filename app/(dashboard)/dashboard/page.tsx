@@ -19,12 +19,12 @@ export default async function DashboardPage() {
     { data: policies },
     { data: claims },
   ] = await Promise.all([
-    (supabase.from('properties') as any).select('*, pmcs(name)').eq('status', 'active').order('name'),
-    (supabase.from('pm_metrics') as any).select('*').order('period_month', { ascending: false }),
-    (supabase.from('tasks') as any).select('id, status, priority, property_id, title, due_date').neq('status', 'done'),
-    (supabase.from('capex_projects') as any).select('id, property_id, title, status, budget, actual_spend').in('status', ['planning', 'approved', 'in_progress']),
-    (supabase.from('insurance_policies') as any).select('id, property_id, policy_type, carrier, expiry_date, status').eq('status', 'active'),
-    (supabase.from('insurance_claims') as any).select('id, property_id, status, amount_claimed').neq('status', 'closed').neq('status', 'denied'),
+    supabase.from('properties').select('*, pmcs(name)').eq('status', 'active').order('name'),
+    supabase.from('pm_metrics').select('*').order('period_month', { ascending: false }),
+    supabase.from('tasks').select('id, status, priority, property_id, title, due_date').neq('status', 'done'),
+    supabase.from('capex_projects').select('id, property_id, title, status, budget, actual_spend').in('status', ['planning', 'approved', 'in_progress']),
+    supabase.from('insurance_policies').select('id, property_id, policy_type, carrier, expiry_date, status').eq('status', 'active'),
+    supabase.from('insurance_claims').select('id, property_id, status, amount_claimed').neq('status', 'closed').neq('status', 'denied'),
   ])
 
   const latestMetric: Record<string, any> = {}
