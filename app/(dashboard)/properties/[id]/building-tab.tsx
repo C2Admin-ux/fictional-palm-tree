@@ -4,12 +4,13 @@ import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
-import { Sparkles, Check, Building2, Trash2 } from 'lucide-react'
+import { Sparkles, Check, Building2, Trash2, Pencil, Plus } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
 import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import type { UnitMix } from '@/lib/supabase/types'
 
 type PcaItem = {
   id?: string
@@ -36,12 +37,19 @@ type Facts = {
   parking_uncovered?: number | null
   construction_type?: string | null
   roof_type?: string | null
-  unit_mix?: { type: string; count: number; sf: number | null }[] | null
+  unit_mix?: UnitMix | null
   pca_report_date?: string | null
   pca_assessor?: string | null
   pca_file_path?: string | null
   pca_file_name?: string | null
+  parcel_number?: string | null
 }
+
+// Known PCA item categories (matches the extraction prompt in app/api/pca/extract)
+const PCA_CATEGORIES = [
+  'Site', 'Structure', 'Envelope', 'Roof', 'HVAC', 'Plumbing',
+  'Electrical', 'Interiors', 'Amenities', 'ADA', 'Other',
+]
 
 export default function BuildingTab({ propertyId, initialFacts }: {
   propertyId: string
@@ -53,6 +61,8 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   const [items, setItems] = useState<PcaItem[]>([])
   const [loading, setLoading] = useState(true)
   const [review, setReview] = useState<{ facts: Facts; items: PcaItem[]; file: { name: string; base64: string } } | null>(null)
+  const [editingFacts, setEditingFacts] = useState(false)
+  const [itemModal, setItemModal] = useState<{ item: PcaItem | null } | null>(null)
 
   const fetchItems = useCallback(async () => {
     const { data } = await supabase.from('property_pca_items')
@@ -88,7 +98,13 @@ export default function BuildingTab({ propertyId, initialFacts }: {
     fetchItems()
   }
 
-  const hasFacts = facts.year_built || facts.gross_sf || facts.parking_total || (facts.unit_mix?.length)
+  const hasFacts = Boolean(
+    facts.year_built || facts.year_renovated || facts.gross_sf || facts.net_rentable_sf ||
+    facts.land_acres || facts.num_buildings || facts.num_stories ||
+    facts.parking_total || facts.parking_covered || facts.parking_uncovered ||
+    facts.construction_type || facts.roof_type || facts.parcel_number ||
+    facts.unit_mix?.length
+  )
   const hasData = hasFacts || items.length > 0
 
   // Group items by category for display
@@ -117,17 +133,25 @@ export default function BuildingTab({ propertyId, initialFacts }: {
             </p>
           )}
         </div>
-        <label className="btn-secondary cursor-pointer">
-          <Sparkles size={14} />{hasData ? 'Re-scan PCA' : 'Scan PCA PDF'}
-          <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
-        </label>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setEditingFacts(true)} className="btn-secondary">
+            <Pencil size={14} />Edit facts
+          </button>
+          <button onClick={() => setItemModal({ item: null })} className="btn-secondary">
+            <Plus size={14} />Add item
+          </button>
+          <label className="btn-secondary cursor-pointer">
+            <Sparkles size={14} />{hasData ? 'Re-scan PCA' : 'Scan PCA PDF'}
+            <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
+          </label>
+        </div>
       </div>
 
       {!hasData && !loading && (
         <EmptyState
           icon={<Building2 size={32} />}
           title="No building data yet"
-          hint="Drag a PCA report PDF here, or use “Scan PCA PDF”"
+          hint="Drag a PCA report PDF here, use “Scan PCA PDF”, or enter data manually with “Edit facts”"
           className="border-dashed"
         />
       )}
@@ -149,6 +173,7 @@ export default function BuildingTab({ propertyId, initialFacts }: {
             <Fact label="  · Covered" value={facts.parking_covered} />
             <Fact label="  · Uncovered" value={facts.parking_uncovered} />
             <Fact label="Roof" value={facts.roof_type} />
+            <Fact label="Parcel #" value={facts.parcel_number} />
           </div>
         </div>
       )}
@@ -202,11 +227,17 @@ export default function BuildingTab({ propertyId, initialFacts }: {
                         {it.rul_years != null && <span className="text-xs">{it.rul_years} yr RUL</span>}
                         {it.est_cost != null && <span className="block text-xs">${it.est_cost.toLocaleString()}</span>}
                       </td>
-                      <td className="w-6 align-top">
-                        <button onClick={() => it.id && deleteItem(it.id)}
-                          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-opacity">
-                          <Trash2 size={12} />
-                        </button>
+                      <td className="w-12 align-top">
+                        <div className="flex justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => setItemModal({ item: it })} aria-label="Edit item"
+                            className="text-slate-300 hover:text-blue-500">
+                            <Pencil size={12} />
+                          </button>
+                          <button onClick={() => it.id && deleteItem(it.id)} aria-label="Delete item"
+                            className="text-slate-300 hover:text-red-400">
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -215,6 +246,33 @@ export default function BuildingTab({ propertyId, initialFacts }: {
             </div>
           ))}
         </div>
+      )}
+
+      {editingFacts && (
+        <FactsEditModal
+          propertyId={propertyId}
+          facts={facts}
+          onClose={() => setEditingFacts(false)}
+          onSaved={updated => {
+            setFacts(updated)
+            setEditingFacts(false)
+            // Refresh the parent server component (hero parcel / stat strip).
+            router.refresh()
+          }}
+        />
+      )}
+
+      {itemModal && (
+        <PcaItemModal
+          propertyId={propertyId}
+          item={itemModal.item}
+          nextSortOrder={items.reduce((m, it) => Math.max(m, it.sort_order ?? 0), -1) + 1}
+          onClose={() => setItemModal(null)}
+          onSaved={() => {
+            setItemModal(null)
+            fetchItems()
+          }}
+        />
       )}
 
       {review && (
@@ -232,6 +290,298 @@ export default function BuildingTab({ propertyId, initialFacts }: {
         />
       )}
     </div>
+  )
+}
+
+// ── Manual edit: building facts + unit mix ───────────────────
+
+// String-draft mirror of the editable Facts fields — inputs hold strings,
+// parsed to number-or-null (empty → null) on save.
+type FactsDraft = {
+  year_built: string; year_renovated: string; gross_sf: string; net_rentable_sf: string
+  land_acres: string; num_buildings: string; num_stories: string
+  parking_total: string; parking_covered: string; parking_uncovered: string
+  construction_type: string; roof_type: string
+  pca_report_date: string; pca_assessor: string; parcel_number: string
+}
+
+type UnitRowDraft = { type: string; count: string; sf: string }
+
+const toStr = (v: string | number | null | undefined) => (v == null ? '' : String(v))
+const parseNum = (v: string) => {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isFinite(n) ? n : null
+}
+const parseStr = (v: string) => v.trim() || null
+
+function FactsEditModal({ propertyId, facts, onClose, onSaved }: {
+  propertyId: string
+  facts: Facts
+  onClose: () => void
+  onSaved: (updated: Facts) => void
+}) {
+  const supabase = createClient()
+  const [draft, setDraft] = useState<FactsDraft>({
+    year_built: toStr(facts.year_built),
+    year_renovated: toStr(facts.year_renovated),
+    gross_sf: toStr(facts.gross_sf),
+    net_rentable_sf: toStr(facts.net_rentable_sf),
+    land_acres: toStr(facts.land_acres),
+    num_buildings: toStr(facts.num_buildings),
+    num_stories: toStr(facts.num_stories),
+    parking_total: toStr(facts.parking_total),
+    parking_covered: toStr(facts.parking_covered),
+    parking_uncovered: toStr(facts.parking_uncovered),
+    construction_type: toStr(facts.construction_type),
+    roof_type: toStr(facts.roof_type),
+    pca_report_date: toStr(facts.pca_report_date),
+    pca_assessor: toStr(facts.pca_assessor),
+    parcel_number: toStr(facts.parcel_number),
+  })
+  const [units, setUnits] = useState<UnitRowDraft[]>(
+    (facts.unit_mix ?? []).map(u => ({ type: u.type, count: toStr(u.count), sf: toStr(u.sf) }))
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function setD(k: keyof FactsDraft, v: string) { setDraft(d => ({ ...d, [k]: v })) }
+  function setUnit(i: number, k: keyof UnitRowDraft, v: string) {
+    setUnits(us => us.map((u, j) => (j === i ? { ...u, [k]: v } : u)))
+  }
+
+  async function save() {
+    setSaving(true)
+    setError(null)
+
+    const unit_mix: UnitMix = units
+      .filter(u => u.type.trim() !== '')
+      .map(u => ({ type: u.type.trim(), count: parseNum(u.count) ?? 0, sf: parseNum(u.sf) }))
+
+    const update = {
+      year_built: parseNum(draft.year_built),
+      year_renovated: parseNum(draft.year_renovated),
+      gross_sf: parseNum(draft.gross_sf),
+      net_rentable_sf: parseNum(draft.net_rentable_sf),
+      land_acres: parseNum(draft.land_acres),
+      num_buildings: parseNum(draft.num_buildings),
+      num_stories: parseNum(draft.num_stories),
+      parking_total: parseNum(draft.parking_total),
+      parking_covered: parseNum(draft.parking_covered),
+      parking_uncovered: parseNum(draft.parking_uncovered),
+      construction_type: parseStr(draft.construction_type),
+      roof_type: parseStr(draft.roof_type),
+      pca_report_date: parseStr(draft.pca_report_date),
+      pca_assessor: parseStr(draft.pca_assessor),
+      parcel_number: parseStr(draft.parcel_number),
+      unit_mix: unit_mix.length ? unit_mix : null,
+    }
+
+    const { error: updateError } = await supabase.from('properties').update(update).eq('id', propertyId)
+    setSaving(false)
+    if (updateError) { setError(updateError.message); return }
+    onSaved({ ...facts, ...update })
+  }
+
+  const F = (k: keyof FactsDraft, label: string, type = 'text') => (
+    <div>
+      <label className="label">{label}</label>
+      <input type={type} value={draft[k]} onChange={e => setD(k, e.target.value)} className="input" />
+    </div>
+  )
+
+  return (
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Pencil size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Edit Building Facts</h2>
+            <p className="text-xs text-slate-400">Fill gaps or correct values manually</p>
+          </div>
+        </div>
+      }>
+        <div className="px-6 py-5 space-y-4">
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Key Facts</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {F('year_built', 'Year Built', 'number')}
+            {F('year_renovated', 'Year Renovated', 'number')}
+            {F('gross_sf', 'Gross SF', 'number')}
+            {F('net_rentable_sf', 'Net Rentable SF', 'number')}
+            {F('land_acres', 'Land (acres)', 'number')}
+            {F('num_buildings', 'Buildings', 'number')}
+            {F('num_stories', 'Stories', 'number')}
+            {F('parking_total', 'Parking Total', 'number')}
+            {F('parking_covered', 'Covered', 'number')}
+            {F('parking_uncovered', 'Uncovered', 'number')}
+            {F('construction_type', 'Construction')}
+            {F('roof_type', 'Roof Type')}
+            {F('pca_report_date', 'PCA Report Date', 'date')}
+            {F('pca_assessor', 'PCA Assessor')}
+            {F('parcel_number', 'Parcel #')}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Unit Mix</div>
+              <button
+                onClick={() => setUnits(us => [...us, { type: '', count: '', sf: '' }])}
+                className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                <Plus size={12} />Add row
+              </button>
+            </div>
+            {units.length === 0
+              ? <p className="text-xs text-slate-400 italic">No unit mix rows. Use “Add row” to enter unit types.</p>
+              : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_90px_90px_24px] gap-2 text-xs text-slate-400">
+                    <span>Type</span><span>Count</span><span>Avg SF</span><span />
+                  </div>
+                  {units.map((u, i) => (
+                    <div key={i} className="grid grid-cols-[1fr_90px_90px_24px] gap-2 items-center">
+                      <input value={u.type} placeholder="e.g. 2BR/2BA"
+                        onChange={e => setUnit(i, 'type', e.target.value)} className="input" />
+                      <input type="number" value={u.count}
+                        onChange={e => setUnit(i, 'count', e.target.value)} className="input" />
+                      <input type="number" value={u.sf}
+                        onChange={e => setUnit(i, 'sf', e.target.value)} className="input" />
+                      <button onClick={() => setUnits(us => us.filter((_, j) => j !== i))}
+                        aria-label="Remove row" className="text-slate-300 hover:text-red-400 justify-self-center">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100 sticky bottom-0 bg-white">
+          {error && <span className="text-xs text-red-600 mr-auto">Save failed — {error}</span>}
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn-primary">
+            {saving ? 'Saving…' : <><Check size={14} />Save facts</>}
+          </button>
+        </div>
+    </Modal>
+  )
+}
+
+// ── Manual add / edit: PCA detail items ──────────────────────
+
+const CUSTOM_CATEGORY = '__custom__'
+
+function PcaItemModal({ propertyId, item, nextSortOrder, onClose, onSaved }: {
+  propertyId: string
+  item: PcaItem | null   // null = create new
+  nextSortOrder: number
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const supabase = createClient()
+  const isCustom = item != null && !PCA_CATEGORIES.includes(item.category)
+  const [category, setCategory] = useState(item ? (isCustom ? CUSTOM_CATEGORY : item.category) : PCA_CATEGORIES[0])
+  const [customCategory, setCustomCategory] = useState(isCustom && item ? item.category : '')
+  const [label, setLabel] = useState(item?.label ?? '')
+  const [value, setValue] = useState(item?.value ?? '')
+  const [detail, setDetail] = useState(item?.detail ?? '')
+  const [estCost, setEstCost] = useState(toStr(item?.est_cost))
+  const [rulYears, setRulYears] = useState(toStr(item?.rul_years))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const finalCategory = category === CUSTOM_CATEGORY ? customCategory.trim() : category
+  const canSave = label.trim() !== '' && finalCategory !== ''
+
+  async function save() {
+    if (!canSave) return
+    setSaving(true)
+    setError(null)
+
+    const row = {
+      category: finalCategory,
+      label: label.trim(),
+      value: parseStr(value),
+      detail: parseStr(detail),
+      est_cost: parseNum(estCost),
+      rul_years: parseNum(rulYears),
+    }
+
+    const { error: saveError } = item?.id
+      ? await supabase.from('property_pca_items').update(row).eq('id', item.id)
+      : await supabase.from('property_pca_items').insert({ ...row, property_id: propertyId, sort_order: nextSortOrder })
+
+    setSaving(false)
+    if (saveError) { setError(saveError.message); return }
+    onSaved()
+  }
+
+  return (
+    <Modal
+      onClose={onClose}
+      maxWidth="lg"
+      title={
+        <div className="flex items-center gap-2">
+          {item ? <Pencil size={17} className="text-blue-500" /> : <Plus size={17} className="text-blue-500" />}
+          <h2 className="font-semibold text-slate-900">{item ? 'Edit PCA Item' : 'Add PCA Item'}</h2>
+        </div>
+      }>
+        <div className="px-6 py-5 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Category</label>
+              <select value={category} onChange={e => setCategory(e.target.value)} className="input">
+                {PCA_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                <option value={CUSTOM_CATEGORY}>Custom…</option>
+              </select>
+            </div>
+            {category === CUSTOM_CATEGORY && (
+              <div>
+                <label className="label">Custom Category</label>
+                <input value={customCategory} onChange={e => setCustomCategory(e.target.value)}
+                  placeholder="e.g. Immediate Repairs" className="input" />
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="label">Label *</label>
+            <input value={label} onChange={e => setLabel(e.target.value)}
+              placeholder="e.g. Roof covering" className="input" />
+          </div>
+          <div>
+            <label className="label">Value</label>
+            <input value={value} onChange={e => setValue(e.target.value)}
+              placeholder="e.g. Modified bitumen, fair condition" className="input" />
+          </div>
+          <div>
+            <label className="label">Detail</label>
+            <textarea value={detail} onChange={e => setDetail(e.target.value)} rows={2}
+              placeholder="Optional notes" className="input resize-none" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Est. Cost ($)</label>
+              <input type="number" value={estCost} onChange={e => setEstCost(e.target.value)} className="input" />
+            </div>
+            <div>
+              <label className="label">RUL (years)</label>
+              <input type="number" value={rulYears} onChange={e => setRulYears(e.target.value)} className="input" />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100 sticky bottom-0 bg-white">
+          {error && <span className="text-xs text-red-600 mr-auto">Save failed — {error}</span>}
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={save} disabled={saving || !canSave} className="btn-primary">
+            {saving ? 'Saving…' : <><Check size={14} />{item ? 'Save changes' : 'Add item'}</>}
+          </button>
+        </div>
+    </Modal>
   )
 }
 
