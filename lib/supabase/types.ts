@@ -13,7 +13,7 @@ export type Database = {
         Relationships: []
       }
       properties: {
-        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; created_at: string }
+        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; parcel_number: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['properties']['Row']> & { name: string }
         Update: Partial<Database['public']['Tables']['properties']['Row']>
         Relationships: [{ foreignKeyName: 'properties_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
@@ -142,6 +142,12 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['property_pca_items']['Row']>
         Relationships: []
       }
+      property_permits: {
+        Row: { id: string; property_id: string; permit_no: string; permit_type: string | null; subtype: string | null; description: string | null; status: string | null; issued_date: string | null; expiration_date: string | null; address: string | null; source: string | null; notes: string | null; created_at: string }
+        Insert: Partial<Database['public']['Tables']['property_permits']['Row']> & { property_id: string; permit_no: string }
+        Update: Partial<Database['public']['Tables']['property_permits']['Row']>
+        Relationships: [{ foreignKeyName: 'property_permits_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
+      }
     }
     Views: {
       insurance_claims_view: { Row: Database['public']['Tables']['insurance_claims']['Row'] & { outstanding_balance: number | null; days_open: number | null }; Relationships: [] }
@@ -171,3 +177,4 @@ export type Inspection = Database['public']['Tables']['inspections']['Row']
 export type InspectionItem = Database['public']['Tables']['inspection_items']['Row']
 export type Contract = Database['public']['Tables']['contracts']['Row']
 export type PropertyPcaItem = Database['public']['Tables']['property_pca_items']['Row']
+export type PropertyPermit = Database['public']['Tables']['property_permits']['Row']
