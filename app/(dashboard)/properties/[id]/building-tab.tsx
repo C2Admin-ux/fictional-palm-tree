@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import { Sparkles, Check, Building2, Trash2 } from 'lucide-react'
@@ -47,6 +48,7 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   initialFacts: Facts
 }) {
   const supabase = createClient()
+  const router = useRouter()
   const [facts, setFacts] = useState<Facts>(initialFacts)
   const [items, setItems] = useState<PcaItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -220,7 +222,13 @@ export default function BuildingTab({ propertyId, initialFacts }: {
           propertyId={propertyId}
           review={review}
           onClose={() => setReview(null)}
-          onSaved={() => { setReview(null); fetchItems(); window.location.reload() }}
+          onSaved={() => {
+            setReview(null)
+            fetchItems()
+            // Refresh the parent server component (building facts in the
+            // property hero) without a full page reload.
+            router.refresh()
+          }}
         />
       )}
     </div>

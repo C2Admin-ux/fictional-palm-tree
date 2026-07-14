@@ -5,11 +5,12 @@ import { createClient } from '@/lib/supabase/client'
 import type { Property } from '@/lib/supabase/types'
 import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
 import {
-  Plus, X, Upload, AlertTriangle, ChevronDown,
-  ChevronUp, Download, Trash2, FileText, Search,
+  Plus, X, Upload, AlertTriangle,
+  Download, Trash2, FileText, Search,
   Sparkles, Check, Clock, Pencil, Archive,
 } from 'lucide-react'
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
+import { useSort, Th } from '@/lib/utils/sort'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -85,7 +86,15 @@ type Contract = {
   properties?: { name: string } | null
 }
 
-type SortField = 'expiration_date' | 'cancel_deadline' | 'vendor_name' | 'contract_type' | 'monthly_cost'
+// Derive cancel deadline = expiration_date − cancel_notice_days.
+// Parses at local midnight (exp + 'T00:00:00') so the date doesn't shift
+// a day the way `new Date('YYYY-MM-DD')` (UTC midnight) can.
+function deriveCancelDeadline(expiration: string | null, noticeDays: number | null): string {
+  if (!expiration || !noticeDays) return ''
+  const d = new Date(expiration + 'T00:00:00')
+  d.setDate(d.getDate() - noticeDays)
+  return d.toISOString().slice(0, 10)
+}
 
 // When a newer contract is added for the same property + vendor + type,
 // archive any older ACTIVE contracts (status -> 'superseded') and link them
@@ -125,7 +134,6 @@ async function supersedeOlderContracts(
       .in('id', toArchive)
   }
 }
-type SortDir = 'asc' | 'desc'
 
 export default function ContractsPage() {
   const supabase = createClient()
@@ -138,8 +146,7 @@ export default function ContractsPage() {
   const [filterType, setFilterType] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [search, setSearch] = useState('')
-  const [sort, setSort] = useState<SortField>('expiration_date')
-  const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const { sort, dir, toggle, sortFn } = useSort<string>('expiration_date', 'asc')
 
   // OCR state
   const [extractedContracts, setExtractedContracts] = useState<any[] | null>(null)
@@ -167,16 +174,14 @@ export default function ContractsPage() {
   }, [extractError, setExtractError])
 
   const fetchContracts = useCallback(async () => {
-    let q = supabase.from('contracts')
-      .select('*, properties(name)')
-      .order(sort, { ascending: sortDir === 'asc', nullsFirst: false })
+    let q = supabase.from('contracts').select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('contract_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus)
     const { data } = await q
     setContracts(data ?? [])
     setLoading(false)
-  }, [filterProp, filterType, filterStatus, sort, sortDir])
+  }, [filterProp, filterType, filterStatus])
 
   useEffect(() => { fetchContracts() }, [fetchContracts])
   useEffect(() => {
@@ -184,13 +189,15 @@ export default function ContractsPage() {
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  const displayed = contracts.filter(c => {
-    if (!search) return true
-    const s = search.toLowerCase()
-    return c.title.toLowerCase().includes(s) ||
-      c.vendor_name.toLowerCase().includes(s) ||
-      (c.properties?.name ?? '').toLowerCase().includes(s)
-  })
+  const displayed = contracts
+    .filter(c => {
+      if (!search) return true
+      const s = search.toLowerCase()
+      return c.title.toLowerCase().includes(s) ||
+        c.vendor_name.toLowerCase().includes(s) ||
+        (c.properties?.name ?? '').toLowerCase().includes(s)
+    })
+    .sort(sortFn)
 
   const expiringSoon = contracts.filter(c => {
     const d = daysUntil(c.expiration_date); return d != null && d >= 0 && d <= 90
@@ -240,11 +247,6 @@ export default function ContractsPage() {
     exportToExcel(rows, 'C2_Contracts', 'Contracts')
   }
 
-  function handleSort(field: SortField) {
-    if (sort === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSort(field); setSortDir('asc') }
-  }
-
   async function downloadFile(contract: Contract) {
     if (!contract.file_path) return
     const { data } = await supabase.storage.from('c2-documents').createSignedUrl(contract.file_path, 3600)
@@ -265,24 +267,6 @@ export default function ContractsPage() {
     await supabase.from('contracts').update({ status: next }).eq('id', contract.id)
     fetchContracts()
   }
-
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sort !== field) return <ChevronDown size={11} className="text-slate-300" />
-    return sortDir === 'asc'
-      ? <ChevronUp size={11} className="text-blue-500" />
-      : <ChevronDown size={11} className="text-blue-500" />
-  }
-
-  const Th = ({ label, field, className = '' }: { label: string; field?: SortField; className?: string }) => (
-    <th
-      className={cn('text-left px-3 py-2.5 text-xs font-medium text-slate-500 select-none whitespace-nowrap', field && 'cursor-pointer hover:text-slate-700', className)}
-      onClick={field ? () => handleSort(field) : undefined}>
-      <span className="flex items-center gap-1">
-        {label}
-        {field && <SortIcon field={field} />}
-      </span>
-    </th>
-  )
 
   return (
     <div
@@ -419,11 +403,11 @@ export default function ContractsPage() {
               <tr>
                 <Th label="Property" className="pl-4" />
                 <Th label="Vendor / Title" />
-                <Th label="Type" field="contract_type" />
-                <Th label="Expiration" field="expiration_date" />
-                <Th label="Cancel Deadline" field="cancel_deadline" />
+                <Th label="Type" field="contract_type" current={sort} dir={dir} onSort={toggle} />
+                <Th label="Expiration" field="expiration_date" current={sort} dir={dir} onSort={toggle} />
+                <Th label="Cancel Deadline" field="cancel_deadline" current={sort} dir={dir} onSort={toggle} />
                 <Th label="Auto-Renew" />
-                <Th label="Monthly Cost" field="monthly_cost" />
+                <Th label="Monthly Cost" field="monthly_cost" current={sort} dir={dir} onSort={toggle} />
                 <Th label="Revenue Share" />
                 <th className="w-20" />
               </tr>
@@ -591,14 +575,6 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
       (p.name.toLowerCase().split(' ')[0] && h.includes(p.name.toLowerCase().split(' ')[0]))
     )
     return m?.id ?? ''
-  }
-
-  // Derive cancel deadline = expiration_date − cancel_notice_days
-  function deriveCancelDeadline(expiration: string | null, noticeDays: number | null): string {
-    if (!expiration || !noticeDays) return ''
-    const d = new Date(expiration + 'T00:00:00')
-    d.setDate(d.getDate() - noticeDays)
-    return d.toISOString().slice(0, 10)
   }
 
   const [drafts, setDrafts] = useState(() =>
@@ -888,19 +864,9 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
 }) {
   const supabase = createClient()
   const dropRef = useRef<HTMLDivElement>(null)
-  const [file, setFile] = useState<File | null>(
-    (window as any).__pendingContractFile ?? null
-  )
+  const [file, setFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [saving, setSaving] = useState(false)
-
-  // Clear pending file on mount
-  useEffect(() => {
-    if ((window as any).__pendingContractFile) {
-      setFile((window as any).__pendingContractFile)
-      delete (window as any).__pendingContractFile
-    }
-  }, [])
 
   const [form, setForm] = useState({
     property_id:          contract?.property_id ?? '',
@@ -949,12 +915,9 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
   // Auto-compute cancel deadline when expiry + notice days change
   useEffect(() => {
     if (form.expiration_date && form.cancel_notice_days && !contract?.cancel_deadline) {
-      const exp = new Date(form.expiration_date)
       const days = parseInt(form.cancel_notice_days)
-      if (!isNaN(days)) {
-        exp.setDate(exp.getDate() - days)
-        setF('cancel_deadline', exp.toISOString().slice(0, 10))
-      }
+      const deadline = deriveCancelDeadline(form.expiration_date, isNaN(days) ? null : days)
+      if (deadline) setF('cancel_deadline', deadline)
     }
   }, [form.expiration_date, form.cancel_notice_days])
 
