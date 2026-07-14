@@ -393,6 +393,7 @@ export default async function PropertyPage({
               pca_assessor: prop.pca_assessor,
               pca_file_path: prop.pca_file_path,
               pca_file_name: prop.pca_file_name,
+              parcel_number: prop.parcel_number,
             }}
           />
         )}
