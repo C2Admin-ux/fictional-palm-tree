@@ -23,12 +23,20 @@ export async function updateSession(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Redirect unauthenticated PAGE requests to login. API routes are exempt:
-  // they enforce their own auth (session check or Bearer CRON_SECRET) and a
-  // redirect would break server-to-server callers — Vercel Cron sends a
-  // bearer token but no session cookie, so redirecting /api/* here silently
-  // prevented the scheduled digest/expiration crons from ever executing.
+  // Deny-by-default gate, with the response type matched to the caller:
+  //
+  //  - Pages: unauthenticated requests redirect to /auth/login.
+  //  - API routes: unauthenticated requests get 401 JSON — never a redirect.
+  //    (Redirecting /api/* was the bug that silently prevented Vercel Cron,
+  //    which sends a bearer token but no session cookie, from ever running.)
+  //    Requests carrying an Authorization header pass through so bearer-auth
+  //    callers (cron) reach the route — every route still validates its own
+  //    credential (session or Bearer CRON_SECRET), so middleware passing a
+  //    request through never grants access by itself.
   const isApi = request.nextUrl.pathname.startsWith('/api')
+  if (!user && isApi && !request.headers.get('authorization')) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
   if (!user && !isApi && !request.nextUrl.pathname.startsWith('/auth')) {
     const url = request.nextUrl.clone()
     url.pathname = '/auth/login'

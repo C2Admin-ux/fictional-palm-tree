@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { Resend } from 'resend'
-import { anthropicText, callAnthropic } from '@/lib/anthropic'
-import { createClient as createSessionClient } from '@/lib/supabase/server'
+import { anthropicConfigured, anthropicJson, callAnthropic } from '@/lib/anthropic'
+import { getSessionUser, isCronRequest, unauthorized } from '@/lib/api-auth'
 
 // ── Config ───────────────────────────────────────────────────
 const RECIPIENT = process.env.DIGEST_EMAIL ?? 'nick@c2cpllc.com'
@@ -27,21 +27,23 @@ const GMAIL_SCAN_ENABLED = false
 //   { "path": "/api/digest", "schedule": "0 1 * * 1" }   // Sun 6pm MT = Mon 1am UTC
 // ────────────────────────────────────────────────────────────
 
+// Two entry points, both fail closed. Sending an email is a side effect, so
+// the browser-facing path is POST-only — a session-authenticated GET would be
+// triggerable cross-site (SameSite=Lax cookies ride top-level GET navigations).
+//
+//  GET  — Vercel Cron only (Bearer CRON_SECRET; cron always issues GET)
+//  POST — manual "send test digest" from Settings (logged-in session), or cron secret
 export async function GET(req: NextRequest) {
-  // Auth check — two accepted paths, both fail closed:
-  //  1. Vercel Cron:  Bearer CRON_SECRET (server-to-server)
-  //  2. Manual "send test digest" from Settings: a logged-in app session
-  //     (cookie-based — the cron secret is never shipped to the browser)
-  const authHeader = req.headers.get('authorization')
-  const cronOk = !!process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`
-  if (!cronOk) {
-    const session = await createSessionClient()
-    const { data: { user } } = await session.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-  }
+  if (!isCronRequest(req)) return unauthorized()
+  return runDigest()
+}
 
+export async function POST(req: NextRequest) {
+  if (!isCronRequest(req) && !(await getSessionUser())) return unauthorized()
+  return runDigest()
+}
+
+async function runDigest() {
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -144,14 +146,17 @@ type GmailItem = {
 }
 
 async function scanGmailForFollowUps(propertyNames: string[]): Promise<GmailItem[]> {
+  // Only reached when GMAIL_SCAN_ENABLED is true. The Gmail MCP server also
+  // requires an OAuth credential — set GMAIL_MCP_AUTH_TOKEN in the env; it is
+  // wired onto the mcp_servers entry below.
+  if (!anthropicConfigured()) {
+    throw new Error('ANTHROPIC_API_KEY is not set — cannot run Gmail scan')
+  }
+
   const now = new Date()
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const sevenDaysAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
 
-  // Call Claude API with Gmail MCP to scan inbox.
-  // NOTE: only reached when GMAIL_SCAN_ENABLED is true. The Gmail MCP server
-  // additionally requires an OAuth credential (authorization_token on the
-  // mcp_servers entry) — until that is supplied, the scan returns no items.
   const response = await callAnthropic(
     {
       max_tokens: 4000,
@@ -192,23 +197,24 @@ Return ONLY valid JSON. No preamble, no explanation outside the JSON.`,
           type: 'url',
           url: 'https://gmail.mcp.claude.com/mcp',
           name: 'gmail',
+          ...(process.env.GMAIL_MCP_AUTH_TOKEN
+            ? { authorization_token: process.env.GMAIL_MCP_AUTH_TOKEN }
+            : {}),
         }
       ],
     },
     { betas: ['mcp-client-2025-11-20'] }
   )
 
-  const data = await response.json()
+  // Surface API failures (401/429/529/…) instead of collapsing them into an
+  // empty inbox — an error response has no content blocks, which would be
+  // indistinguishable from "no follow-ups found".
+  if (!response.ok) {
+    throw new Error(`Gmail scan API error ${response.status}: ${await response.text()}`)
+  }
 
-  // Extract JSON from response
-  const textBlocks = anthropicText(data)
-
-  // Parse the JSON response
-  const jsonMatch = textBlocks.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return []
-
-  const parsed = JSON.parse(jsonMatch[0])
-  return parsed.items ?? []
+  const parsed = anthropicJson<{ items?: GmailItem[] }>(await response.json())
+  return parsed?.items ?? []
 }
 
 // ── Email HTML Builder ───────────────────────────────────────

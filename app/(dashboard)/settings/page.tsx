@@ -521,10 +521,10 @@ function DigestTab() {
     setSending(true)
     setResult(null)
     try {
-      // Authenticated by the logged-in session cookie — the digest route
-      // accepts either Bearer CRON_SECRET (Vercel cron) or a valid session.
-      // The cron secret is never shipped to the browser.
-      const res = await fetch('/api/digest')
+      // POST + session cookie: the digest route's browser path is POST-only
+      // (a session-authed GET would be CSRF-triggerable cross-site) and the
+      // cron secret is never shipped to the browser.
+      const res = await fetch('/api/digest', { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         setResult({ success: true, message: `Sent to ${data.sent_to}`, sections: data.sections })
@@ -544,7 +544,7 @@ function DigestTab() {
         <div className="space-y-3 text-sm text-slate-600">
           {[
             ['Schedule', 'ON HOLD — automatic Sunday digest is paused (cron removed from vercel.json); manual send below still works'],
-            ['Recipient', 'nick@c2cpllc.com'],
+            ['Recipient', 'DIGEST_EMAIL env var (defaults to nick@c2cpllc.com)'],
             ['Gmail scan', 'OFF — disabled until a Gmail MCP credential is set up (see GMAIL_SCAN_ENABLED in api/digest)'],
             ['Platform items', 'Urgent/high tasks · Expiring insurance (≤60d) · Contract deadlines (≤60d) · Claims due this week'],
           ].map(([label, value]) => (

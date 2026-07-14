@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { anthropicConfigured, anthropicText, callAnthropic } from '@/lib/anthropic'
-import { createClient } from '@/lib/supabase/server'
+import { anthropicConfigured, anthropicJson, anthropicNotConfigured, callAnthropic } from '@/lib/anthropic'
+import { getSessionUser, unauthorized } from '@/lib/api-auth'
 
 // Extracts structured data from a Property Condition Assessment (PCA) /
 // Property Condition Report (PCR) PDF.
@@ -55,26 +55,16 @@ Return the JSON object.`
 
 export async function POST(req: NextRequest) {
   try {
-    // Require a logged-in session — middleware no longer gates /api/*, and
-    // this endpoint spends Anthropic tokens per call.
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    // Cheap checks before parsing the multi-MB PDF body: env config first,
+    // then session (this endpoint spends Anthropic tokens per call).
+    if (!anthropicConfigured()) return anthropicNotConfigured()
+    if (!(await getSessionUser())) return unauthorized()
 
     const { pdf_base64, filename } = await req.json()
     if (!pdf_base64) return NextResponse.json({ error: 'No PDF data provided' }, { status: 400 })
 
-    if (!anthropicConfigured()) {
-      return NextResponse.json({
-        error: 'API key not configured',
-        detail: 'ANTHROPIC_API_KEY is not set. Add it in Vercel → Settings → Environment Variables, then redeploy.',
-      }, { status: 500 })
-    }
-
     const response = await callAnthropic({
-      max_tokens: 8000,
+      max_tokens: 10000, // headroom for claude-sonnet-5's ~30% heavier tokenizer
       messages: [
         {
           role: 'user',
@@ -92,12 +82,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Extraction failed', detail: errText }, { status: 502 })
     }
 
-    const data = await response.json()
-    const textContent = anthropicText(data)
-    const jsonMatch = textContent.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) return NextResponse.json({ error: 'Could not parse extraction result' }, { status: 502 })
+    const parsed = anthropicJson(await response.json())
+    if (!parsed) return NextResponse.json({ error: 'Could not parse extraction result' }, { status: 502 })
 
-    const parsed = JSON.parse(jsonMatch[0])
     if (parsed.error === 'not_a_pca') {
       return NextResponse.json({ error: 'not_a_pca', filename }, { status: 422 })
     }
