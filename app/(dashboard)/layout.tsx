@@ -1,9 +1,10 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { cn } from '@/lib/utils'
+import { cn, propertyColor } from '@/lib/utils'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck,
@@ -27,20 +28,22 @@ const NAV_SOON = [
   { href: '/pipeline',     label: 'Pipeline' },
 ]
 
-const PROPERTIES = [
-  { id: 'b1000000-0000-0000-0000-000000000001', name: 'Fox Hill',         abbr: 'FH', color: '#1D9E75' },
-  { id: 'b1000000-0000-0000-0000-000000000002', name: 'Pikes Place',      abbr: 'PP', color: '#D85A30' },
-  { id: 'b1000000-0000-0000-0000-000000000003', name: 'Cottages on Vance',abbr: 'CV', color: '#7F77DD' },
-  { id: 'b1000000-0000-0000-0000-000000000004', name: 'Main Street',      abbr: 'MS', color: '#BA7517' },
-  { id: 'b1000000-0000-0000-0000-000000000005', name: 'De Cortez',        abbr: 'DC', color: '#0891b2' },
-  { id: 'b1000000-0000-0000-0000-000000000006', name: 'Pebble Creek',     abbr: 'PC', color: '#7c3aed' },
-  { id: 'b1000000-0000-0000-0000-000000000007', name: 'Debbie J II',      abbr: 'DJ', color: '#be185d' },
-]
+type SidebarProperty = { id: string; name: string }
+
+function propertyAbbr(name: string): string {
+  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const supabase = createClient()
+  const [properties, setProperties] = useState<SidebarProperty[]>([])
+
+  useEffect(() => {
+    supabase.from('properties').select('id, name').order('name')
+      .then(({ data }) => setProperties(data ?? []))
+  }, [])
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -90,14 +93,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="px-2 pt-4 pb-1">
             <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Properties</span>
           </div>
-          {PROPERTIES.map(prop => {
+          {properties.map(prop => {
             const active = pathname === `/properties/${prop.id}`
             return (
               <Link key={prop.id} href={`/properties/${prop.id}`}
                 className={cn('sidebar-item', active && 'sidebar-item-active')}>
                 <span className="w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-white text-xs font-bold"
-                  style={{ background: prop.color }}>
-                  {prop.abbr.slice(0, 2)}
+                  style={{ background: propertyColor(prop.name) }}>
+                  {propertyAbbr(prop.name)}
                 </span>
                 <span className="truncate text-xs">{prop.name}</span>
               </Link>

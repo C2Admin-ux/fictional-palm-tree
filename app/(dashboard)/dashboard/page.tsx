@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import {
   formatCurrency, formatPct, occupancyColor, delinquencyColor,
-  noiVarianceColor, TRAFFIC_LIGHT, propertyColor, daysUntil,
+  noiVarianceColor, TRAFFIC_LIGHT, propertyColor, daysUntil, PRIORITY_DOT,
 } from '@/lib/utils'
 import Link from 'next/link'
 import { AlertTriangle, CheckSquare, HardHat, TrendingUp, Building2, Shield } from 'lucide-react'
@@ -146,10 +146,10 @@ export default async function DashboardPage() {
             ? <p className="text-sm text-slate-400 italic py-2">No open tasks</p>
             : topTasks.map(task => {
               const overdue = task.due_date && new Date(task.due_date) < new Date()
-              const priDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-orange-400', medium: 'bg-blue-400', low: 'bg-slate-300' }
               return (
                 <div key={task.id} className="flex items-center gap-2.5 py-2 border-b border-slate-50 last:border-0">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${priDot[task.priority] ?? 'bg-slate-300'}`} />
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ background: PRIORITY_DOT[task.priority] ?? '#94a3b8' }} />
                   <span className="text-sm text-slate-700 flex-1 truncate">{task.title}</span>
                   {task.property_id && <span className="text-xs text-slate-400 truncate max-w-[90px] flex-shrink-0">{propMap[task.property_id]}</span>}
                   {overdue && <AlertTriangle size={12} className="text-red-400 flex-shrink-0" />}
