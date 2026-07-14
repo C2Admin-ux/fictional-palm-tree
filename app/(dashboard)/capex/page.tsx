@@ -5,8 +5,12 @@ import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_DOT } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, HardHat, ChevronDown, Search } from 'lucide-react'
+import { Plus, X, HardHat, Search } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS, CAPEX_PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
+import { StatTile } from '@/components/ui/stat-tile'
+import { EmptyState } from '@/components/ui/empty-state'
 import Link from 'next/link'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
@@ -73,10 +77,7 @@ export default function CapexPage() {
           { label: 'Actual Spend', value: formatCurrency(totalSpend, true) },
           { label: '% Used', value: totalBudget > 0 ? `${Math.round(totalSpend / totalBudget * 100)}%` : '—' },
         ].map(({ label, value }) => (
-          <div key={label} className="card p-4">
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-            <div className="text-2xl font-semibold text-slate-900">{value}</div>
-          </div>
+          <StatTile key={label} label={label} value={value} />
         ))}
       </div>
 
@@ -88,19 +89,19 @@ export default function CapexPage() {
             className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Search…" />
         </div>
-        <Sel value={filterProp} onChange={setFilterProp}>
+        <FilterSelect value={filterProp} onChange={setFilterProp}>
           <option value="">All properties</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}>
+        </FilterSelect>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}>
           <option value="active">Active</option>
           <option value="all">All statuses</option>
           {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-        </Sel>
-        <Sel value={filterCategory} onChange={setFilterCategory}>
+        </FilterSelect>
+        <FilterSelect value={filterCategory} onChange={setFilterCategory}>
           <option value="">All categories</option>
           {CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
-        </Sel>
+        </FilterSelect>
         {(filterProp || filterStatus !== 'active' || filterCategory || search) && (
           <button onClick={() => { setFilterProp(''); setFilterStatus('active'); setFilterCategory(''); setSearch('') }}
             className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
@@ -113,10 +114,7 @@ export default function CapexPage() {
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : displayed.length === 0 ? (
-        <div className="py-12 text-center card">
-          <HardHat size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400">No projects match your filters</p>
-        </div>
+        <EmptyState icon={<HardHat size={32} />} title="No projects match your filters" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[800px]">
@@ -222,18 +220,6 @@ export default function CapexPage() {
   )
 }
 
-function Sel({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return (
-    <div className="relative">
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">
-        {children}
-      </select>
-      <ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" />
-    </div>
-  )
-}
-
 function CapexFormModal({ properties, onClose, onSave }: { properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
   const [form, setForm] = useState({ title: '', property_id: '', category: '', status: 'planning' as CapexProject['status'], priority: 'medium' as CapexProject['priority'], budget: '', vendor_name: '', vendor_contact: '', start_date: '', target_completion: '', notes: '' })
@@ -246,13 +232,8 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
     setSaving(false); onSave()
   }
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white">
-          <h2 className="font-semibold text-slate-900">New CapEx Project</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400" /></button>
-        </div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+    <Modal title="New CapEx Project" onClose={onClose} maxWidth="lg">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div><label className="label">Title *</label><input required value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input" placeholder="e.g. Roof Replacement — Building A" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property *</label><select required value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
@@ -268,7 +249,6 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
             <button type="submit" disabled={saving || !form.property_id} className="btn-primary">{saving ? 'Creating…' : 'Create project'}</button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

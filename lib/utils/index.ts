@@ -184,16 +184,31 @@ export const CLAIM_STATUS_STYLES: Record<string, string> = {
   denied:       'text-red-700 bg-red-50 border-red-200',
 }
 
+// Single source of truth for property brand colors, keyed by property
+// name as stored in the `properties` table. Unknown properties fall
+// back to a deterministic colour derived from the name so new
+// properties always render consistently without a code change.
 export const PROPERTY_COLORS: Record<string, string> = {
   'Fox Hill Apartments':       '#1D9E75',
   'Pikes Place on San Miguel': '#D85A30',
   'Cottages on Vance':         '#7F77DD',
   'Main Street Apartments':    '#BA7517',
+  'De Cortez':                 '#0891b2',
+  'Pebble Creek':              '#7c3aed',
+  'Debbie J II':               '#be185d',
 }
+
+// Deterministic fallback palette for properties not in the map above.
+const PROPERTY_FALLBACK_COLORS = [
+  '#0891b2', '#7c3aed', '#be185d', '#1D9E75', '#D85A30', '#7F77DD', '#BA7517', '#64748b',
+]
 
 export function propertyColor(name: string | null | undefined): string {
   if (!name) return '#64748b'
-  return PROPERTY_COLORS[name] ?? '#64748b'
+  if (PROPERTY_COLORS[name]) return PROPERTY_COLORS[name]
+  let hash = 0
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0
+  return PROPERTY_FALLBACK_COLORS[hash % PROPERTY_FALLBACK_COLORS.length]
 }
 
 // ── Recurrence helpers ───────────────────────────────────────

@@ -5,8 +5,15 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, ChevronDown, Search, Upload, Sparkles, FileText, Check, Loader2, Download, Pencil, Archive, Trash2 } from 'lucide-react'
+import { Plus, X, Shield, AlertTriangle, Search, Sparkles, Check, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
+import { DaysLeftBadge } from '@/components/ui/days-left-badge'
+import { EmptyState } from '@/components/ui/empty-state'
+import { DragOverlay } from '@/components/ui/drag-overlay'
+import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
+import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -27,11 +34,28 @@ export default function InsurancePoliciesPage() {
   const { sort, dir, toggle, sortFn } = useSort<string>('expiry_date', 'asc')
 
   // OCR / drag-drop state
-  const [dragOver, setDragOver] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [extractStatus, setExtractStatus] = useState('')
   const [extractedPolicies, setExtractedPolicies] = useState<any[] | null>(null)
   const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
+
+  const pdf = usePdfExtraction<ExtractResponse & { policies?: any[] }>({
+    endpoint: '/api/insurance/extract',
+    extractingMessage: 'Extracting policy details with AI…',
+    onSuccess: (data, file) => {
+      setExtractedPolicies(data.policies ?? [])
+      setExtractedFile(file)
+    },
+  })
+  const { error: extractError, setError: setExtractError } = pdf
+
+  useEffect(() => {
+    if (!extractError) return
+    alert(extractError === 'not_an_insurance_document'
+      ? "That doesn't look like an insurance document. Try a COI or policy declaration page."
+      : extractError === 'Please drop a PDF file'
+        ? extractError
+        : 'Extraction failed — ' + extractError)
+    setExtractError(null)
+  }, [extractError, setExtractError])
 
   const fetchPolicies = useCallback(async () => {
     let q = supabase.from('insurance_policies').select('*, properties(name)')
@@ -45,55 +69,6 @@ export default function InsurancePoliciesPage() {
 
   useEffect(() => { fetchPolicies() }, [fetchPolicies])
   useEffect(() => { supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? [])) }, [])
-
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve((reader.result as string).split(',')[1])
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-  }
-
-  async function handlePdfDrop(files: FileList | File[]) {
-    const file = Array.from(files).find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
-    if (!file) { alert('Please drop a PDF file'); return }
-
-    setExtracting(true)
-    setExtractStatus('Reading document…')
-    try {
-      const base64 = await fileToBase64(file)
-      setExtractStatus('Extracting policy details with AI…')
-
-      const res = await fetch('/api/insurance/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
-      })
-      const data = await res.json()
-
-      if (data.error === 'not_an_insurance_document') {
-        alert("That doesn't look like an insurance document. Try a COI or policy declaration page.")
-        setExtracting(false)
-        return
-      }
-      if (!data.success) {
-        const reason = data.detail
-          ? `${data.error}: ${typeof data.detail === 'string' ? data.detail.slice(0, 200) : JSON.stringify(data.detail).slice(0, 200)}`
-          : (data.error ?? 'unknown error')
-        alert('Extraction failed — ' + reason)
-        setExtracting(false)
-        return
-      }
-
-      setExtractedPolicies(data.policies)
-      setExtractedFile({ name: file.name, base64 })
-    } catch (err: any) {
-      alert('Something went wrong: ' + err.message)
-    }
-    setExtracting(false)
-    setExtractStatus('')
-  }
 
   const displayed = [...policies]
     .filter(p => { if (!search) return true; const s = search.toLowerCase(); return p.carrier.toLowerCase().includes(s) || (p.properties?.name ?? '').toLowerCase().includes(s) || p.policy_number?.toLowerCase().includes(s) })
@@ -147,31 +122,10 @@ export default function InsurancePoliciesPage() {
   return (
     <div
       className="p-6 max-w-7xl mx-auto space-y-5"
-      onDragOver={e => { e.preventDefault(); if (!extracting) setDragOver(true) }}
-      onDragLeave={e => { e.preventDefault(); setDragOver(false) }}
-      onDrop={e => { e.preventDefault(); setDragOver(false); if (!extracting) handlePdfDrop(e.dataTransfer.files) }}>
+      {...pdf.dragProps}>
 
-      {/* Drag overlay */}
-      {dragOver && (
-        <div className="fixed inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-40 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center">
-            <Sparkles size={32} className="text-blue-500 mx-auto mb-2" />
-            <div className="text-lg font-semibold text-blue-700">Drop COI or policy PDF</div>
-            <div className="text-sm text-slate-500 mt-1">AI will extract and fill in the details</div>
-          </div>
-        </div>
-      )}
-
-      {/* Extracting overlay */}
-      {extracting && (
-        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
-            <Loader2 size={32} className="text-blue-500 mx-auto mb-3 animate-spin" />
-            <div className="text-base font-semibold text-slate-800">Reading your document</div>
-            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
-          </div>
-        </div>
-      )}
+      {pdf.dragOver && <DragOverlay title="Drop COI or policy PDF" />}
+      {pdf.extracting && <ExtractingOverlay status={pdf.status} />}
 
       <div className="flex items-center justify-between">
         <div><h1 className="page-title">Insurance Policies</h1><p className="text-sm text-slate-500 mt-0.5">{displayed.length} policies · {formatCurrency(totalPremium, true)}/yr</p></div>
@@ -181,8 +135,7 @@ export default function InsurancePoliciesPage() {
           </button>
           <label className="btn-secondary cursor-pointer">
             <Sparkles size={14} />Scan PDF
-            <input type="file" accept=".pdf" className="hidden"
-              onChange={e => { if (e.target.files?.length) handlePdfDrop(e.target.files); e.target.value = '' }} />
+            <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
           </label>
           <button onClick={() => { setEditPolicy(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
         </div>
@@ -212,16 +165,16 @@ export default function InsurancePoliciesPage() {
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative"><Search size={13} className="absolute left-2.5 top-2 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search carrier…" /></div>
-        <Sel value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</Sel>
-        <Sel value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></Sel>
+        <FilterSelect value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</FilterSelect>
+        <FilterSelect value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</FilterSelect>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></FilterSelect>
         {(filterProp || filterType || filterStatus !== 'active' || search) && <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><X size={11} />Clear</button>}
         <span className="ml-auto text-xs text-slate-400">{displayed.length} shown</span>
       </div>
 
       {/* Table */}
       {loading ? <div className="py-12 text-center text-sm text-slate-400">Loading…</div> : displayed.length === 0 ? (
-        <div className="py-12 text-center card"><Shield size={32} className="text-slate-200 mx-auto mb-3" /><p className="text-sm text-slate-400">No policies found</p></div>
+        <EmptyState icon={<Shield size={32} />} title="No policies found" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
@@ -244,7 +197,6 @@ export default function InsurancePoliciesPage() {
             <tbody className="divide-y divide-slate-50">
               {displayed.map(p => {
                 const days = daysUntil(p.expiry_date)
-                const urgent = (days ?? 999) <= 30
                 const warn = (days ?? 999) <= 90
                 const expired = p.status === 'expired' || (days ?? 999) <= 0
                 return (
@@ -256,9 +208,9 @@ export default function InsurancePoliciesPage() {
                     <td className="px-3 py-2.5 text-xs text-slate-500">{formatDate(p.effective_date)}</td>
                     <td className={cn('px-3 py-2.5 text-xs font-medium', expired ? 'text-red-600' : warn ? 'text-amber-600' : 'text-slate-700')}>{formatDate(p.expiry_date)}</td>
                     <td className="px-3 py-2.5 text-center">
-                      <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-full', expired ? 'bg-red-50 text-red-600' : urgent ? 'bg-red-50 text-red-500' : warn ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-500')}>
-                        {expired ? 'EXPIRED' : days != null ? `${days}d` : '—'}
-                      </span>
+                      {expired
+                        ? <span className="badge text-red-700 bg-red-50 border-red-200">EXPIRED</span>
+                        : <DaysLeftBadge date={p.expiry_date} red={30} yellow={90} green={90} overdueLabel="EXPIRED" />}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.per_occurrence, true)}</td>
                     <td className="px-3 py-2.5 text-xs text-right text-slate-700">{formatCurrency(p.aggregate_limit, true)}</td>
@@ -460,19 +412,18 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review Extracted {drafts.length > 1 ? `${drafts.length} Policies` : 'Policy'}</h2>
-              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review Extracted {drafts.length > 1 ? `${drafts.length} Policies` : 'Policy'}</h2>
+            <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -529,13 +480,8 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
-}
-
-function Sel({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return <div className="relative"><select value={value} onChange={e => onChange(e.target.value)} className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">{children}</select><ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" /></div>
 }
 
 function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: PolicyWithProp | null; properties: Property[]; onClose: () => void; onSave: () => void }) {
@@ -576,10 +522,8 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
   }
   const F = (key: string, label: string, type = 'text') => <div><label className="label">{label}</label><input type={type} value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} className="input" /></div>
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white"><h2 className="font-semibold">{policy ? 'Edit Policy' : 'Add Policy'}</h2><button onClick={onClose}><X size={18} className="text-slate-400" /></button></div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+    <Modal title={policy ? 'Edit Policy' : 'Add Policy'} onClose={onClose} maxWidth="2xl">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Portfolio-wide</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Policy Type *</label><select required value={form.policy_type} onChange={e => setForm(f => ({ ...f, policy_type: e.target.value }))} className="input">{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</select></div>
@@ -591,7 +535,6 @@ function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: Poli
           <div><label className="label">Notes</label><textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input min-h-[60px] resize-none" /></div>
           <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={onClose} className="btn-ghost">Cancel</button><button type="submit" disabled={saving || !form.carrier || !form.expiry_date} className="btn-primary">{saving ? 'Saving…' : policy ? 'Save' : 'Add policy'}</button></div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

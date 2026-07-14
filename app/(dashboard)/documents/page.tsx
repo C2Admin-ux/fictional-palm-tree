@@ -5,11 +5,19 @@ import { createClient } from '@/lib/supabase/client'
 import type { Property } from '@/lib/supabase/types'
 import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
 import {
-  Plus, X, Upload, AlertTriangle, ChevronDown,
-  ChevronUp, Download, Trash2, FileText, Search,
-  Sparkles, Check, Loader2, Clock, Pencil, Archive,
+  Plus, X, Upload, AlertTriangle,
+  Download, Trash2, FileText, Search,
+  Sparkles, Check, Clock, Pencil, Archive,
 } from 'lucide-react'
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
+import { useSort, Th } from '@/lib/utils/sort'
+import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
+import { EmptyState } from '@/components/ui/empty-state'
+import { DaysLeftBadge } from '@/components/ui/days-left-badge'
+import { DragOverlay } from '@/components/ui/drag-overlay'
+import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
+import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 
 const CONTRACT_TYPES = [
   'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
@@ -78,7 +86,15 @@ type Contract = {
   properties?: { name: string } | null
 }
 
-type SortField = 'expiration_date' | 'cancel_deadline' | 'vendor_name' | 'contract_type' | 'monthly_cost'
+// Derive cancel deadline = expiration_date − cancel_notice_days.
+// Parses at local midnight (exp + 'T00:00:00') so the date doesn't shift
+// a day the way `new Date('YYYY-MM-DD')` (UTC midnight) can.
+function deriveCancelDeadline(expiration: string | null, noticeDays: number | null): string {
+  if (!expiration || !noticeDays) return ''
+  const d = new Date(expiration + 'T00:00:00')
+  d.setDate(d.getDate() - noticeDays)
+  return d.toISOString().slice(0, 10)
+}
 
 // When a newer contract is added for the same property + vendor + type,
 // archive any older ACTIVE contracts (status -> 'superseded') and link them
@@ -118,7 +134,6 @@ async function supersedeOlderContracts(
       .in('id', toArchive)
   }
 }
-type SortDir = 'asc' | 'desc'
 
 export default function ContractsPage() {
   const supabase = createClient()
@@ -131,27 +146,42 @@ export default function ContractsPage() {
   const [filterType, setFilterType] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [search, setSearch] = useState('')
-  const [sort, setSort] = useState<SortField>('expiration_date')
-  const [sortDir, setSortDir] = useState<SortDir>('asc')
-  const [dragOver, setDragOver] = useState(false)
+  const { sort, dir, toggle, sortFn } = useSort<string>('expiration_date', 'asc')
 
   // OCR state
-  const [extracting, setExtracting] = useState(false)
-  const [extractStatus, setExtractStatus] = useState('')
   const [extractedContracts, setExtractedContracts] = useState<any[] | null>(null)
   const [extractedFile, setExtractedFile] = useState<{ name: string; base64: string } | null>(null)
 
+  // Drag-drop / Scan PDF runs OCR extraction, then opens a review modal
+  const pdf = usePdfExtraction<ExtractResponse & { contracts?: any[] }>({
+    endpoint: '/api/contracts/extract',
+    extractingMessage: 'Extracting contract details with AI…',
+    onSuccess: (data, file) => {
+      setExtractedContracts(data.contracts ?? [])
+      setExtractedFile(file)
+    },
+  })
+  const { error: extractError, setError: setExtractError } = pdf
+
+  useEffect(() => {
+    if (!extractError) return
+    alert(extractError === 'not_a_contract'
+      ? "That doesn't look like a contract. Try a service agreement or vendor contract PDF."
+      : extractError === 'Please drop a PDF file'
+        ? extractError
+        : 'Extraction failed — ' + extractError)
+    setExtractError(null)
+  }, [extractError, setExtractError])
+
   const fetchContracts = useCallback(async () => {
-    let q = supabase.from('contracts')
-      .select('*, properties(name)')
-      .order(sort, { ascending: sortDir === 'asc', nullsFirst: false })
+    let q = supabase.from('contracts').select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('contract_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus)
     const { data } = await q
     setContracts(data ?? [])
     setLoading(false)
-  }, [filterProp, filterType, filterStatus, sort, sortDir])
+  }, [filterProp, filterType, filterStatus])
 
   useEffect(() => { fetchContracts() }, [fetchContracts])
   useEffect(() => {
@@ -159,13 +189,15 @@ export default function ContractsPage() {
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  const displayed = contracts.filter(c => {
-    if (!search) return true
-    const s = search.toLowerCase()
-    return c.title.toLowerCase().includes(s) ||
-      c.vendor_name.toLowerCase().includes(s) ||
-      (c.properties?.name ?? '').toLowerCase().includes(s)
-  })
+  const displayed = contracts
+    .filter(c => {
+      if (!search) return true
+      const s = search.toLowerCase()
+      return c.title.toLowerCase().includes(s) ||
+        c.vendor_name.toLowerCase().includes(s) ||
+        (c.properties?.name ?? '').toLowerCase().includes(s)
+    })
+    .sort(sortFn)
 
   const expiringSoon = contracts.filter(c => {
     const d = daysUntil(c.expiration_date); return d != null && d >= 0 && d <= 90
@@ -215,11 +247,6 @@ export default function ContractsPage() {
     exportToExcel(rows, 'C2_Contracts', 'Contracts')
   }
 
-  function handleSort(field: SortField) {
-    if (sort === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSort(field); setSortDir('asc') }
-  }
-
   async function downloadFile(contract: Contract) {
     if (!contract.file_path) return
     const { data } = await supabase.storage.from('c2-documents').createSignedUrl(contract.file_path, 3600)
@@ -241,106 +268,13 @@ export default function ContractsPage() {
     fetchContracts()
   }
 
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve((reader.result as string).split(',')[1])
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-  }
-
-  // Drag-drop onto the page runs OCR extraction, then opens a review modal
-  async function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragOver(false)
-    const file = Array.from(e.dataTransfer.files).find(
-      f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
-    if (!file) { alert('Please drop a PDF file'); return }
-    await runExtraction(file)
-  }
-
-  async function runExtraction(file: File) {
-    setExtracting(true)
-    setExtractStatus('Reading document…')
-    try {
-      const base64 = await fileToBase64(file)
-      setExtractStatus('Extracting contract details with AI…')
-      const res = await fetch('/api/contracts/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
-      })
-      const data = await res.json()
-
-      if (data.error === 'not_a_contract') {
-        alert("That doesn't look like a contract. Try a service agreement or vendor contract PDF.")
-        setExtracting(false); return
-      }
-      if (!data.success) {
-        const reason = data.detail
-          ? `${data.error}: ${typeof data.detail === 'string' ? data.detail.slice(0, 200) : JSON.stringify(data.detail).slice(0, 200)}`
-          : (data.error ?? 'unknown error')
-        alert('Extraction failed — ' + reason)
-        setExtracting(false); return
-      }
-
-      setExtractedContracts(data.contracts)
-      setExtractedFile({ name: file.name, base64 })
-    } catch (err: any) {
-      alert('Something went wrong: ' + err.message)
-    }
-    setExtracting(false)
-    setExtractStatus('')
-  }
-
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sort !== field) return <ChevronDown size={11} className="text-slate-300" />
-    return sortDir === 'asc'
-      ? <ChevronUp size={11} className="text-blue-500" />
-      : <ChevronDown size={11} className="text-blue-500" />
-  }
-
-  const Th = ({ label, field, className = '' }: { label: string; field?: SortField; className?: string }) => (
-    <th
-      className={cn('text-left px-3 py-2.5 text-xs font-medium text-slate-500 select-none whitespace-nowrap', field && 'cursor-pointer hover:text-slate-700', className)}
-      onClick={field ? () => handleSort(field) : undefined}>
-      <span className="flex items-center gap-1">
-        {label}
-        {field && <SortIcon field={field} />}
-      </span>
-    </th>
-  )
-
   return (
     <div
       className="p-6 max-w-7xl mx-auto space-y-5"
-      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}>
+      {...pdf.dragProps}>
 
-      {/* Drag overlay */}
-      {dragOver && (
-        <div className="fixed inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-40 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center">
-            <Sparkles size={32} className="text-blue-500 mx-auto mb-2" />
-            <div className="text-lg font-semibold text-blue-700">Drop contract PDF</div>
-            <div className="text-sm text-slate-500 mt-1">AI will extract and fill in the details</div>
-          </div>
-        </div>
-      )}
-
-      {/* Extracting overlay */}
-      {extracting && (
-        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
-            <Loader2 size={32} className="text-blue-500 mx-auto mb-3 animate-spin" />
-            <div className="text-base font-semibold text-slate-800">Reading your contract</div>
-            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
-          </div>
-        </div>
-      )}
+      {pdf.dragOver && <DragOverlay title="Drop contract PDF" />}
+      {pdf.extracting && <ExtractingOverlay title="Reading your contract" status={pdf.status} />}
 
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -356,8 +290,7 @@ export default function ContractsPage() {
           </button>
           <label className="btn-secondary cursor-pointer">
             <Sparkles size={14} />Scan PDF
-            <input type="file" accept=".pdf" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) runExtraction(f); e.target.value = '' }} />
+            <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
           </label>
           <button onClick={() => { setEditContract(null); setShowForm(true) }} className="btn-primary">
             <Plus size={14} />Add Contract
@@ -428,15 +361,15 @@ export default function ContractsPage() {
             className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="Search vendor, property…" />
         </div>
-        <Sel value={filterProp} onChange={setFilterProp}>
+        <FilterSelect value={filterProp} onChange={setFilterProp}>
           <option value="">All properties</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </Sel>
-        <Sel value={filterType} onChange={setFilterType}>
+        </FilterSelect>
+        <FilterSelect value={filterType} onChange={setFilterType}>
           <option value="">All types</option>
           {CONTRACT_TYPES.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-        </Sel>
-        <Sel value={filterStatus} onChange={setFilterStatus}>
+        </FilterSelect>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}>
           <option value="active">Active</option>
           <option value="all">All statuses</option>
           <option value="expired">Expired</option>
@@ -444,7 +377,7 @@ export default function ContractsPage() {
           <option value="pending">Pending</option>
           <option value="archived">Archived</option>
           <option value="superseded">Archived (superseded)</option>
-        </Sel>
+        </FilterSelect>
         {(filterProp || filterType || filterStatus !== 'active' || search) && (
           <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }}
             className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
@@ -458,11 +391,11 @@ export default function ContractsPage() {
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : displayed.length === 0 ? (
-        <div className="py-16 text-center card">
-          <FileText size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400 mb-2">No contracts yet</p>
-          <p className="text-xs text-slate-300">Drag a contract file anywhere on the page to get started</p>
-        </div>
+        <EmptyState
+          icon={<FileText size={32} />}
+          title="No contracts yet"
+          hint="Drag a contract file anywhere on the page to get started"
+        />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
@@ -470,11 +403,11 @@ export default function ContractsPage() {
               <tr>
                 <Th label="Property" className="pl-4" />
                 <Th label="Vendor / Title" />
-                <Th label="Type" field="contract_type" />
-                <Th label="Expiration" field="expiration_date" />
-                <Th label="Cancel Deadline" field="cancel_deadline" />
+                <Th label="Type" field="contract_type" current={sort} dir={dir} onSort={toggle} />
+                <Th label="Expiration" field="expiration_date" current={sort} dir={dir} onSort={toggle} />
+                <Th label="Cancel Deadline" field="cancel_deadline" current={sort} dir={dir} onSort={toggle} />
                 <Th label="Auto-Renew" />
-                <Th label="Monthly Cost" field="monthly_cost" />
+                <Th label="Monthly Cost" field="monthly_cost" current={sort} dir={dir} onSort={toggle} />
                 <Th label="Revenue Share" />
                 <th className="w-20" />
               </tr>
@@ -517,10 +450,7 @@ export default function ContractsPage() {
                             expUrgent ? 'text-red-600' : expWarn ? 'text-amber-600' : 'text-slate-700')}>
                             {formatDate(contract.expiration_date)}
                           </div>
-                          <div className={cn('text-xs',
-                            expUrgent ? 'text-red-500' : expWarn ? 'text-amber-500' : 'text-slate-400')}>
-                            {expDays! <= 0 ? 'EXPIRED' : `${expDays}d`}
-                          </div>
+                          <DaysLeftBadge date={contract.expiration_date} red={30} yellow={90} green={90} overdueLabel="EXPIRED" className="mt-0.5" />
                         </div>
                       ) : <span className="text-slate-300 text-xs">No expiry</span>}
                     </td>
@@ -532,9 +462,11 @@ export default function ContractsPage() {
                             cancelUrgent ? 'text-red-600' : cancelWarn ? 'text-amber-600' : 'text-slate-700')}>
                             {formatDate(contract.cancel_deadline)}
                           </div>
-                          <div className={cn('text-xs',
-                            cancelUrgent ? 'text-red-500' : cancelWarn ? 'text-amber-500' : 'text-slate-400')}>
-                            {cancelDays! <= 0 ? 'PASSED' : `${cancelDays}d · ${CANCEL_METHOD_LABELS[contract.cancel_method ?? ''] ?? ''}`}
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <DaysLeftBadge date={contract.cancel_deadline} red={30} yellow={60} green={60} overdueLabel="PASSED" />
+                            {cancelDays != null && cancelDays > 0 && (
+                              <span className="text-xs text-slate-400">{CANCEL_METHOD_LABELS[contract.cancel_method ?? ''] ?? ''}</span>
+                            )}
                           </div>
                         </div>
                       ) : <span className="text-slate-300 text-xs">—</span>}
@@ -643,14 +575,6 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
       (p.name.toLowerCase().split(' ')[0] && h.includes(p.name.toLowerCase().split(' ')[0]))
     )
     return m?.id ?? ''
-  }
-
-  // Derive cancel deadline = expiration_date − cancel_notice_days
-  function deriveCancelDeadline(expiration: string | null, noticeDays: number | null): string {
-    if (!expiration || !noticeDays) return ''
-    const d = new Date(expiration + 'T00:00:00')
-    d.setDate(d.getDate() - noticeDays)
-    return d.toISOString().slice(0, 10)
   }
 
   const [drafts, setDrafts] = useState(() =>
@@ -791,19 +715,18 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review Extracted Contract{drafts.length > 1 ? 's' : ''}</h2>
-              <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review Extracted Contract{drafts.length > 1 ? 's' : ''}</h2>
+            <p className="text-xs text-slate-400">{extractedFile?.name} — verify before saving</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -929,22 +852,7 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
             </button>
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-function Sel({ value, onChange, children }: {
-  value: string; onChange: (v: string) => void; children: React.ReactNode
-}) {
-  return (
-    <div className="relative">
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-        {children}
-      </select>
-      <ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" />
-    </div>
+    </Modal>
   )
 }
 
@@ -956,19 +864,9 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
 }) {
   const supabase = createClient()
   const dropRef = useRef<HTMLDivElement>(null)
-  const [file, setFile] = useState<File | null>(
-    (window as any).__pendingContractFile ?? null
-  )
+  const [file, setFile] = useState<File | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [saving, setSaving] = useState(false)
-
-  // Clear pending file on mount
-  useEffect(() => {
-    if ((window as any).__pendingContractFile) {
-      setFile((window as any).__pendingContractFile)
-      delete (window as any).__pendingContractFile
-    }
-  }, [])
 
   const [form, setForm] = useState({
     property_id:          contract?.property_id ?? '',
@@ -1017,12 +915,9 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
   // Auto-compute cancel deadline when expiry + notice days change
   useEffect(() => {
     if (form.expiration_date && form.cancel_notice_days && !contract?.cancel_deadline) {
-      const exp = new Date(form.expiration_date)
       const days = parseInt(form.cancel_notice_days)
-      if (!isNaN(days)) {
-        exp.setDate(exp.getDate() - days)
-        setF('cancel_deadline', exp.toISOString().slice(0, 10))
-      }
+      const deadline = deriveCancelDeadline(form.expiration_date, isNaN(days) ? null : days)
+      if (deadline) setF('cancel_deadline', deadline)
     }
   }, [form.expiration_date, form.cancel_notice_days])
 
@@ -1125,13 +1020,7 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <h2 className="font-semibold text-slate-900">{contract ? 'Edit Contract' : 'New Contract'}</h2>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
-        </div>
-
+    <Modal title={contract ? 'Edit Contract' : 'New Contract'} onClose={onClose} maxWidth="2xl">
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
           {/* File drop zone */}
           <div
@@ -1324,7 +1213,6 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }

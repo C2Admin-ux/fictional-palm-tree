@@ -1,9 +1,15 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
-import { Sparkles, Loader2, Upload, X, Check, Building2, Download, Trash2, Pencil, Plus } from 'lucide-react'
+import { Sparkles, Check, Building2, Trash2 } from 'lucide-react'
+import { Modal } from '@/components/ui/modal'
+import { EmptyState } from '@/components/ui/empty-state'
+import { DragOverlay } from '@/components/ui/drag-overlay'
+import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
+import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 
 type PcaItem = {
   id?: string
@@ -42,12 +48,10 @@ export default function BuildingTab({ propertyId, initialFacts }: {
   initialFacts: Facts
 }) {
   const supabase = createClient()
+  const router = useRouter()
   const [facts, setFacts] = useState<Facts>(initialFacts)
   const [items, setItems] = useState<PcaItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [dragOver, setDragOver] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [extractStatus, setExtractStatus] = useState('')
   const [review, setReview] = useState<{ facts: Facts; items: PcaItem[]; file: { name: string; base64: string } } | null>(null)
 
   const fetchItems = useCallback(async () => {
@@ -59,44 +63,25 @@ export default function BuildingTab({ propertyId, initialFacts }: {
 
   useEffect(() => { fetchItems() }, [fetchItems])
 
-  function fileToBase64(file: File): Promise<string> {
-    return new Promise((res, rej) => {
-      const r = new FileReader()
-      r.onload = () => res((r.result as string).split(',')[1])
-      r.onerror = rej
-      r.readAsDataURL(file)
-    })
-  }
+  const pdf = usePdfExtraction<ExtractResponse & { facts?: Facts; items?: PcaItem[] }>({
+    endpoint: '/api/pca/extract',
+    readingMessage: 'Reading PCA report…',
+    extractingMessage: 'Extracting building data with AI…',
+    onSuccess: (data, file) => {
+      setReview({ facts: data.facts ?? {}, items: data.items ?? [], file })
+    },
+  })
+  const { error: extractError, setError: setExtractError } = pdf
 
-  async function runExtraction(file: File) {
-    setExtracting(true)
-    setExtractStatus('Reading PCA report…')
-    try {
-      const base64 = await fileToBase64(file)
-      setExtractStatus('Extracting building data with AI…')
-      const res = await fetch('/api/pca/extract', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
-      })
-      const data = await res.json()
-      if (data.error === 'not_a_pca') { alert("That doesn't look like a property condition assessment."); setExtracting(false); return }
-      if (!data.success) {
-        const reason = data.detail ? `${data.error}: ${String(data.detail).slice(0, 200)}` : (data.error ?? 'unknown')
-        alert('Extraction failed — ' + reason); setExtracting(false); return
-      }
-      setReview({ facts: data.facts, items: data.items, file: { name: file.name, base64 } })
-    } catch (err: any) {
-      alert('Something went wrong: ' + err.message)
-    }
-    setExtracting(false); setExtractStatus('')
-  }
-
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault(); setDragOver(false)
-    const file = Array.from(e.dataTransfer.files).find(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
-    if (file) runExtraction(file)
-    else alert('Please drop a PDF file')
-  }
+  useEffect(() => {
+    if (!extractError) return
+    alert(extractError === 'not_a_pca'
+      ? "That doesn't look like a property condition assessment."
+      : extractError === 'Please drop a PDF file'
+        ? extractError
+        : 'Extraction failed — ' + extractError)
+    setExtractError(null)
+  }, [extractError, setExtractError])
 
   async function deleteItem(id: string) {
     await supabase.from('property_pca_items').delete().eq('id', id)
@@ -114,30 +99,11 @@ export default function BuildingTab({ propertyId, initialFacts }: {
 
   return (
     <div
-      onDragOver={e => { e.preventDefault(); if (!extracting) setDragOver(true) }}
-      onDragLeave={e => { e.preventDefault(); setDragOver(false) }}
-      onDrop={onDrop}
+      {...pdf.dragProps}
       className="space-y-5 relative">
 
-      {dragOver && (
-        <div className="absolute inset-0 bg-blue-500/10 border-2 border-blue-400 border-dashed z-30 rounded-xl flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-2xl px-6 py-4 shadow-xl text-center">
-            <Sparkles size={28} className="text-blue-500 mx-auto mb-1" />
-            <div className="font-semibold text-blue-700">Drop PCA report</div>
-            <div className="text-xs text-slate-500">AI extracts building data</div>
-          </div>
-        </div>
-      )}
-
-      {extracting && (
-        <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl px-8 py-6 shadow-xl text-center max-w-sm">
-            <Loader2 size={30} className="text-blue-500 mx-auto mb-3 animate-spin" />
-            <div className="font-semibold text-slate-800">Reading PCA report</div>
-            <div className="text-sm text-slate-500 mt-1">{extractStatus}</div>
-          </div>
-        </div>
-      )}
+      {pdf.dragOver && <DragOverlay position="absolute" title="Drop PCA report" hint="AI extracts building data" />}
+      {pdf.extracting && <ExtractingOverlay title="Reading PCA report" status={pdf.status} />}
 
       {/* Header + upload */}
       <div className="flex items-center justify-between">
@@ -153,17 +119,17 @@ export default function BuildingTab({ propertyId, initialFacts }: {
         </div>
         <label className="btn-secondary cursor-pointer">
           <Sparkles size={14} />{hasData ? 'Re-scan PCA' : 'Scan PCA PDF'}
-          <input type="file" accept=".pdf" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) runExtraction(f); e.target.value = '' }} />
+          <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
         </label>
       </div>
 
       {!hasData && !loading && (
-        <div className="py-16 text-center card border-dashed">
-          <Building2 size={32} className="text-slate-200 mx-auto mb-3" />
-          <p className="text-sm text-slate-400 mb-1">No building data yet</p>
-          <p className="text-xs text-slate-300">Drag a PCA report PDF here, or use “Scan PCA PDF”</p>
-        </div>
+        <EmptyState
+          icon={<Building2 size={32} />}
+          title="No building data yet"
+          hint="Drag a PCA report PDF here, or use “Scan PCA PDF”"
+          className="border-dashed"
+        />
       )}
 
       {/* Key facts grid */}
@@ -256,7 +222,13 @@ export default function BuildingTab({ propertyId, initialFacts }: {
           propertyId={propertyId}
           review={review}
           onClose={() => setReview(null)}
-          onSaved={() => { setReview(null); fetchItems(); window.location.reload() }}
+          onSaved={() => {
+            setReview(null)
+            fetchItems()
+            // Refresh the parent server component (building facts in the
+            // property hero) without a full page reload.
+            router.refresh()
+          }}
         />
       )}
     </div>
@@ -349,19 +321,18 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
   )
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
-          <div className="flex items-center gap-2">
-            <Sparkles size={17} className="text-blue-500" />
-            <div>
-              <h2 className="font-semibold text-slate-900">Review PCA Extraction</h2>
-              <p className="text-xs text-slate-400">{review.file.name} · {items.length} detail items found</p>
-            </div>
+    <Modal
+      onClose={onClose}
+      maxWidth="3xl"
+      title={
+        <div className="flex items-center gap-2">
+          <Sparkles size={17} className="text-blue-500" />
+          <div>
+            <h2 className="font-semibold text-slate-900">Review PCA Extraction</h2>
+            <p className="text-xs text-slate-400">{review.file.name} · {items.length} detail items found</p>
           </div>
-          <button onClick={onClose}><X size={18} className="text-slate-400 hover:text-slate-700" /></button>
         </div>
-
+      }>
         <div className="px-6 py-5 space-y-4">
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Key Facts</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -417,7 +388,6 @@ function PcaReviewModal({ propertyId, review, onClose, onSaved }: {
             {saving ? 'Saving…' : <><Check size={14} />Save building data</>}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

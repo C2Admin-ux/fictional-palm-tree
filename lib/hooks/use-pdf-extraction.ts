@@ -69,6 +69,14 @@ export function usePdfExtraction<T extends ExtractResponse = ExtractResponse>({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pdf_base64: base64, filename: file.name }),
       })
+
+      // Sessions expire while pages sit open — a 401 here means the user
+      // needs to sign in again, not that extraction failed.
+      if (res.status === 401) {
+        window.location.href = '/auth/login'
+        return null
+      }
+
       const data = (await res.json()) as T
 
       if (!data.success) {

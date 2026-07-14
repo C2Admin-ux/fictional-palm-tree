@@ -3,15 +3,18 @@
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { InsuranceClaim, Property } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, CLAIM_STATUS_STYLES } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, ChevronDown, AlertTriangle, Search } from 'lucide-react'
+import { Plus, X, AlertTriangle, Search } from 'lucide-react'
 import { InlineSelect, InlineDate, InlineText } from '@/components/ui/inline-edit'
+import { FilterSelect } from '@/components/ui/select'
+import { Modal } from '@/components/ui/modal'
+import { StatTile } from '@/components/ui/stat-tile'
+import { EmptyState } from '@/components/ui/empty-state'
 
 const CLAIM_TYPES = ['property_damage','liability','loss_of_income','other'] as const
 const CLAIM_TYPE_LABELS: Record<string,string> = { property_damage:'Property Damage', liability:'Liability', loss_of_income:'Loss of Income', other:'Other' }
 const STATUSES = ['reported','under_review','negotiating','settlement','closed','denied'] as const
-const STATUS_STYLES: Record<string,string> = { reported:'text-blue-700 bg-blue-50 border-blue-200', under_review:'text-amber-700 bg-amber-50 border-amber-200', negotiating:'text-purple-700 bg-purple-50 border-purple-200', settlement:'text-emerald-700 bg-emerald-50 border-emerald-200', closed:'text-slate-500 bg-slate-50 border-slate-200', denied:'text-red-700 bg-red-50 border-red-200' }
 type ClaimWithProp = InsuranceClaim & { properties?: { name: string } | null }
 
 export default function InsuranceClaimsPage() {
@@ -68,26 +71,23 @@ export default function InsuranceClaimsPage() {
           { label: 'Outstanding', value: formatCurrency(totalOutstanding, true), warn: totalOutstanding > 0 },
           { label: 'Follow-up Today', value: String(claims.filter(c => c.follow_up_date && new Date(c.follow_up_date) <= new Date()).length), warn: claims.some(c => c.follow_up_date && new Date(c.follow_up_date) <= new Date()) },
         ].map(({ label, value, warn }) => (
-          <div key={label} className="card p-4">
-            <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</div>
-            <div className={cn('text-2xl font-semibold', warn ? 'text-amber-600' : 'text-slate-900')}>{value}</div>
-          </div>
+          <StatTile key={label} label={label} value={warn ? <span className="text-amber-600">{value}</span> : value} />
         ))}
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative"><Search size={13} className="absolute left-2.5 top-2 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search…" /></div>
-        <Sel value={filterStatus} onChange={setFilterStatus}><option value="open">Open</option><option value="all">All</option>{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</Sel>
-        <Sel value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</Sel>
-        <Sel value={filterType} onChange={setFilterType}><option value="">All types</option>{CLAIM_TYPES.map(t => <option key={t} value={t}>{CLAIM_TYPE_LABELS[t]}</option>)}</Sel>
+        <FilterSelect value={filterStatus} onChange={setFilterStatus}><option value="open">Open</option><option value="all">All</option>{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</FilterSelect>
+        <FilterSelect value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</FilterSelect>
+        <FilterSelect value={filterType} onChange={setFilterType}><option value="">All types</option>{CLAIM_TYPES.map(t => <option key={t} value={t}>{CLAIM_TYPE_LABELS[t]}</option>)}</FilterSelect>
         {(filterStatus !== 'open' || filterProp || filterType || search) && <button onClick={() => { setFilterStatus('open'); setFilterProp(''); setFilterType(''); setSearch('') }} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><X size={11} />Clear</button>}
         <span className="ml-auto text-xs text-slate-400">{displayed.length} shown</span>
       </div>
 
       {/* Table */}
       {loading ? <div className="py-12 text-center text-sm text-slate-400">Loading…</div> : displayed.length === 0 ? (
-        <div className="py-12 text-center card"><p className="text-sm text-slate-400">No claims match this filter</p></div>
+        <EmptyState title="No claims match this filter" />
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[950px]">
@@ -119,7 +119,7 @@ export default function InsuranceClaimsPage() {
                     <td className="px-3 py-2.5">
                       <InlineSelect
                         value={c.status}
-                        options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: STATUS_STYLES[s] }))}
+                        options={STATUSES.map(s => ({ value: s, label: s.replace('_', ' '), className: CLAIM_STATUS_STYLES[s] }))}
                         onSave={async v => {
                           await supabase.from('insurance_claims').update({ status: v }).eq('id', c.id)
                           fetchClaims()
@@ -156,10 +156,6 @@ export default function InsuranceClaimsPage() {
   )
 }
 
-function Sel({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return <div className="relative"><select value={value} onChange={e => onChange(e.target.value)} className="appearance-none bg-white border border-slate-200 rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">{children}</select><ChevronDown size={12} className="absolute right-2 top-2.5 text-slate-400 pointer-events-none" /></div>
-}
-
 function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWithProp | null; properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
   const [form, setForm] = useState({ property_id: claim?.property_id ?? '', claim_id: claim?.claim_id ?? '', claim_type: claim?.claim_type ?? 'property_damage', status: claim?.status ?? 'reported', priority: claim?.priority ?? 'high', unit_number: claim?.unit_number ?? '', description: claim?.description ?? '', date_of_loss: claim?.date_of_loss ?? '', date_reported: claim?.date_reported ?? '', amount_claimed: claim?.amount_claimed?.toString() ?? '', amount_approved: claim?.amount_approved?.toString() ?? '', amount_paid: claim?.amount_paid?.toString() ?? '', adjuster_name: claim?.adjuster_name ?? '', adjuster_phone: claim?.adjuster_phone ?? '', adjuster_email: claim?.adjuster_email ?? '', next_action: claim?.next_action ?? '', follow_up_date: claim?.follow_up_date ?? '', notes: claim?.notes ?? '' })
@@ -173,10 +169,8 @@ function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWi
     setSaving(false); onSave()
   }
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 sticky top-0 bg-white"><h2 className="font-semibold">{claim ? 'Edit Claim' : 'New Claim'}</h2><button onClick={onClose}><X size={18} className="text-slate-400" /></button></div>
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+    <Modal title={claim ? 'Edit Claim' : 'New Claim'} onClose={onClose} maxWidth="2xl">
+      <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Claim ID</label><input value={form.claim_id} onChange={e => setForm(f => ({ ...f, claim_id: e.target.value }))} className="input" placeholder="e.g. 2026-001" /></div>
@@ -201,7 +195,6 @@ function ClaimFormModal({ claim, properties, onClose, onSave }: { claim: ClaimWi
           <div><label className="label">Notes</label><textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input min-h-[60px] resize-none" /></div>
           <div className="flex justify-end gap-2 pt-2"><button type="button" onClick={onClose} className="btn-ghost">Cancel</button><button type="submit" disabled={saving} className="btn-primary">{saving ? 'Saving…' : claim ? 'Save' : 'Create'}</button></div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }
