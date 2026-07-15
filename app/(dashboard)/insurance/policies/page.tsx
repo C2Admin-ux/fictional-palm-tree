@@ -12,6 +12,7 @@ import { Modal } from '@/components/ui/modal'
 import { DaysLeftBadge } from '@/components/ui/days-left-badge'
 import { EmptyState } from '@/components/ui/empty-state'
 import { DragOverlay } from '@/components/ui/drag-overlay'
+import { TaskFromRecord } from '@/components/ui/task-from-record'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
 import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
@@ -232,6 +233,11 @@ export default function InsurancePoliciesPage() {
                     </td>
                     <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                        <TaskFromRecord
+                          title={`Follow up: ${p.carrier} ${POLICY_TYPE_LABELS[p.policy_type] ?? p.policy_type}`}
+                          propertyId={p.property_id}
+                          tags={['insurance']}
+                        />
                         <button onClick={() => { setEditPolicy(p); setShowForm(true) }}
                           title="Edit" className="p-1 text-slate-400 hover:text-blue-500">
                           <Pencil size={13} />

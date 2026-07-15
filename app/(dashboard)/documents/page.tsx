@@ -18,6 +18,7 @@ import { DaysLeftBadge } from '@/components/ui/days-left-badge'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
 import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import { TaskFromRecord } from '@/components/ui/task-from-record'
 
 const CONTRACT_TYPES = [
   'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
@@ -500,6 +501,11 @@ export default function ContractsPage() {
 
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
+                        <TaskFromRecord
+                          title={`Follow up: ${contract.vendor_name} ${contract.title}`}
+                          propertyId={contract.property_id}
+                          tags={['contract']}
+                        />
                         {contract.file_path && (
                           <button
                             onClick={e => { e.stopPropagation(); downloadFile(contract) }}

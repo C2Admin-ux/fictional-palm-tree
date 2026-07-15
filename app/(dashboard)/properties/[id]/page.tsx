@@ -375,6 +375,7 @@ export default async function PropertyPage({
         {tab === 'building' && (
           <BuildingTab
             propertyId={params.id}
+            propertyName={prop.name}
             initialFacts={{
               year_built: prop.year_built,
               year_renovated: prop.year_renovated,
