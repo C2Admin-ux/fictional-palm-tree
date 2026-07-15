@@ -1,23 +1,24 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
-  cn, formatDateShort, isOverdue, isSoon,
+  cn, formatDateShort, isOverdue, isSoon, daysUntil,
+  todayISO, addDaysToDate,
   PRIORITY_DOT, STATUS_STYLES, STATUS_LABELS,
-  PRIORITY_STYLES, RECUR_LABELS, propertyColor,
+  RECUR_LABELS, propertyColor,
 } from '@/lib/utils'
 import {
-  Plus, X, ChevronDown, RefreshCw, Users,
-  Link as LinkIcon, AlertTriangle, Clock,
+  Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
+  Link as LinkIcon, AlertTriangle, Clock, Inbox as InboxIcon,
 } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
-import { StatusBadge } from '@/components/ui/badge'
+import { EmptyState } from '@/components/ui/empty-state'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -25,7 +26,16 @@ type TaskWithRelations = Task & {
   contacts?: Contact[]
 }
 
+// Shape of a row as returned by the select with joins, before we
+// flatten the task_contacts junction into a plain contacts array.
+type RawTaskRow = Task & {
+  properties: { name: string } | null
+  capex_projects: { title: string } | null
+  task_contacts: { contact_id: string; contacts: Contact | null }[] | null
+}
+
 type StatusFilter = 'inbox' | 'next_action' | 'waiting' | 'blocked' | 'done'
+type ViewMode = 'agenda' | 'all' | 'review'
 
 const STATUS_ORDER: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked', 'done']
 const SECTION_LABELS: Record<StatusFilter, string> = {
@@ -34,6 +44,21 @@ const SECTION_LABELS: Record<StatusFilter, string> = {
   waiting:     'Waiting for',
   blocked:     'Blocked',
   done:        'Completed',
+}
+
+const VIEW_TABS: { key: ViewMode; label: string }[] = [
+  { key: 'agenda', label: 'Agenda' },
+  { key: 'all',    label: 'All tasks' },
+  { key: 'review', label: 'Review' },
+]
+
+// Handlers every task list needs, bundled so the three views share
+// one prop shape.
+type RowHandlers = {
+  onEdit: (task: TaskWithRelations) => void
+  onDone: (task: TaskWithRelations) => void
+  onDelete: (id: string) => void
+  onRefresh: () => void
 }
 
 export default function TasksPage() {
@@ -52,11 +77,12 @@ function TasksInner() {
   const [properties, setProperties] = useState<Property[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
   const [capexProjects, setCapexProjects] = useState<CapexProject[]>([])
+  const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editTask, setEditTask] = useState<TaskWithRelations | null>(null)
 
-  // Filters
+  // Filters (All tasks view)
   const [activeStatuses, setActiveStatuses] = useState<Set<StatusFilter>>(
     new Set<StatusFilter>(['inbox', 'next_action', 'waiting', 'blocked'])
   )
@@ -65,15 +91,17 @@ function TasksInner() {
   const [filterContact, setFilterContact] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
 
-  // View mode: tasks or agenda
-  const [view, setView] = useState<'tasks' | 'agenda'>('tasks')
-  const [agendaPerson, setAgendaPerson] = useState<string | null>(null)
+  // View mode. Agenda is the default, but deep links that carry a
+  // property/capex filter land on the list where those filters live.
+  const [view, setView] = useState<ViewMode>(() =>
+    searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
+  )
 
-  // Collapsed sections
+  // Collapsed status sections (All tasks view)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['done']))
 
   const fetchTasks = useCallback(async () => {
-    let q = supabase
+    const { data } = await supabase
       .from('tasks')
       .select(`
         *,
@@ -84,31 +112,21 @@ function TasksInner() {
       .order('due_date', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: false })
 
-    if (filterProp) q = q.eq('property_id', filterProp)
-    if (filterCapex) q = q.eq('capex_project_id', filterCapex)
-
-    const { data } = await q
-
-    // Flatten contacts from junction table
-    const withContacts = (data ?? []).map((t: any) => ({
+    // Flatten contacts from the junction table
+    const raw = (data ?? []) as unknown as RawTaskRow[]
+    const withContacts: TaskWithRelations[] = raw.map(({ task_contacts, ...t }) => ({
       ...t,
-      contacts: (t.task_contacts ?? []).map((tc: any) => tc.contacts).filter(Boolean),
+      contacts: (task_contacts ?? []).map(tc => tc.contacts).filter((c): c is Contact => Boolean(c)),
     }))
 
-    let filtered = withContacts as TaskWithRelations[]
-    if (filterContact) {
-      filtered = filtered.filter(t =>
-        (t.contacts ?? []).some((c: Contact) => c.id === filterContact)
-      )
-    }
-
-    setTasks(filtered)
+    setTasks(withContacts)
     setLoading(false)
-  }, [filterProp, filterCapex, filterContact])
+  }, [])
 
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
   useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
     supabase.from('properties').select('*').eq('status', 'active').order('name')
       .then(({ data }) => setProperties(data ?? []))
     supabase.from('contacts').select('*').order('full_name')
@@ -119,10 +137,13 @@ function TasksInner() {
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
   }, [])
 
-  // Filter + group
+  // All-view filtering (client side — the shared fetch feeds all three views)
   const visibleTasks = tasks.filter(t => {
     if (!activeStatuses.has(t.status as StatusFilter)) return false
     if (filterPriority && t.priority !== filterPriority) return false
+    if (filterProp && t.property_id !== filterProp) return false
+    if (filterCapex && t.capex_project_id !== filterCapex) return false
+    if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
     return true
   })
 
@@ -169,6 +190,13 @@ function TasksInner() {
     fetchTasks()
   }
 
+  const handlers: RowHandlers = {
+    onEdit: t => { setEditTask(t); setShowForm(true) },
+    onDone: markDone,
+    onDelete: deleteTask,
+    onRefresh: fetchTasks,
+  }
+
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
   const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority
 
@@ -178,82 +206,82 @@ function TasksInner() {
       <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-200 bg-white flex-shrink-0">
         <h1 className="text-lg font-semibold text-slate-900 flex-1">Tasks</h1>
         <div className="flex rounded-lg border border-slate-200 overflow-hidden">
-          <button onClick={() => setView('tasks')}
-            className={cn('px-3 py-1.5 text-xs font-medium transition-colors',
-              view === 'tasks' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50')}>
-            All Tasks
-          </button>
-          <button onClick={() => setView('agenda')}
-            className={cn('px-3 py-1.5 text-xs font-medium transition-colors border-l border-slate-200',
-              view === 'agenda' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50')}>
-            <Users size={12} className="inline mr-1" />Agenda
-          </button>
+          {VIEW_TABS.map((v, i) => (
+            <button key={v.key} onClick={() => setView(v.key)}
+              className={cn('px-3 py-1.5 text-xs font-medium transition-colors',
+                i > 0 && 'border-l border-slate-200',
+                view === v.key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-50')}>
+              {v.label}
+            </button>
+          ))}
         </div>
         <button onClick={() => { setEditTask(null); setShowForm(true) }} className="btn-primary text-xs py-1.5">
           <Plus size={13} />Add task
         </button>
       </div>
 
-      {/* Filter bar */}
-      <div className="flex items-center gap-2 px-6 py-2.5 border-b border-slate-200 bg-slate-50 flex-wrap flex-shrink-0">
-        {STATUS_ORDER.map(s => (
-          <button key={s} onClick={() => toggleStatus(s)}
-            className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all',
-              activeStatuses.has(s)
-                ? STATUS_STYLES[s]
-                : 'text-slate-400 bg-white border-slate-200 hover:border-slate-300'
-            )}>
-            <span className="w-1.5 h-1.5 rounded-full"
-              style={{ background: activeStatuses.has(s) ? 'currentColor' : '#cbd5e1' }} />
-            {STATUS_LABELS[s]}
-            <span className="opacity-60">({counts[s]})</span>
-          </button>
-        ))}
-
-        <div className="w-px h-4 bg-slate-200 mx-1" />
-
-        <FilterSelect value={filterProp} onChange={setFilterProp}
-          className={cn('w-auto', filterProp && 'border-blue-400 bg-blue-50 text-blue-700')}>
-          <option value="">All properties</option>
-          {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </FilterSelect>
-
-        <FilterSelect value={filterCapex} onChange={setFilterCapex}
-          className={cn('w-auto max-w-[160px]', filterCapex && 'border-orange-400 bg-orange-50 text-orange-700')}>
-          <option value="">All CapEx projects</option>
-          {capexProjects.map(c => (
-            <option key={c.id} value={c.id}>{c.title}</option>
+      {/* Filter bar — All tasks view only */}
+      {view === 'all' && (
+        <div className="flex items-center gap-2 px-6 py-2.5 border-b border-slate-200 bg-slate-50 flex-wrap flex-shrink-0">
+          {STATUS_ORDER.map(s => (
+            <button key={s} onClick={() => toggleStatus(s)}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all',
+                activeStatuses.has(s)
+                  ? STATUS_STYLES[s]
+                  : 'text-slate-400 bg-white border-slate-200 hover:border-slate-300'
+              )}>
+              <span className="w-1.5 h-1.5 rounded-full"
+                style={{ background: activeStatuses.has(s) ? 'currentColor' : '#cbd5e1' }} />
+              {STATUS_LABELS[s]}
+              <span className="opacity-60">({counts[s]})</span>
+            </button>
           ))}
-        </FilterSelect>
 
-        <FilterSelect value={filterContact} onChange={setFilterContact}
-          className={cn('w-auto', filterContact && 'border-purple-400 bg-purple-50 text-purple-700')}>
-          <option value="">All people</option>
-          {contacts.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-        </FilterSelect>
+          <div className="w-px h-4 bg-slate-200 mx-1" />
 
-        <FilterSelect value={filterPriority} onChange={setFilterPriority}
-          className={cn('w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
-          <option value="">All priorities</option>
-          {['urgent', 'high', 'medium', 'low'].map(p => (
-            <option key={p} value={p}>{p}</option>
-          ))}
-        </FilterSelect>
+          <FilterSelect value={filterProp} onChange={setFilterProp}
+            className={cn('w-auto', filterProp && 'border-blue-400 bg-blue-50 text-blue-700')}>
+            <option value="">All properties</option>
+            {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </FilterSelect>
 
-        {hasActiveFilter && (
-          <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority('') }}
-            className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
-            <X size={12} />Clear filters
-          </button>
-        )}
+          <FilterSelect value={filterCapex} onChange={setFilterCapex}
+            className={cn('w-auto max-w-[160px]', filterCapex && 'border-orange-400 bg-orange-50 text-orange-700')}>
+            <option value="">All CapEx projects</option>
+            {capexProjects.map(c => (
+              <option key={c.id} value={c.id}>{c.title}</option>
+            ))}
+          </FilterSelect>
 
-        <span className="ml-auto text-xs text-slate-400">
-          {visibleTasks.length} task{visibleTasks.length !== 1 ? 's' : ''}
-        </span>
-      </div>
+          <FilterSelect value={filterContact} onChange={setFilterContact}
+            className={cn('w-auto', filterContact && 'border-purple-400 bg-purple-50 text-purple-700')}>
+            <option value="">All people</option>
+            {contacts.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+          </FilterSelect>
+
+          <FilterSelect value={filterPriority} onChange={setFilterPriority}
+            className={cn('w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
+            <option value="">All priorities</option>
+            {['urgent', 'high', 'medium', 'low'].map(p => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </FilterSelect>
+
+          {hasActiveFilter && (
+            <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority('') }}
+              className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
+              <X size={12} />Clear filters
+            </button>
+          )}
+
+          <span className="ml-auto text-xs text-slate-400">
+            {visibleTasks.length} task{visibleTasks.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+      )}
 
       {/* CapEx context banner */}
-      {selectedCapex && (
+      {view === 'all' && selectedCapex && (
         <div className="flex items-center gap-3 px-6 py-2 bg-orange-50 border-b border-orange-200 flex-shrink-0">
           <span className="w-2 h-2 rounded-full bg-orange-400" />
           <span className="text-xs font-medium text-orange-800">{selectedCapex.title}</span>
@@ -270,13 +298,9 @@ function TasksInner() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
-          <AgendaView
-            tasks={tasks}
-            contacts={contacts}
-            agendaPerson={agendaPerson}
-            setAgendaPerson={setAgendaPerson}
-            onMarkDone={markDone}
-          />
+          <AgendaView tasks={tasks} userId={userId} handlers={handlers} />
+        ) : view === 'review' ? (
+          <ReviewView tasks={tasks} userId={userId} handlers={handlers} />
         ) : (
           <div className="pb-8">
             {STATUS_ORDER.map(status => {
@@ -312,15 +336,7 @@ function TasksInner() {
                       </div>
 
                       {sectionTasks.map(task => (
-                        <TaskRow
-                          key={task.id}
-                          task={task}
-                          contacts={contacts}
-                          onEdit={() => { setEditTask(task); setShowForm(true) }}
-                          onDone={() => markDone(task)}
-                          onDelete={() => deleteTask(task.id)}
-                          onRefresh={fetchTasks}
-                        />
+                        <TaskRow key={task.id} task={task} handlers={handlers} />
                       ))}
 
                       <div
@@ -365,24 +381,30 @@ function TasksInner() {
 
 // ── Task Row ─────────────────────────────────────────────────
 
-function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
+function TaskRow({ task, handlers, meta }: {
   task: TaskWithRelations
-  contacts: Contact[]
-  onEdit: () => void
-  onDone: () => void
-  onDelete: () => void
-  onRefresh: () => void
+  handlers: RowHandlers
+  meta?: React.ReactNode  // extra info rendered on the second line (review views)
 }) {
   const supabase = createClient()
+  const { onEdit, onDone, onDelete, onRefresh } = handlers
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
+  const isRock = (task.tags ?? []).includes('rock')
 
   async function patch(fields: Record<string, unknown>) {
     await supabase.from('tasks').update(fields).eq('id', task.id)
     onRefresh()
+  }
+
+  function toggleRock() {
+    const tags = isRock
+      ? (task.tags ?? []).filter(t => t !== 'rock')
+      : [...(task.tags ?? []), 'rock']
+    patch({ tags })
   }
 
   return (
@@ -402,9 +424,9 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
       />
 
       {/* Checkbox */}
-      <button onClick={onDone}
+      <button onClick={() => onDone(task)}
         className={cn(
-          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all flex-shrink-0',
+          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
           isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
         )}>
         {isDone && (
@@ -435,8 +457,8 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
             )}
           </span>
         </div>
-        {(task.properties?.name || task.capex_projects?.title || task.blocked_by_task_id) && (
-          <div className="flex items-center gap-2 mt-0.5">
+        {(task.properties?.name || task.capex_projects?.title || task.blocked_by_task_id || meta) && (
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {task.properties?.name && (
               <span className="text-xs font-medium px-1.5 py-0.5 rounded"
                 style={{ background: `${pc}18`, color: pc }}>
@@ -451,9 +473,21 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
             {task.blocked_by_task_id && (
               <span className="text-xs text-amber-600">⛓ blocked</span>
             )}
+            {meta}
           </div>
         )}
       </div>
+
+      {/* Rock toggle — 'rock' tag on/off */}
+      <button
+        onClick={toggleRock}
+        title={isRock ? 'Remove from rocks' : 'Mark as a rock'}
+        className={cn('mr-1 p-1 rounded flex-shrink-0 transition-all',
+          isRock
+            ? 'text-amber-500 hover:text-amber-600'
+            : 'text-slate-200 hover:text-amber-400 opacity-0 group-hover:opacity-100')}>
+        <Mountain size={13} />
+      </button>
 
       {/* Status — inline dropdown */}
       <div className="w-28 hidden md:flex justify-center">
@@ -476,7 +510,7 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
         {taskContacts.length > 3 && (
           <span className="text-xs text-slate-400">+{taskContacts.length - 3}</span>
         )}
-        <button onClick={onEdit}
+        <button onClick={() => onEdit(task)}
           className="w-6 h-6 rounded-full border border-dashed border-slate-300 flex items-center justify-center text-slate-300 hover:border-blue-400 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0">
           <Plus size={10} />
         </button>
@@ -496,7 +530,7 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
 
       {/* Delete */}
       <div className="w-6 flex justify-center ml-1">
-        <button onClick={onDelete}
+        <button onClick={() => onDelete(task.id)}
           className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
           <X size={13} />
         </button>
@@ -506,130 +540,315 @@ function TaskRow({ task, contacts, onEdit, onDone, onDelete, onRefresh }: {
 }
 
 // ── Agenda View ──────────────────────────────────────────────
+// Daily driver: quick-add into my inbox, my inbox to process, then
+// everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, contacts, agendaPerson, setAgendaPerson, onMarkDone }: {
+function AgendaView({ tasks, userId, handlers }: {
   tasks: TaskWithRelations[]
-  contacts: Contact[]
-  agendaPerson: string | null
-  setAgendaPerson: (id: string | null) => void
-  onMarkDone: (task: TaskWithRelations) => void
+  userId: string | null
+  handlers: RowHandlers
 }) {
-  const activeTasks = tasks.filter(t => t.status !== 'done')
+  const supabase = createClient()
+  const [quickTitle, setQuickTitle] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [inboxOpen, setInboxOpen] = useState(true)
+  const [snoozedOpen, setSnoozedOpen] = useState(false)
 
-  const contactsWithTasks = contacts.filter(c =>
-    activeTasks.some(t => (t.contacts ?? []).some((tc: Contact) => tc.id === c.id))
-  )
+  const today = todayISO()
+  const in7 = addDaysToDate(today, 7)
+  const in14 = addDaysToDate(today, 14)
+  const taskById = new Map(tasks.map(t => [t.id, t]))
 
-  function copyAgenda(contactId: string) {
-    const c = contacts.find(x => x.id === contactId)
-    if (!c) return
-    const ctasks = activeTasks.filter(t =>
-      (t.contacts ?? []).some((tc: Contact) => tc.id === contactId)
-    )
-    const text = `Agenda — ${c.full_name}\n${new Date().toLocaleDateString()}\n\n` +
-      ctasks.map((t, i) =>
-        `${i + 1}. ${t.title}\n   ${t.properties?.name ?? 'Portfolio'} · ${STATUS_LABELS[t.status]}${t.due_date ? ' · Due ' + formatDateShort(t.due_date) : ''}`
-      ).join('\n\n')
-    navigator.clipboard?.writeText(text)
+  // Actionable-now semantics
+  const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
+  const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
+  const isUnblocked = (t: TaskWithRelations) => {
+    if (!t.blocked_by_task_id) return true
+    const blocker = taskById.get(t.blocked_by_task_id)
+    return !blocker || blocker.status === 'done'
   }
 
-  const displayContacts = agendaPerson
-    ? contacts.filter(c => c.id === agendaPerson)
-    : contactsWithTasks
+  // Personal inbox: things I captured that still need processing
+  const myInbox = tasks.filter(t =>
+    t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+  )
+  const inboxIds = new Set(myInbox.map(t => t.id))
+
+  const actionable = tasks.filter(t =>
+    t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+  )
+
+  const groups: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = [
+    { key: 'overdue', label: 'Overdue', tone: 'red', tasks: actionable.filter(t => t.due_date != null && t.due_date < today) },
+    { key: 'today',   label: 'Today',                tasks: actionable.filter(t => t.due_date === today) },
+    { key: 'week',    label: 'This week',            tasks: actionable.filter(t => t.due_date != null && t.due_date > today && t.due_date <= in7) },
+    { key: 'later',   label: 'Next 7–14 days',       tasks: actionable.filter(t => t.due_date != null && t.due_date > in7 && t.due_date <= in14) },
+    { key: 'nodate',  label: 'No due date',          tasks: actionable.filter(t => !t.due_date) },
+  ]
+  const hasDated = groups.some(g => g.tasks.length > 0)
+
+  const snoozed = tasks.filter(t =>
+    t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+  ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+
+  async function quickAdd(e: React.FormEvent) {
+    e.preventDefault()
+    const title = quickTitle.trim()
+    if (!title || !userId) return
+    setAdding(true)
+    await supabase.from('tasks').insert({
+      title,
+      status:      'inbox',
+      priority:    'medium',
+      created_by:  userId,
+      assigned_to: userId,
+    })
+    setQuickTitle('')
+    setAdding(false)
+    handlers.onRefresh()
+  }
 
   return (
-    <div>
-      {/* Person chips */}
-      <div className="flex items-center gap-2 px-6 py-3 border-b border-slate-200 bg-white flex-wrap">
-        <button onClick={() => setAgendaPerson(null)}
-          className={cn('px-3 py-1.5 rounded-full text-xs font-medium border transition-all',
-            !agendaPerson ? 'bg-slate-800 text-white border-slate-800' : 'text-slate-600 border-slate-200 hover:border-slate-300')}>
-          All people
+    <div className="pb-8">
+      {/* Quick add — straight into my inbox */}
+      <form onSubmit={quickAdd}
+        className="flex items-center gap-2 px-6 py-3 border-b border-slate-200 bg-white">
+        <InboxIcon size={15} className="text-slate-400 flex-shrink-0" />
+        <input
+          value={quickTitle}
+          onChange={e => setQuickTitle(e.target.value)}
+          disabled={!userId}
+          className="input flex-1"
+          placeholder={userId ? 'Quick add to my inbox…' : 'Sign in to capture tasks'} />
+        <button type="submit" disabled={adding || !quickTitle.trim() || !userId}
+          className="btn-primary text-xs py-1.5">
+          <Plus size={13} />Add
         </button>
-        {contactsWithTasks.map(c => {
-          const cnt = activeTasks.filter(t => (t.contacts ?? []).some((tc: Contact) => tc.id === c.id)).length
-          const isActive = agendaPerson === c.id
-          return (
-            <button key={c.id} onClick={() => setAgendaPerson(isActive ? null : c.id)}
-              className={cn('flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all',
-                isActive ? 'text-white border-transparent' : 'text-slate-600 border-slate-200 hover:border-slate-300')}
-              style={isActive ? { background: c.color_hex ?? '#64748b', borderColor: c.color_hex ?? '#64748b' } : {}}>
-              <span className="w-4 h-4 rounded-full flex items-center justify-center text-white text-xs font-bold"
-                style={{ background: c.color_hex ?? '#64748b', fontSize: 9 }}>
-                {c.initials ?? c.full_name.slice(0, 2)}
-              </span>
-              {c.full_name.split(' ')[0]}
-              <span className="opacity-70">({cnt})</span>
-            </button>
-          )
-        })}
-      </div>
+      </form>
 
-      {/* Contact sections */}
-      {displayContacts.map(c => {
-        const ctasks = activeTasks.filter(t =>
-          (t.contacts ?? []).some((tc: Contact) => tc.id === c.id)
-        )
-        if (!ctasks.length) return null
+      {/* My inbox — collapsible */}
+      {myInbox.length > 0 && (
+        <div>
+          <button onClick={() => setInboxOpen(o => !o)}
+            className="w-full flex items-center gap-2 px-6 py-2 bg-indigo-50 border-b border-indigo-100 hover:bg-indigo-100 transition-colors">
+            <ChevronDown size={13} className={cn('text-indigo-400 transition-transform', !inboxOpen && '-rotate-90')} />
+            <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+              Inbox ({myInbox.length})
+            </span>
+            <span className="text-xs text-indigo-400">to process</span>
+          </button>
+          {inboxOpen && myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+        </div>
+      )}
+
+      {/* Date groups */}
+      {groups.map(g => {
+        if (!g.tasks.length) return null
         return (
-          <div key={c.id} className="border-b border-slate-200">
-            <div className="flex items-center gap-3 px-6 py-3 bg-slate-50 border-b border-slate-200">
-              <span className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-                style={{ background: c.color_hex ?? '#64748b' }}>
-                {c.initials ?? c.full_name.slice(0, 2)}
+          <div key={g.key}>
+            <div className={cn('flex items-center gap-2 px-6 py-2 border-b',
+              g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200')}>
+              <span className={cn('text-xs font-semibold uppercase tracking-wide',
+                g.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                {g.label}
               </span>
-              <div className="flex-1">
-                <div className="text-sm font-semibold text-slate-900">{c.full_name}</div>
-                <div className="text-xs text-slate-500">{c.role} · {ctasks.length} open item{ctasks.length !== 1 ? 's' : ''}</div>
-              </div>
-              <button onClick={() => copyAgenda(c.id)}
-                className="text-xs text-slate-500 hover:text-blue-600 border border-slate-200 hover:border-blue-300 px-3 py-1.5 rounded-lg transition-colors">
-                Copy agenda
-              </button>
+              <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
+                g.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
+                {g.tasks.length}
+              </span>
             </div>
-            {ctasks.map(t => {
-              const isDone = t.status === 'done'
-              const pc = t.properties?.name ? propertyColor(t.properties.name) : '#64748b'
-              return (
-                <div key={t.id} className="flex items-start gap-3 px-6 py-3 border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                  <button onClick={() => onMarkDone(t)}
-                    className={cn('w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all',
-                      isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400')}>
-                    {isDone && <svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
-                      {t.title}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      {t.properties?.name && (
-                        <span className="text-xs font-medium px-1.5 py-0.5 rounded"
-                          style={{ background: `${pc}18`, color: pc }}>
-                          {t.properties.name}
-                        </span>
-                      )}
-                      <StatusBadge value={t.status} className="text-xs" />
-                      {t.due_date && (
-                        <span className={cn('text-xs', isOverdue(t.due_date) ? 'text-red-600 font-medium' : 'text-slate-400')}>
-                          {isOverdue(t.due_date) ? 'Overdue · ' : ''}{formatDateShort(t.due_date)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+            {g.tasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
           </div>
         )
       })}
 
-      {displayContacts.length === 0 && (
-        <div className="py-16 text-center text-sm text-slate-400">
-          No people tagged on open tasks
+      {!hasDated && myInbox.length === 0 && (
+        <EmptyState
+          icon={<CheckSquareIcon />}
+          title="All clear — nothing actionable right now"
+          hint="Capture something with the quick-add bar above"
+          className="border-0"
+        />
+      )}
+
+      {/* Snoozed — collapsed at the bottom */}
+      {snoozed.length > 0 && (
+        <div className="mt-4">
+          <button onClick={() => setSnoozedOpen(o => !o)}
+            className="w-full flex items-center gap-2 px-6 py-2 bg-slate-50 border-y border-slate-200 hover:bg-slate-100 transition-colors">
+            <ChevronDown size={13} className={cn('text-slate-400 transition-transform', !snoozedOpen && '-rotate-90')} />
+            <Moon size={12} className="text-slate-400" />
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              Snoozed ({snoozed.length})
+            </span>
+          </button>
+          {snoozedOpen && snoozed.map(t => (
+            <div key={t.id} className="flex items-center gap-3 px-6 py-2 border-b border-slate-100 hover:bg-slate-50 transition-colors">
+              <Moon size={12} className="text-slate-300 flex-shrink-0" />
+              <button onClick={() => handlers.onEdit(t)}
+                className="flex-1 min-w-0 text-left text-sm text-slate-500 hover:text-slate-800 truncate">
+                {t.title}
+              </button>
+              {t.properties?.name && (
+                <span className="text-xs font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                  style={{ background: `${propertyColor(t.properties.name)}18`, color: propertyColor(t.properties.name) }}>
+                  {t.properties.name}
+                </span>
+              )}
+              <span className="text-xs text-slate-400 flex-shrink-0">
+                wakes {formatDateShort(t.snoozed_until)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>
   )
+}
+
+// ── Review View ──────────────────────────────────────────────
+// Guided weekly sweep: inbox to zero, waiting-on, obligations
+// horizon, rocks, and what shipped in the last 7 days.
+
+function ReviewView({ tasks, userId, handlers }: {
+  tasks: TaskWithRelations[]
+  userId: string | null
+  handlers: RowHandlers
+}) {
+  const myInbox = tasks.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
+
+  const waiting = [...tasks]
+    .filter(t => t.status === 'waiting')
+    .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
+
+  const obligations = tasks.filter(t =>
+    t.auto_source != null && t.status !== 'done' &&
+    t.due_date != null && (daysUntil(t.due_date) ?? 999) <= 90
+  )
+  const obligationsByProperty = obligations.reduce((acc, t) => {
+    const key = t.properties?.name ?? 'Portfolio-wide'
+    ;(acc[key] ??= []).push(t)
+    return acc
+  }, {} as Record<string, TaskWithRelations[]>)
+
+  const rocks = tasks.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
+
+  const shipped = [...tasks]
+    .filter(t => t.status === 'done' && t.completed_at != null && (daysUntil(t.completed_at) ?? -999) >= -7)
+    .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
+
+  return (
+    <div className="pb-8">
+      {/* (a) Inbox to zero */}
+      <ReviewSection
+        title="Inbox to zero"
+        count={myInbox.length}
+        hint="Date it, assign it, promote it to a next action — or delete it.">
+        {myInbox.length
+          ? myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          : <SectionEmpty label="Inbox zero. Nothing to process." />}
+      </ReviewSection>
+
+      {/* (b) Waiting on */}
+      <ReviewSection
+        title="Waiting on"
+        count={waiting.length}
+        hint="Oldest first — chase or close them out.">
+        {waiting.length
+          ? waiting.map(t => {
+              const waitDays = Math.max(0, -(daysUntil(t.updated_at) ?? 0))
+              const names = (t.contacts ?? []).map(c => c.full_name).join(', ')
+              return (
+                <TaskRow key={t.id} task={t} handlers={handlers}
+                  meta={
+                    <span className="text-xs text-purple-600">
+                      waiting {waitDays}d{names ? ` · ${names}` : ''}
+                    </span>
+                  }
+                />
+              )
+            })
+          : <SectionEmpty label="Not waiting on anyone." />}
+      </ReviewSection>
+
+      {/* (c) Obligations horizon */}
+      <ReviewSection
+        title="Obligations horizon"
+        count={obligations.length}
+        hint="Auto-generated deadlines (renewals, expirations) due within 90 days, by property.">
+        {obligations.length
+          ? Object.entries(obligationsByProperty).map(([prop, propTasks]) => (
+              <div key={prop}>
+                <div className="flex items-center gap-2 px-6 py-1.5 bg-white border-b border-slate-100">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ background: propertyColor(prop === 'Portfolio-wide' ? null : prop) }} />
+                  <span className="text-xs font-semibold text-slate-500">{prop}</span>
+                  <span className="text-xs text-slate-300">({propTasks.length})</span>
+                </div>
+                {propTasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+              </div>
+            ))
+          : <SectionEmpty label="No obligations due within 90 days." />}
+      </ReviewSection>
+
+      {/* (d) Rocks */}
+      <div className="border-b border-slate-200">
+        <div className="px-6 py-3 bg-amber-50 border-b border-amber-100">
+          <div className="flex items-center gap-2">
+            <Mountain size={16} className="text-amber-500" />
+            <span className="text-sm font-bold text-amber-800 uppercase tracking-wide">Rocks</span>
+            <span className="text-xs text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded-full">{rocks.length}</span>
+          </div>
+          <p className="text-xs text-amber-600 mt-0.5">The big things this quarter — are they moving?</p>
+        </div>
+        {rocks.length
+          ? rocks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          : <SectionEmpty label="No rocks tagged. Use the mountain toggle on a task to mark one." />}
+      </div>
+
+      {/* (e) Shipped last 7 days */}
+      <ReviewSection
+        title="Shipped last 7 days"
+        count={shipped.length}
+        hint="Done and dusted — momentum check.">
+        {shipped.length
+          ? shipped.map(t => (
+              <TaskRow key={t.id} task={t} handlers={handlers}
+                meta={
+                  <span className="text-xs text-emerald-600">
+                    done {formatDateShort(t.completed_at)}
+                  </span>
+                }
+              />
+            ))
+          : <SectionEmpty label="Nothing completed in the last 7 days." />}
+      </ReviewSection>
+    </div>
+  )
+}
+
+function ReviewSection({ title, count, hint, children }: {
+  title: string
+  count: number
+  hint: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-b border-slate-200">
+      <div className="px-6 py-3 bg-slate-50 border-b border-slate-200">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-slate-700 uppercase tracking-wide">{title}</span>
+          <span className="text-xs text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded-full">{count}</span>
+        </div>
+        <p className="text-xs text-slate-400 mt-0.5">{hint}</p>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function SectionEmpty({ label }: { label: string }) {
+  return <div className="px-6 py-4 text-sm text-slate-400">{label}</div>
 }
 
 // ── Task Form Modal ──────────────────────────────────────────
@@ -688,32 +907,38 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     e.preventDefault()
     setSaving(true)
 
-    const payload: any = {
+    const payload = {
       title:              form.title,
       description:        form.description || null,
       property_id:        form.property_id || null,
       capex_project_id:   form.capex_project_id || null,
-      status:             form.status,
-      priority:           form.priority,
+      status:             form.status as Task['status'],
+      priority:           form.priority as Task['priority'],
       due_date:           form.due_date || null,
       snoozed_until:      form.snoozed_until || null,
       blocked_by_task_id: form.blocked_by_task_id || null,
       tags:               form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-      recur_freq:         form.recur_freq || null,
+      recur_freq:         (form.recur_freq || null) as Task['recur_freq'],
       recur_interval:     form.recur_freq === 'custom' ? parseInt(form.recur_interval) || null : null,
-      recur_unit:         form.recur_freq === 'custom' ? form.recur_unit : null,
-      recur_end_type:     form.recur_freq ? form.recur_end_type : null,
+      recur_unit:         form.recur_freq === 'custom' ? (form.recur_unit as Task['recur_unit']) : null,
+      recur_end_type:     form.recur_freq ? (form.recur_end_type as Task['recur_end_type']) : null,
       recur_end_date:     form.recur_end_type === 'on' ? form.recur_end_date || null : null,
       recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
     }
 
-    let taskId: string
+    let taskId: string | undefined
     if (task) {
       await supabase.from('tasks').update(payload).eq('id', task.id)
       taskId = task.id
     } else {
-      const { data } = await supabase.from('tasks').insert(payload).select('id').single()
-      taskId = (data as any)?.id
+      // Stamp ownership on create so the personal inbox / agenda can
+      // tell whose task this is.
+      const { data: auth } = await supabase.auth.getUser()
+      const { data: inserted } = await supabase.from('tasks')
+        .insert({ ...payload, created_by: auth.user?.id ?? null })
+        .select('id')
+        .single()
+      taskId = inserted?.id
     }
 
     // Sync contacts
@@ -721,7 +946,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       await supabase.from('task_contacts').delete().eq('task_id', taskId)
       if (selectedContacts.length > 0) {
         await supabase.from('task_contacts').insert(
-          selectedContacts.map(cid => ({ task_id: taskId, contact_id: cid }))
+          selectedContacts.map(cid => ({ task_id: taskId as string, contact_id: cid }))
         )
       }
     }
@@ -859,7 +1084,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
             <input type="date" value={form.snoozed_until}
               onChange={e => setForm(f => ({ ...f, snoozed_until: e.target.value }))}
               className="input" />
-            <p className="text-xs text-slate-400 mt-1">Task will hide from all views until this date</p>
+            <p className="text-xs text-slate-400 mt-1">Hides from the agenda until this date, then wakes up automatically</p>
           </div>
 
           {/* Tags */}
@@ -867,7 +1092,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
             <label className="label">Tags</label>
             <input value={form.tags}
               onChange={e => setForm(f => ({ ...f, tags: e.target.value }))}
-              className="input" placeholder="vendor, follow-up, urgent (comma separated)" />
+              className="input" placeholder="vendor, rock, follow-up (comma separated)" />
           </div>
 
           {/* Recurrence */}

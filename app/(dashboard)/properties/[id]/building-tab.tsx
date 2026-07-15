@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
 import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import { TaskFromRecord } from '@/components/ui/task-from-record'
 import type { UnitMix } from '@/lib/supabase/types'
 
 type PcaItem = {
@@ -51,8 +52,9 @@ const PCA_CATEGORIES = [
   'Electrical', 'Interiors', 'Amenities', 'ADA', 'Other',
 ]
 
-export default function BuildingTab({ propertyId, initialFacts }: {
+export default function BuildingTab({ propertyId, propertyName, initialFacts }: {
   propertyId: string
+  propertyName: string
   initialFacts: Facts
 }) {
   const supabase = createClient()
@@ -227,8 +229,13 @@ export default function BuildingTab({ propertyId, initialFacts }: {
                         {it.rul_years != null && <span className="text-xs">{it.rul_years} yr RUL</span>}
                         {it.est_cost != null && <span className="block text-xs">${it.est_cost.toLocaleString()}</span>}
                       </td>
-                      <td className="w-12 align-top">
-                        <div className="flex justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <td className="w-24 align-top">
+                        <div className="flex justify-end items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <TaskFromRecord
+                            title={`Address: ${it.label} — ${propertyName}`}
+                            propertyId={propertyId}
+                            tags={['pca']}
+                          />
                           <button onClick={() => setItemModal({ item: it })} aria-label="Edit item"
                             className="text-slate-300 hover:text-blue-500">
                             <Pencil size={12} />

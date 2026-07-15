@@ -43,6 +43,13 @@ export function firstOfMonth(date?: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
 }
 
+// Local calendar date as yyyy-MM-dd (not UTC — matches the dates
+// users pick in <input type="date">).
+export function todayISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export function daysUntil(date: string | null | undefined): number | null {
   if (!date) return null
   return differenceInDays(parseISO(date), new Date())
