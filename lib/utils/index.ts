@@ -182,6 +182,12 @@ export const CAPEX_STATUS_DOT: Record<string, string> = {
   on_hold:     '#ef4444',
 }
 
+export const INSPECTION_STATUS_STYLES: Record<string, string> = {
+  draft:       'text-amber-700 bg-amber-50 border-amber-200',
+  submitted:   'text-emerald-700 bg-emerald-50 border-emerald-200',
+  report_sent: 'text-blue-700 bg-blue-50 border-blue-200',
+}
+
 export const CLAIM_STATUS_STYLES: Record<string, string> = {
   reported:     'text-blue-700 bg-blue-50 border-blue-200',
   under_review: 'text-amber-700 bg-amber-50 border-amber-200',
