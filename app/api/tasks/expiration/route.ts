@@ -29,6 +29,11 @@ import type { Contract, Database, InsurancePolicy, Task } from '@/lib/supabase/t
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+// Lead time before a deadline that an obligation task appears. 120 days for
+// both insurance expirations and contract cancellations/expirations, so Nick
+// has runway to shop replacements. Priority still escalates as it nears.
+const LEAD_DAYS = 120
+
 const INSURANCE_SOURCE = 'insurance_expiry'
 const CONTRACT_SOURCE = 'contract_deadline'
 
@@ -61,7 +66,7 @@ export async function GET(req: NextRequest) {
       supabase.from('insurance_policies')
         .select('*')
         .eq('status', 'active')
-        .lte('expiry_date', addDays(today, 90)),
+        .lte('expiry_date', addDays(today, LEAD_DAYS)),
       supabase.from('contracts')
         .select('*')
         .eq('status', 'active'),
@@ -187,11 +192,10 @@ function desiredInsuranceTask(policy: InsurancePolicy, today: string): DesiredTa
 
 function desiredContractTask(contract: Contract, today: string): DesiredTask | null {
   // Cancel window is the actionable deadline when present; otherwise the
-  // contract's expiration. Cancel windows get a tighter 30-day horizon.
+  // contract's expiration. Both surface LEAD_DAYS (120d) ahead.
   const deadline = contract.cancel_deadline ?? contract.expiration_date
   if (!deadline) return null
-  const horizon = contract.cancel_deadline ? 30 : 60
-  if (deadline > addDays(today, horizon)) return null
+  if (deadline > addDays(today, LEAD_DAYS)) return null
 
   const days = daysBetween(today, deadline)
   const kind = contract.cancel_deadline ? 'cancel window' : 'expiration'
