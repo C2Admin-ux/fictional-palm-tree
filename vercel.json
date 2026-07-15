@@ -1,3 +1,5 @@
 {
-  "crons": []
+  "crons": [
+    { "path": "/api/tasks/expiration", "schedule": "0 6 * * *" }
+  ]
 }
