@@ -81,7 +81,9 @@ export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children
 
   return (
     <div
-      className="relative overflow-hidden"
+      // overflow-hidden only mid-gesture — at rest it would clip the
+      // row's own dropdowns (snooze presets, priority pip).
+      className={dx !== 0 ? 'relative overflow-hidden' : 'relative'}
       style={{ touchAction: 'pan-y' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
