@@ -8,6 +8,7 @@ import {
 } from '@/lib/utils'
 import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft } from 'lucide-react'
 import BuildingTab from './building-tab'
+import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
 import { StatusBadge } from '@/components/ui/badge'
 
 export const dynamic = 'force-dynamic'
@@ -35,6 +36,7 @@ export default async function PropertyPage({
     { data: documents },
     { data: policies },
     { data: permits },
+    { data: inspections },
   ] = await Promise.all([
     supabase.from('tasks').select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
@@ -42,6 +44,9 @@ export default async function PropertyPage({
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('insurance_policies').select('*').eq('property_id', params.id).eq('status', 'active'),
     supabase.from('property_permits').select('*').eq('property_id', params.id).order('issued_date', { ascending: false, nullsFirst: false }),
+    supabase.from('inspections')
+      .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
+      .eq('property_id', params.id).order('inspection_date', { ascending: false }),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -50,6 +55,7 @@ export default async function PropertyPage({
   const propDocs = (documents ?? []) as any[]
   const propPolicies = (policies ?? []) as any[]
   const propPermits = permits ?? []
+  const propInspections = (inspections ?? []) as unknown as InspectionTabRow[]
   const latestMetric = propMetrics[0]
   const p = property as any
   const pmc = p.pmcs
@@ -62,6 +68,7 @@ export default async function PropertyPage({
     { id: 'tasks',     label: `Tasks (${propTasks.length})` },
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
+    { id: 'inspections', label: `Inspections (${propInspections.length})` },
     { id: 'building',  label: 'Building' },
     { id: 'permits',   label: `Permits (${propPermits.length})` },
     { id: 'documents', label: `Documents (${propDocs.length})` },
@@ -371,6 +378,8 @@ export default async function PropertyPage({
             }
           </div>
         )}
+
+        {tab === 'inspections' && <InspectionsTab inspections={propInspections} />}
 
         {tab === 'building' && (
           <BuildingTab

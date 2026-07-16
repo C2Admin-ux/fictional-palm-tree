@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
+import { inspectionScore, scoreGrade, GRADE_STYLES } from '@/lib/inspections/score'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -24,7 +25,7 @@ type InspectionRow = {
   notes: string | null
   created_at: string
   properties: { name: string } | null
-  inspection_items: { requires_action: boolean }[]
+  inspection_items: { requires_action: boolean; action_priority: string | null }[]
 }
 
 export default function InspectionsPage() {
@@ -43,7 +44,7 @@ export default function InspectionsPage() {
 
   const fetchInspections = useCallback(async () => {
     let q = supabase.from('inspections')
-      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action)')
+      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action, action_priority)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
     if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
@@ -72,6 +73,7 @@ export default function InspectionsPage() {
       property_name: i.properties?.name ?? '',
       item_count: i.inspection_items.length,
       open_findings: i.inspection_items.filter(it => it.requires_action).length,
+      score: inspectionScore(i.inspection_items),
     }))
     .sort(sortFn)
 
@@ -182,6 +184,9 @@ export default function InspectionsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className={cn('badge', GRADE_STYLES[scoreGrade(insp.score)])}>
+                    {scoreGrade(insp.score)} · {insp.score}
+                  </span>
                   {insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
@@ -198,13 +203,14 @@ export default function InspectionsPage() {
 
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden sm:block">
-            <table className="w-full text-sm min-w-[720px]">
+            <table className="w-full text-sm min-w-[800px]">
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
                   <Th label="Property" field="property_name" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                   <Th label="Type" field="inspection_type" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Date" field="inspection_date" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
+                  <Th label="Score" field="score" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Findings" field="item_count" current={sort} dir={dir} onSort={toggle} align="right" />
                   <Th label="Follow-ups" field="open_findings" current={sort} dir={dir} onSort={toggle} align="right" />
                   <th className="w-14" />
@@ -230,6 +236,11 @@ export default function InspectionsPage() {
                     <td className="px-3 py-3">
                       <span className={cn('badge', INSPECTION_STATUS_STYLES[insp.status])}>
                         {INSPECTION_STATUS_LABELS[insp.status] ?? insp.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={cn('badge', GRADE_STYLES[scoreGrade(insp.score)])}>
+                        {scoreGrade(insp.score)} · {insp.score}
                       </span>
                     </td>
                     <td className="px-3 py-3 text-right text-slate-700">{insp.item_count}</td>
