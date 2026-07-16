@@ -59,11 +59,34 @@ alter table inspection_items
   add column if not exists task_id uuid references tasks(id) on delete set null,
   add column if not exists created_at timestamptz not null default now();
 
+-- Pre-existing (dashboard-created) tables must end up with the same
+-- invariants the CREATE path enforces. Backfill out-of-vocabulary data
+-- FIRST, then add the constraints (guarded, so re-runs are no-ops).
+update inspections set status = 'draft'
+  where status is null or status not in ('draft', 'submitted', 'report_sent');
+
+alter table inspections
+  alter column status set not null;  -- idempotent; backfill above cleared any NULLs
+
+do $$ begin
+  alter table inspections
+    add constraint inspections_status_check
+    check (status in ('draft', 'submitted', 'report_sent'));
+exception when duplicate_object then null; end $$;
+
 -- Sprint 6 additions: inspection type (site_visit vs annual) and a
 -- per-item unit number (a section instance = section_name + unit_number,
 -- e.g. "Vacant Unit" + '204' renders as "Vacant Unit · 204").
 alter table inspections
   add column if not exists inspection_type text not null default 'site_visit';
+
+-- Same backfill-then-constrain treatment: a pre-existing inspection_type
+-- column may be nullable or hold out-of-vocabulary values.
+update inspections set inspection_type = 'site_visit'
+  where inspection_type is null or inspection_type not in ('site_visit', 'annual');
+
+alter table inspections
+  alter column inspection_type set not null;  -- idempotent; backfill above cleared any NULLs
 
 do $$ begin
   alter table inspections
