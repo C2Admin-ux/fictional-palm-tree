@@ -19,7 +19,7 @@ import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
   ACTION_PRIORITIES, type ActionPriority,
 } from '@/lib/inspections/templates'
-import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos } from '@/lib/inspections/photos'
+import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import {
@@ -48,48 +48,103 @@ export default function InspectionDetailPage() {
   const [items, setItems] = useState<InspectionItem[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
-  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({})
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  // Lightbox holds the storage PATH (not the URL) so a failed image load
+  // can force a re-sign of exactly that path.
+  const [photoUrls, setPhotoUrls] = useState<Record<string, SignedPhotoUrl>>({})
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [editItem, setEditItem] = useState<InspectionItem | null>(null)
+  const [signTick, setSignTick] = useState(0)
 
   // Chips created via "+ unit" that don't have a saved item yet.
   const [extraInstances, setExtraInstances] = useState<SectionInstance[]>([])
   const [active, setActive] = useState<SectionInstance | null>(null)
 
+  // Latest items, readable from async closures that may have gone stale
+  // while an upload was in flight.
+  const itemsRef = useRef<InspectionItem[]>([])
+  useEffect(() => { itemsRef.current = items }, [items])
+
   const fetchInspection = useCallback(async () => {
-    const { data } = await supabase.from('inspections')
+    const { data, error } = await supabase.from('inspections')
       .select('*, properties(name)').eq('id', inspectionId).single()
+    if (error) {
+      // Only a genuine no-rows result means "not found" — a transient
+      // network/API failure must never kick an open inspection to a 404.
+      if (error.code === 'PGRST116') { setNotFound(true); setLoading(false); return }
+      setFetchError(error.message)
+      setLoading(false)
+      return
+    }
     if (!data) { setNotFound(true); setLoading(false); return }
+    setFetchError(null)
     setInspection(data as unknown as InspectionDetail)
     setLoading(false)
   }, [inspectionId])
 
   const fetchItems = useCallback(async () => {
-    const { data } = await supabase.from('inspection_items')
+    const { data, error } = await supabase.from('inspection_items')
       .select('*').eq('inspection_id', inspectionId).order('created_at')
+    if (error) { setActionError(`Could not load findings: ${error.message}`); return }
     setItems((data as InspectionItem[]) ?? [])
   }, [inspectionId])
 
   useEffect(() => { fetchInspection(); fetchItems() }, [fetchInspection, fetchItems])
 
-  // Sign URLs for any photo paths we haven't signed yet (private bucket, 1hr).
+  // Sign URLs for photo paths that are missing or nearing expiry (private
+  // bucket, 1hr TTL, re-signed 5min early). On failure/empty result, retry
+  // once after a short delay — flaky onsite connectivity is the norm here.
   useEffect(() => {
-    const missing = items.flatMap(i => i.photo_paths).filter(p => !photoUrls[p])
-    if (missing.length === 0) return
-    signedPhotoUrls(supabase, missing).then(fresh => {
-      if (Object.keys(fresh).length) setPhotoUrls(prev => ({ ...prev, ...fresh }))
+    let cancelled = false
+    const now = Date.now()
+    const stale = Array.from(new Set(items.flatMap(i => i.photo_paths)))
+      .filter(p => { const e = photoUrls[p]; return !e || e.expiresAt <= now })
+    if (stale.length === 0) return
+    const sign = async (retry: boolean) => {
+      try {
+        const fresh = await signedPhotoUrls(supabase, stale)
+        if (cancelled) return
+        if (Object.keys(fresh).length) setPhotoUrls(prev => ({ ...prev, ...fresh }))
+        else if (retry) setTimeout(() => { if (!cancelled) sign(false) }, 3000)
+      } catch {
+        if (retry) setTimeout(() => { if (!cancelled) sign(false) }, 3000)
+      }
+    }
+    sign(true)
+    return () => { cancelled = true }
+  }, [items, signTick])
+
+  // While the page is open, periodically re-run the signing pass so URLs
+  // are refreshed before their TTL lapses mid-walk.
+  useEffect(() => {
+    const t = setInterval(() => setSignTick(n => n + 1), 10 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  // A thumbnail/lightbox image failed to load — drop its signed URL and
+  // trigger a fresh signing pass for it.
+  const invalidatePhoto = useCallback((path: string) => {
+    setPhotoUrls(prev => {
+      const next = { ...prev }
+      delete next[path]
+      return next
     })
-  }, [items])
+    setSignTick(n => n + 1)
+  }, [])
 
   async function patchInspection(patch: Partial<Inspection>) {
     if (!inspection) return
-    await supabase.from('inspections').update(patch).eq('id', inspection.id)
-    fetchInspection()
+    setActionError(null)
+    const { error } = await supabase.from('inspections').update(patch).eq('id', inspection.id)
+    if (error) { setActionError(`Save failed: ${error.message}`); return }
+    setInspection(prev => prev ? { ...prev, ...patch } : prev)
   }
 
   // ── Section instances: template + saved items + unsaved "+ unit" chips ──
 
-  const template = TEMPLATE_SECTIONS[inspection?.inspection_type ?? 'site_visit']
+  // Fallback guards against an out-of-vocabulary type on a pre-existing row.
+  const template = TEMPLATE_SECTIONS[inspection?.inspection_type ?? 'site_visit'] ?? TEMPLATE_SECTIONS.site_visit
 
   const instances = useMemo<SectionInstance[]>(() => {
     const seen = new Set<string>()
@@ -138,19 +193,30 @@ export default function InspectionDetailPage() {
 
   async function deleteItem(item: InspectionItem) {
     if (!confirm(`Delete this finding${item.item_label ? ` ("${item.item_label}")` : ''}? Its photos will be removed too.`)) return
+    setActionError(null)
+    // DB row first — if this fails the finding survives intact. Storage
+    // cleanup after, best-effort (orphaned files acceptable, lost rows not).
+    const { error } = await supabase.from('inspection_items').delete().eq('id', item.id)
+    if (error) { setActionError(`Delete failed: ${error.message}`); return }
     await removeInspectionPhotos(supabase, item.photo_paths)
-    await supabase.from('inspection_items').delete().eq('id', item.id)
-    fetchItems()
+    setItems(prev => prev.filter(i => i.id !== item.id))
   }
 
   async function appendPhotos(item: InspectionItem, files: File[]) {
     if (!inspection || files.length === 0) return
     try {
       const paths = await uploadInspectionPhotos(supabase, inspection.property_id, inspection.id, files)
-      const { error } = await supabase.from('inspection_items')
-        .update({ photo_paths: [...item.photo_paths, ...paths] }).eq('id', item.id)
-      if (error) throw new Error(error.message)
-      fetchItems()
+      // Re-read the item from the LATEST state — the prop may be stale if
+      // another mutation resolved while the upload was in flight.
+      const current = itemsRef.current.find(i => i.id === item.id) ?? item
+      const { data, error } = await supabase.from('inspection_items')
+        .update({ photo_paths: [...current.photo_paths, ...paths] })
+        .eq('id', item.id)
+        .select()
+        .single()
+      if (error || !data) throw new Error(error?.message ?? 'Save failed')
+      const updated = data as InspectionItem
+      setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Photo upload failed — try again.')
     }
@@ -159,6 +225,24 @@ export default function InspectionDetailPage() {
   // ── Render ───────────────────────────────────────────────────
 
   if (loading) return <div className="p-6 text-center text-sm text-slate-400">Loading…</div>
+  if (fetchError && !inspection) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto space-y-3">
+        <p className="text-sm text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={14} className="flex-shrink-0" />
+          Could not load this inspection — {fetchError}
+        </p>
+        <button
+          onClick={() => { setLoading(true); setFetchError(null); fetchInspection() }}
+          className="btn-secondary">
+          <RotateCcw size={14} />Retry
+        </button>
+        <div>
+          <Link href="/inspections" className="text-sm text-blue-600 hover:underline inline-block">← Back to inspections</Link>
+        </div>
+      </div>
+    )
+  }
   if (notFound || !inspection) {
     return (
       <div className="p-6 max-w-2xl mx-auto">
@@ -234,6 +318,18 @@ export default function InspectionDetailPage() {
         </div>
       </div>
 
+      {/* Mutation errors surface inline — never silently pretend success */}
+      {actionError && (
+        <p className="text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} aria-label="Dismiss error"
+            className="text-red-400 hover:text-red-600 flex-shrink-0">
+            <X size={12} />
+          </button>
+        </p>
+      )}
+
       {/* Section chips — horizontally scrollable on mobile, tap freely */}
       <div className="flex gap-1.5 overflow-x-auto scrollbar-thin pb-1.5 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
         {instances.map(inst => {
@@ -308,6 +404,7 @@ export default function InspectionDetailPage() {
                     onEdit={() => setEditItem(item)}
                     onDelete={() => deleteItem(item)}
                     onAppendPhotos={files => appendPhotos(item, files)}
+                    onPhotoError={invalidatePhoto}
                   />
                 ))}
               </div>
@@ -323,7 +420,7 @@ export default function InspectionDetailPage() {
         <AddFindingForm
           inspection={inspection}
           active={active}
-          onSaved={fetchItems}
+          onSaved={saved => setItems(prev => [...prev, saved])}
         />
       ) : (
         <div className="card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
@@ -332,7 +429,7 @@ export default function InspectionDetailPage() {
         </div>
       )}
 
-      {/* Lightbox */}
+      {/* Lightbox — keyed by storage path so a load failure can re-sign */}
       {lightbox && (
         <div
           className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
@@ -340,8 +437,14 @@ export default function InspectionDetailPage() {
           <button className="absolute top-4 right-4 text-white/70 hover:text-white" aria-label="Close photo">
             <X size={22} />
           </button>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={lightbox} alt="Inspection photo" className="max-h-full max-w-full rounded-lg object-contain" />
+          {photoUrls[lightbox] ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={photoUrls[lightbox].url} alt="Inspection photo"
+              onError={() => invalidatePhoto(lightbox)}
+              className="max-h-full max-w-full rounded-lg object-contain" />
+          ) : (
+            <div className="w-64 h-64 rounded-lg bg-white/10 animate-pulse" />
+          )}
         </div>
       )}
 
@@ -351,7 +454,10 @@ export default function InspectionDetailPage() {
           item={editItem}
           instances={instances}
           onClose={() => setEditItem(null)}
-          onSaved={() => { setEditItem(null); fetchItems() }}
+          onSaved={updated => {
+            setEditItem(null)
+            setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
+          }}
         />
       )}
     </div>
@@ -360,13 +466,14 @@ export default function InspectionDetailPage() {
 
 // ── Finding card ─────────────────────────────────────────────
 
-function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos }: {
+function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError }: {
   item: InspectionItem
-  photoUrls: Record<string, string>
-  onView: (url: string) => void
+  photoUrls: Record<string, SignedPhotoUrl>
+  onView: (path: string) => void
   onEdit: () => void
   onDelete: () => void
-  onAppendPhotos: (files: File[]) => void
+  onAppendPhotos: (files: File[]) => Promise<void>
+  onPhotoError: (path: string) => void
 }) {
   const [uploading, setUploading] = useState(false)
 
@@ -387,7 +494,7 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
             {item.item_label || 'No description'}
           </p>
           {item.requires_action && (
-            <span className={cn('badge mt-1.5', PRIORITY_STYLES[item.action_priority ?? 'medium'])}>
+            <span className={cn('badge mt-1.5', PRIORITY_STYLES[item.action_priority ?? 'medium'] ?? 'text-slate-600 bg-slate-100 border-slate-200')}>
               <Flag size={9} className="mr-1" />
               Follow up{item.action_priority ? ` · ${PRIORITY_LABELS[item.action_priority as ActionPriority] ?? item.action_priority}` : ''}
             </span>
@@ -405,11 +512,12 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
 
       <div className="flex gap-1.5 mt-2 flex-wrap">
           {item.photo_paths.map(path => {
-            const url = photoUrls[path]
-            return url ? (
-              <button key={path} onClick={() => onView(url)} className="block" title="View full size">
+            const signed = photoUrls[path]
+            return signed ? (
+              <button key={path} onClick={() => onView(path)} className="block" title="View full size">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={url} alt="Finding photo"
+                <img src={signed.url} alt="Finding photo"
+                  onError={() => onPhotoError(path)}
                   className="w-16 h-16 sm:w-20 sm:h-20 object-cover rounded-lg border border-slate-200" />
               </button>
             ) : (
@@ -437,7 +545,7 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
 function AddFindingForm({ inspection, active, onSaved }: {
   inspection: Inspection
   active: SectionInstance | null
-  onSaved: () => void
+  onSaved: (item: InspectionItem) => void
 }) {
   const supabase = createClient()
   const [files, setFiles] = useState<File[]>([])
@@ -482,7 +590,7 @@ function AddFindingForm({ inspection, active, onSaved }: {
       const paths = files.length > 0
         ? await uploadInspectionPhotos(supabase, inspection.property_id, inspection.id, files)
         : []
-      const { error: insertError } = await supabase.from('inspection_items').insert({
+      const { data, error: insertError } = await supabase.from('inspection_items').insert({
         inspection_id: inspection.id,
         section_name: active.name,
         unit_number: active.unit,
@@ -490,8 +598,8 @@ function AddFindingForm({ inspection, active, onSaved }: {
         requires_action: followUp,
         action_priority: followUp ? priority : null,
         photo_paths: paths,
-      })
-      if (insertError) throw new Error(insertError.message)
+      }).select().single()
+      if (insertError || !data) throw new Error(insertError?.message ?? 'Save failed')
 
       // Saved — reset for the next finding.
       previews.forEach(URL.revokeObjectURL)
@@ -503,7 +611,7 @@ function AddFindingForm({ inspection, active, onSaved }: {
       setState('saved')
       if (savedTimer.current) clearTimeout(savedTimer.current)
       savedTimer.current = setTimeout(() => setState(s => s === 'saved' ? 'idle' : s), 2500)
-      onSaved()
+      onSaved(data as InspectionItem)
     } catch (e) {
       // Keep the form populated — nothing captured is lost.
       setState('error')
@@ -606,7 +714,7 @@ function EditFindingModal({ item, instances, onClose, onSaved }: {
   item: InspectionItem
   instances: SectionInstance[]
   onClose: () => void
-  onSaved: () => void
+  onSaved: (item: InspectionItem) => void
 }) {
   const supabase = createClient()
   const sectionNames = Array.from(new Set(instances.map(i => i.name)))
@@ -625,19 +733,19 @@ function EditFindingModal({ item, instances, onClose, onSaved }: {
     e.preventDefault()
     setSaving(true)
     setError(null)
-    const { error: updateError } = await supabase.from('inspection_items').update({
+    const { data, error: updateError } = await supabase.from('inspection_items').update({
       item_label: description.trim(),
       section_name: sectionName,
       unit_number: unitNumber.trim() || null,
       requires_action: followUp,
       action_priority: followUp ? priority : null,
-    }).eq('id', item.id)
-    if (updateError) {
-      setError(updateError.message)
+    }).eq('id', item.id).select().single()
+    if (updateError || !data) {
+      setError(updateError?.message ?? 'Save failed')
       setSaving(false)
       return
     }
-    onSaved()
+    onSaved(data as InspectionItem)
   }
 
   return (
