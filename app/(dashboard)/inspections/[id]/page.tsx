@@ -21,6 +21,10 @@ import {
   ACTION_PRIORITIES, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
 import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import {
+  instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
+  groupItemsByInstance, type SectionInstance,
+} from '@/lib/inspections/sections'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import {
@@ -29,12 +33,6 @@ import {
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
-
-// A section instance = section name + optional unit ("Vacant Unit · 204").
-type SectionInstance = { name: string; unit: string | null }
-
-const instanceKey = (name: string, unit: string | null) => `${name}|${unit ?? ''}`
-const instanceLabel = (s: SectionInstance) => s.unit ? `${s.name} · ${s.unit}` : s.name
 
 const PRIORITY_LABELS: Record<ActionPriority, string> = {
   low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
@@ -143,35 +141,10 @@ export default function InspectionDetailPage() {
   // Fallback guards against an out-of-vocabulary type on a pre-existing row.
   const template = TEMPLATE_SECTIONS[inspection?.inspection_type ?? 'site_visit'] ?? TEMPLATE_SECTIONS.site_visit
 
-  const instances = useMemo<SectionInstance[]>(() => {
-    const seen = new Set<string>()
-    const out: SectionInstance[] = []
-    const push = (name: string, unit: string | null) => {
-      const key = instanceKey(name, unit)
-      if (seen.has(key)) return
-      seen.add(key)
-      out.push({ name, unit })
-    }
-    for (const section of template) {
-      push(section.name, null)
-      // Unit instances of this duplicable section, in the order captured.
-      for (const it of items) {
-        if (it.section_name === section.name && it.unit_number) push(section.name, it.unit_number)
-      }
-    }
-    // Data-driven: sections already on items even if not in the template.
-    for (const it of items) push(it.section_name, it.unit_number)
-    return out
-  }, [template, items])
+  const instances = useMemo<SectionInstance[]>(
+    () => buildSectionInstances(template, items), [template, items])
 
-  const countByInstance = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const it of items) {
-      const key = instanceKey(it.section_name, it.unit_number)
-      map[key] = (map[key] ?? 0) + 1
-    }
-    return map
-  }, [items])
+  const countByInstance = useMemo(() => countItemsByInstance(items), [items])
 
   // ── Item mutations ───────────────────────────────────────────
 
@@ -240,12 +213,7 @@ export default function InspectionDetailPage() {
   const isDraft = inspection.status === 'draft'
 
   // Groups in template/instance order; only instances that actually have items.
-  const groups = instances
-    .map(inst => ({
-      inst,
-      items: items.filter(it => instanceKey(it.section_name, it.unit_number) === instanceKey(inst.name, inst.unit)),
-    }))
-    .filter(g => g.items.length > 0)
+  const groups = groupItemsByInstance(instances, items)
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4 pb-6">
