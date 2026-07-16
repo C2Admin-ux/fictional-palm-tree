@@ -1,10 +1,11 @@
 'use client'
 
 // Inspection capture + review — the screen Nick walks a property with.
-// Mobile-first: section chips follow how he walks (never force an order),
-// findings save independently the moment he hits Save (flaky onsite
-// connectivity must not lose work), and the add-finding form stays
-// thumb-reachable at the bottom of the viewport.
+// Mobile-first: the add-finding form sits right under the header (one small
+// scroll-to-top from anywhere) with a native section dropdown that follows
+// how he walks (never forces an order), and findings save independently the
+// moment he hits Save (flaky onsite connectivity must not lose work).
+// Findings accumulate below, grouped by section instance.
 
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import Link from 'next/link'
@@ -17,13 +18,13 @@ import {
 } from '@/lib/utils'
 import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
-  ACTION_PRIORITIES, type ActionPriority,
+  ACTION_PRIORITIES, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
 import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import {
-  ArrowLeft, Camera, Plus, X, Flag, Trash2, Pencil,
+  ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
 } from 'lucide-react'
 
@@ -56,10 +57,6 @@ export default function InspectionDetailPage() {
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [editItem, setEditItem] = useState<InspectionItem | null>(null)
   const [signTick, setSignTick] = useState(0)
-
-  // Chips created via "+ unit" that don't have a saved item yet.
-  const [extraInstances, setExtraInstances] = useState<SectionInstance[]>([])
-  const [active, setActive] = useState<SectionInstance | null>(null)
 
   // Latest items, readable from async closures that may have gone stale
   // while an upload was in flight.
@@ -141,7 +138,7 @@ export default function InspectionDetailPage() {
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
   }
 
-  // ── Section instances: template + saved items + unsaved "+ unit" chips ──
+  // ── Section instances: template + instances already on saved items ──
 
   // Fallback guards against an out-of-vocabulary type on a pre-existing row.
   const template = TEMPLATE_SECTIONS[inspection?.inspection_type ?? 'site_visit'] ?? TEMPLATE_SECTIONS.site_visit
@@ -161,15 +158,11 @@ export default function InspectionDetailPage() {
       for (const it of items) {
         if (it.section_name === section.name && it.unit_number) push(section.name, it.unit_number)
       }
-      for (const ex of extraInstances) {
-        if (ex.name === section.name && ex.unit) push(ex.name, ex.unit)
-      }
     }
     // Data-driven: sections already on items even if not in the template.
     for (const it of items) push(it.section_name, it.unit_number)
-    for (const ex of extraInstances) push(ex.name, ex.unit)
     return out
-  }, [template, items, extraInstances])
+  }, [template, items])
 
   const countByInstance = useMemo(() => {
     const map: Record<string, number> = {}
@@ -179,15 +172,6 @@ export default function InspectionDetailPage() {
     }
     return map
   }, [items])
-
-  function addUnitInstance(sectionName: string) {
-    const unit = window.prompt(`Unit number for "${sectionName}"? (e.g. 204)`)?.trim()
-    if (!unit) return
-    const instance = { name: sectionName, unit }
-    setExtraInstances(prev =>
-      prev.some(e => e.name === sectionName && e.unit === unit) ? prev : [...prev, instance])
-    setActive(instance)
-  }
 
   // ── Item mutations ───────────────────────────────────────────
 
@@ -255,7 +239,7 @@ export default function InspectionDetailPage() {
   const propertyName = inspection.properties?.name ?? ''
   const isDraft = inspection.status === 'draft'
 
-  // Groups in chip order; only instances that actually have items.
+  // Groups in template/instance order; only instances that actually have items.
   const groups = instances
     .map(inst => ({
       inst,
@@ -330,54 +314,26 @@ export default function InspectionDetailPage() {
         </p>
       )}
 
-      {/* Section chips — horizontally scrollable on mobile, tap freely */}
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin pb-1.5 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible">
-        {instances.map(inst => {
-          const key = instanceKey(inst.name, inst.unit)
-          const count = countByInstance[key] ?? 0
-          const isActive = active != null && instanceKey(active.name, active.unit) === key
-          const section = template.find(s => s.name === inst.name)
-          const showAddUnit = !inst.unit && section?.duplicable
-          return (
-            <div key={key} className="flex items-stretch flex-shrink-0">
-              <button
-                onClick={() => setActive(isActive ? null : inst)}
-                className={cn(
-                  'flex items-center gap-1.5 border text-sm px-3 py-2 whitespace-nowrap transition-colors',
-                  showAddUnit ? 'rounded-l-full border-r-0' : 'rounded-full',
-                  isActive
-                    ? 'bg-blue-600 border-blue-600 text-white font-medium'
-                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                )}>
-                {instanceLabel(inst)}
-                {count > 0 && (
-                  <span className={cn(
-                    'text-xs rounded-full px-1.5 py-0.5 leading-none font-medium',
-                    isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
-                  )}>
-                    {count}
-                  </span>
-                )}
-              </button>
-              {showAddUnit && (
-                <button
-                  onClick={() => addUnitInstance(inst.name)}
-                  title={`Add a unit to ${inst.name}`}
-                  className={cn(
-                    'flex items-center gap-0.5 border rounded-r-full pl-1.5 pr-2.5 text-xs transition-colors',
-                    isActive
-                      ? 'bg-blue-600 border-blue-600 text-white/80 hover:text-white'
-                      : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600'
-                  )}>
-                  <Plus size={11} />unit
-                </button>
-              )}
-            </div>
-          )
-        })}
-      </div>
+      {/* Add-finding form — in normal flow right under the header, so it's
+          one small scroll-to-top from anywhere. Not keyed on the selected
+          section: switching sections mid-composition must never wipe pending
+          photos or text. */}
+      {isDraft ? (
+        <AddFindingForm
+          inspection={inspection}
+          template={template}
+          instances={instances}
+          countByInstance={countByInstance}
+          onSaved={saved => setItems(prev => [...prev, saved])}
+        />
+      ) : (
+        <div className="card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
+          <ClipboardCheck size={14} className="text-slate-300" />
+          Inspection is {INSPECTION_STATUS_LABELS[inspection.status]?.toLowerCase() ?? inspection.status} — reopen the draft to add findings.
+        </div>
+      )}
 
-      {/* Findings grouped by section instance */}
+      {/* Findings grouped by section instance, accumulating below the form */}
       {groups.length === 0 ? (
         <div className="card py-12 text-center">
           <Camera size={28} className="text-slate-200 mx-auto mb-2" />
@@ -410,22 +366,6 @@ export default function InspectionDetailPage() {
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* Add-finding form — sticky at the bottom, thumb-reachable.
-          Not keyed on the active section: switching chips mid-composition
-          must never wipe pending photos or text. */}
-      {isDraft ? (
-        <AddFindingForm
-          inspection={inspection}
-          active={active}
-          onSaved={saved => setItems(prev => [...prev, saved])}
-        />
-      ) : (
-        <div className="card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
-          <ClipboardCheck size={14} className="text-slate-300" />
-          Inspection is {INSPECTION_STATUS_LABELS[inspection.status]?.toLowerCase() ?? inspection.status} — reopen the draft to add findings.
         </div>
       )}
 
@@ -541,13 +481,23 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
 // ── Add-finding form ─────────────────────────────────────────
 // Each finding saves independently (autosave per item); on failure the
 // form stays populated so nothing captured onsite is lost.
+//
+// The section instance a new finding lands on is chosen here: a native
+// <select> (iOS gives it the wheel/sheet picker — ideal one-handed onsite)
+// lists template sections plus instances already on saved items, and a
+// unit-number input appears for duplicable sections. Section + unit
+// together define the instance, exactly like the old chips did.
 
-function AddFindingForm({ inspection, active, onSaved }: {
+function AddFindingForm({ inspection, template, instances, countByInstance, onSaved }: {
   inspection: Inspection
-  active: SectionInstance | null
+  template: TemplateSection[]
+  instances: SectionInstance[]
+  countByInstance: Record<string, number>
   onSaved: (item: InspectionItem) => void
 }) {
   const supabase = createClient()
+  const [sectionName, setSectionName] = useState('')
+  const [unitNumber, setUnitNumber] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [previews, setPreviews] = useState<string[]>([])
   const [description, setDescription] = useState('')
@@ -556,6 +506,34 @@ function AddFindingForm({ inspection, active, onSaved }: {
   const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const duplicable = template.some(s => s.name === sectionName && s.duplicable)
+  // The instance the new finding saves to. For non-duplicable sections the
+  // unit box is hidden, but a unit picked via an existing-instance option
+  // (off-template legacy data) still carries through unitNumber.
+  const active: SectionInstance | null = sectionName
+    ? { name: sectionName, unit: unitNumber.trim() || null }
+    : null
+
+  const optionKeys = useMemo(() => new Set(instances.map(i => instanceKey(i.name, i.unit))), [instances])
+  // Keep the <select> honest when the typed unit doesn't match an existing
+  // instance option: fall back to the base section option.
+  const activeKey = active ? instanceKey(active.name, active.unit) : ''
+  const selectValue = activeKey && optionKeys.has(activeKey)
+    ? activeKey
+    : sectionName && optionKeys.has(instanceKey(sectionName, null))
+      ? instanceKey(sectionName, null)
+      : activeKey
+
+  function pickSection(key: string) {
+    if (!key) { setSectionName(''); setUnitNumber(''); return }
+    const inst = instances.find(i => instanceKey(i.name, i.unit) === key)
+    if (!inst) return
+    // Picking "Vacant Unit · 204" prefills the unit box; picking the base
+    // section clears it so the next unit number starts fresh.
+    setSectionName(inst.name)
+    setUnitNumber(inst.unit ?? '')
+  }
 
   // Revoke any leftover object URLs on unmount only — pending previews are
   // revoked individually as they're removed or saved.
@@ -620,90 +598,112 @@ function AddFindingForm({ inspection, active, onSaved }: {
   }
 
   return (
-    <div className="sticky bottom-0 z-20 -mx-4 sm:mx-0">
-      <div className="bg-white border-t sm:border border-slate-200 sm:rounded-xl shadow-[0_-4px_16px_rgba(15,23,42,0.06)] sm:shadow-sm px-4 py-3 space-y-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-            New finding
-            {active
-              ? <span className="ml-1.5 normal-case font-medium text-blue-600">{instanceLabel(active)}</span>
-              : <span className="ml-1.5 normal-case font-normal text-slate-400">— tap a section above first</span>}
+    <div className="card shadow-sm px-4 py-3 space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">New finding</span>
+        {state === 'saved' && (
+          <span className="text-xs text-emerald-600 flex items-center gap-1 font-medium">
+            <Check size={12} />Saved
           </span>
-          {state === 'saved' && (
-            <span className="text-xs text-emerald-600 flex items-center gap-1 font-medium">
-              <Check size={12} />Saved
-            </span>
-          )}
-        </div>
-
-        {previews.length > 0 && (
-          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-            {previews.map((url, i) => (
-              <div key={url} className="relative flex-shrink-0">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={url} alt={`Pending photo ${i + 1}`}
-                  className="w-14 h-14 object-cover rounded-lg border border-slate-200" />
-                <button onClick={() => removeFile(i)} aria-label="Remove photo"
-                  className="absolute -top-1.5 -right-1.5 bg-slate-700 text-white rounded-full p-0.5 hover:bg-red-500">
-                  <X size={10} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <label className={cn(
-            'flex items-center justify-center gap-1.5 border border-slate-200 rounded-lg px-3 min-h-[42px] text-sm font-medium cursor-pointer flex-shrink-0 transition-colors',
-            'text-slate-600 hover:bg-slate-50 active:bg-slate-100'
-          )}>
-            <Camera size={16} className="text-blue-600" />
-            <span>Photos</span>
-            {files.length > 0 && <span className="text-xs text-blue-600 font-semibold">{files.length}</span>}
-            <input type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={addFiles} />
-          </label>
-          <input
-            value={description}
-            onChange={e => setDescription(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save() } }}
-            placeholder="Short description…"
-            className="input min-h-[42px]"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setFollowUp(f => !f)}
-            className={cn(
-              'flex items-center gap-1.5 border rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-              followUp
-                ? 'border-amber-300 bg-amber-50 text-amber-700'
-                : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-            )}>
-            <Flag size={13} />Follow up
-          </button>
-          {followUp && (
-            <select value={priority} onChange={e => setPriority(e.target.value as ActionPriority)}
-              className="input-sm w-auto py-2 text-sm" aria-label="Follow-up priority">
-              {ACTION_PRIORITIES.map(p => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
-            </select>
-          )}
-          <button
-            onClick={save}
-            disabled={!canSave || state === 'saving'}
-            className="btn-primary ml-auto min-h-[42px] px-6">
-            {state === 'saving' ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-
-        {state === 'error' && error && (
-          <p className="text-xs text-red-600 flex items-center gap-1.5">
-            <AlertTriangle size={12} className="flex-shrink-0" />
-            {error} — your photos and notes are still here, tap Save to retry.
-          </p>
         )}
       </div>
+
+      <div className="flex gap-2">
+        <select
+          value={selectValue}
+          onChange={e => pickSection(e.target.value)}
+          aria-label="Section"
+          className="input min-h-[42px] min-w-0 flex-1">
+          <option value="" disabled>Section…</option>
+          {instances.map(inst => {
+            const key = instanceKey(inst.name, inst.unit)
+            const count = countByInstance[key] ?? 0
+            return (
+              <option key={key} value={key}>
+                {instanceLabel(inst)}{count > 0 ? ` (${count})` : ''}
+              </option>
+            )
+          })}
+        </select>
+        {duplicable && (
+          <input
+            value={unitNumber}
+            onChange={e => setUnitNumber(e.target.value)}
+            placeholder="Unit #"
+            aria-label="Unit number"
+            inputMode="numeric"
+            className="input min-h-[42px] w-24 flex-shrink-0"
+          />
+        )}
+      </div>
+
+      {previews.length > 0 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {previews.map((url, i) => (
+            <div key={url} className="relative flex-shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={url} alt={`Pending photo ${i + 1}`}
+                className="w-14 h-14 object-cover rounded-lg border border-slate-200" />
+              <button onClick={() => removeFile(i)} aria-label="Remove photo"
+                className="absolute -top-1.5 -right-1.5 bg-slate-700 text-white rounded-full p-0.5 hover:bg-red-500">
+                <X size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <label className={cn(
+          'flex items-center justify-center gap-1.5 border border-slate-200 rounded-lg px-3 min-h-[42px] text-sm font-medium cursor-pointer flex-shrink-0 transition-colors',
+          'text-slate-600 hover:bg-slate-50 active:bg-slate-100'
+        )}>
+          <Camera size={16} className="text-blue-600" />
+          <span>Photos</span>
+          {files.length > 0 && <span className="text-xs text-blue-600 font-semibold">{files.length}</span>}
+          <input type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={addFiles} />
+        </label>
+        <input
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); save() } }}
+          placeholder="Short description…"
+          className="input min-h-[42px]"
+        />
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => setFollowUp(f => !f)}
+          className={cn(
+            'flex items-center gap-1.5 border rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+            followUp
+              ? 'border-amber-300 bg-amber-50 text-amber-700'
+              : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+          )}>
+          <Flag size={13} />Follow up
+        </button>
+        {followUp && (
+          <select value={priority} onChange={e => setPriority(e.target.value as ActionPriority)}
+            className="input-sm w-auto py-2 text-sm" aria-label="Follow-up priority">
+            {ACTION_PRIORITIES.map(p => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
+          </select>
+        )}
+        <button
+          onClick={save}
+          disabled={!canSave || state === 'saving'}
+          className="btn-primary ml-auto min-h-[42px] px-6">
+          {state === 'saving' ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+
+      {state === 'error' && error && (
+        <p className="text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />
+          {error} — your photos and notes are still here, tap Save to retry.
+        </p>
+      )}
     </div>
   )
 }

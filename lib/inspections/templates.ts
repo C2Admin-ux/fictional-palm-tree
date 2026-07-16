@@ -1,8 +1,9 @@
 // Rough section templates for onsite inspections. These are deliberate
-// code constants (no DB, no template editor): sections are chips Nick taps
-// between freely while walking a property — capture follows how he walks,
-// the template never forces an order. Duplicable sections get one chip
-// instance per unit (e.g. "Vacant Unit · 204").
+// code constants (no DB, no template editor): sections populate the capture
+// form's section dropdown, which Nick switches between freely while walking
+// a property — capture follows how he walks, the template never forces an
+// order. Duplicable sections get one instance per unit number
+// (e.g. "Vacant Unit · 204").
 
 export type InspectionType = 'site_visit' | 'annual'
 
