@@ -33,8 +33,14 @@ type InspectionJoin = Inspection & {
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   if (!(await getSessionUser())) return unauthorized()
 
-  let body: { to?: string[]; message?: string } = {}
+  let body: { to?: unknown; message?: string } = {}
   try { body = await req.json() } catch { /* empty body is fine — PMC fallback */ }
+
+  // Shape check before anything touches the list — a malformed `to`
+  // must fail loud, not fall through to the PMC contact.
+  if (body.to !== undefined && (!Array.isArray(body.to) || body.to.some(e => typeof e !== 'string'))) {
+    return NextResponse.json({ error: 'to must be an array of email strings' }, { status: 400 })
+  }
 
   const supabase = await createClient()
 
@@ -48,22 +54,32 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
   const inspection = inspectionData as unknown as InspectionJoin
 
+  // Only a submitted walk can send: drafts have partial findings, and a
+  // report_sent inspection's PDF is already out the door — changing
+  // findings (or regenerating) reverts it to submitted first.
+  if (inspection.status !== 'submitted') {
+    return NextResponse.json({ error: 'Inspection must be submitted first' }, { status: 409 })
+  }
+
   if (!inspection.report_file_path) {
     return NextResponse.json({ error: 'No report generated yet — generate the PDF first' }, { status: 400 })
   }
 
   // Resolve recipients: explicit list from the client wins; otherwise the
-  // property's PMC primary contact.
-  const requested = (body.to ?? []).map(e => e.trim()).filter(Boolean)
+  // property's PMC primary contact. Both paths are validated — a malformed
+  // stored PMC email must 400 here, not surface as an opaque Resend 500.
+  const requested = ((body.to as string[] | undefined) ?? []).map(e => e.trim()).filter(Boolean)
   const invalid = requested.filter(e => !EMAIL_RE.test(e))
   if (invalid.length > 0) {
     return NextResponse.json({ error: `Invalid email address: ${invalid.join(', ')}` }, { status: 400 })
   }
+  const fallbackEmail = inspection.properties?.pmcs?.primary_contact_email?.trim() || null
+  if (requested.length === 0 && fallbackEmail && !EMAIL_RE.test(fallbackEmail)) {
+    return NextResponse.json({ error: `PMC contact email is invalid: ${fallbackEmail}` }, { status: 400 })
+  }
   const recipients = requested.length > 0
     ? requested
-    : inspection.properties?.pmcs?.primary_contact_email
-      ? [inspection.properties.pmcs.primary_contact_email]
-      : []
+    : fallbackEmail ? [fallbackEmail] : []
   if (recipients.length === 0) {
     return NextResponse.json({ error: 'No recipient — the property has no PMC contact email on file' }, { status: 400 })
   }

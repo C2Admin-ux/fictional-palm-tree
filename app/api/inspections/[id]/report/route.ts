@@ -42,6 +42,13 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   }
   const inspection = inspectionData as unknown as InspectionJoin
 
+  // Reports only exist for submitted walks. A draft has partial findings,
+  // and report_sent can't reach here through the UI (regeneration reverts
+  // it to submitted) — guard defensively anyway.
+  if (inspection.status !== 'submitted') {
+    return NextResponse.json({ error: 'Inspection must be submitted first' }, { status: 409 })
+  }
+
   const { data: itemsData, error: itemsError } = await supabase
     .from('inspection_items')
     .select('*')
@@ -82,6 +89,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
   const instances = buildSectionInstances(template, items)
   const actionItems = items.filter(i => i.requires_action)
+  const score = inspectionScore(items)
 
   const data: ReportData = {
     propertyName: inspection.properties?.name ?? 'Property',
@@ -90,8 +98,8 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     dateLabel: formatDate(inspection.inspection_date),
     inspectorName,
     notes: inspection.notes,
-    score: inspectionScore(items),
-    grade: scoreGrade(inspectionScore(items)),
+    score,
+    grade: scoreGrade(score),
     openFindings: actionItems.length,
     groups: groupItemsByInstance(instances, items),
     actionItems,
@@ -109,8 +117,14 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       return NextResponse.json({ error: 'Could not store report', detail: uploadError.message }, { status: 500 })
     }
 
+    // A freshly generated PDF has by definition not been sent — clear the
+    // sent marker (the status guard above means status is already
+    // 'submitted', never 'report_sent'). overall_rating persists the score
+    // so SQL can reach it without recomputing from items.
     const { error: updateError } = await supabase
-      .from('inspections').update({ report_file_path: path }).eq('id', inspection.id)
+      .from('inspections')
+      .update({ report_file_path: path, report_sent_at: null, overall_rating: score })
+      .eq('id', inspection.id)
     if (updateError) {
       return NextResponse.json({ error: 'Report stored but could not save its path', detail: updateError.message }, { status: 500 })
     }

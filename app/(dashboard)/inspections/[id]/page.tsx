@@ -62,6 +62,11 @@ export default function InspectionDetailPage() {
   const itemsRef = useRef<InspectionItem[]>([])
   useEffect(() => { itemsRef.current = items }, [items])
 
+  // Latest inspection, for the same reason — invalidateReport runs after
+  // async mutations and must see the current report/status fields.
+  const inspectionRef = useRef<InspectionDetail | null>(null)
+  useEffect(() => { inspectionRef.current = inspection }, [inspection])
+
   const fetchInspection = useCallback(async () => {
     const { data, error } = await supabase.from('inspections')
       .select('*, properties(name)').eq('id', inspectionId).single()
@@ -129,13 +134,38 @@ export default function InspectionDetailPage() {
     setSignTick(n => n + 1)
   }, [])
 
-  async function patchInspection(patch: Partial<Inspection>) {
-    if (!inspection) return
+  async function patchInspection(patch: Partial<Inspection>): Promise<boolean> {
+    if (!inspection) return false
     setActionError(null)
     const { error } = await supabase.from('inspections').update(patch).eq('id', inspection.id)
-    if (error) { setActionError(`Save failed: ${error.message}`); return }
+    if (error) { setActionError(`Save failed: ${error.message}`); return false }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
+    return true
   }
+
+  // Rule: an existing report is invalidated by ANY change to findings or to
+  // the inspection date — the stored PDF no longer reflects reality. Clear
+  // the path + sent state (reverting a report_sent status) so the panel
+  // returns to the fresh Generate state. Removing the orphaned PDF from
+  // storage is best-effort: orphaned files are acceptable, stale sent
+  // badges are not.
+  const invalidateReport = useCallback(async () => {
+    const insp = inspectionRef.current
+    if (!insp?.report_file_path) return
+    const oldPath = insp.report_file_path
+    const patch: Partial<Inspection> = {
+      report_file_path: null,
+      report_sent_at: null,
+      ...(insp.status === 'report_sent' ? { status: 'submitted' as const } : {}),
+    }
+    const { error } = await supabase.from('inspections').update(patch).eq('id', insp.id)
+    if (error) {
+      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before sending.`)
+      return
+    }
+    setInspection(prev => prev ? { ...prev, ...patch } : prev)
+    try { await supabase.storage.from(BUCKET).remove([oldPath]) } catch { /* non-fatal */ }
+  }, [])
 
   // ── Section instances: template + instances already on saved items ──
 
@@ -158,6 +188,7 @@ export default function InspectionDetailPage() {
     if (error) { setActionError(`Delete failed: ${error.message}`); return }
     await removeInspectionPhotos(supabase, item.photo_paths)
     setItems(prev => prev.filter(i => i.id !== item.id))
+    invalidateReport()
   }
 
   async function appendPhotos(item: InspectionItem, files: File[]) {
@@ -175,6 +206,7 @@ export default function InspectionDetailPage() {
       if (error || !data) throw new Error(error?.message ?? 'Save failed')
       const updated = data as InspectionItem
       setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
+      invalidateReport()
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Photo upload failed — try again.')
     }
@@ -238,7 +270,9 @@ export default function InspectionDetailPage() {
             <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-1.5">
               <span>Inspected</span>
               <InlineDate value={inspection.inspection_date}
-                onSave={v => { if (v) patchInspection({ inspection_date: v }) }} />
+                onSave={async v => {
+                  if (v && await patchInspection({ inspection_date: v })) invalidateReport()
+                }} />
               <span className="text-slate-300">·</span>
               <span>{items.length} finding{items.length === 1 ? '' : 's'}</span>
               {items.some(i => i.requires_action) && (
@@ -267,7 +301,7 @@ export default function InspectionDetailPage() {
         </div>
         <div className="text-sm text-slate-600 max-w-2xl">
           <InlineText multiline value={inspection.notes} placeholder="Add inspection notes…"
-            onSave={v => patchInspection({ notes: v || null })} />
+            onSave={v => { patchInspection({ notes: v || null }) }} />
         </div>
       </div>
 
@@ -302,7 +336,7 @@ export default function InspectionDetailPage() {
           template={template}
           instances={instances}
           countByInstance={countByInstance}
-          onSaved={saved => setItems(prev => [...prev, saved])}
+          onSaved={saved => { setItems(prev => [...prev, saved]); invalidateReport() }}
         />
       ) : (
         <div className="card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
@@ -375,6 +409,7 @@ export default function InspectionDetailPage() {
           onSaved={updated => {
             setEditItem(null)
             setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
+            invalidateReport()
           }}
         />
       )}
@@ -405,7 +440,9 @@ function ReportPanel({ inspection, onUpdated }: {
       const res = await fetch(`/api/inspections/${inspection.id}/report`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.success) throw new Error(json.error ?? `Report generation failed (${res.status})`)
-      onUpdated({ report_file_path: json.path })
+      // Mirror the server: a freshly generated PDF has by definition not
+      // been sent, so the sent marker clears alongside the new path.
+      onUpdated({ report_file_path: json.path, report_sent_at: null })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Report generation failed — try again.')
     } finally {
@@ -430,7 +467,9 @@ function ReportPanel({ inspection, onUpdated }: {
         <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
           <FileText size={13} className="text-blue-600" />Report
         </span>
-        {inspection.report_sent_at && (
+        {/* Invalidation + regeneration both clear report_sent_at, so this
+            only ever describes the PDF currently behind "View PDF". */}
+        {hasReport && inspection.report_sent_at && (
           <span className="text-xs text-slate-400">
             Sent to PM {formatDate(inspection.report_sent_at)}
           </span>
