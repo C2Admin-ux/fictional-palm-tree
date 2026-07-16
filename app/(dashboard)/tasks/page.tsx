@@ -13,8 +13,9 @@ import {
 } from '@/lib/utils'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, AlertTriangle, Clock, Inbox as InboxIcon,
+  Link as LinkIcon, AlertTriangle, Clock,
 } from 'lucide-react'
+import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -341,7 +342,8 @@ function TasksInner() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
-          <AgendaView tasks={tasks} userId={userId} handlers={handlers} />
+          <AgendaView tasks={tasks} userId={userId} handlers={handlers}
+            properties={properties} onQuickAdd={store.insert} />
         ) : view === 'review' ? (
           <ReviewView tasks={tasks} userId={userId} handlers={handlers} />
         ) : (
@@ -590,14 +592,13 @@ function TaskRow({ task, handlers, meta }: {
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers }: {
+function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
+  properties: Property[]
+  onQuickAdd: (task: Task) => void
 }) {
-  const supabase = createClient()
-  const [quickTitle, setQuickTitle] = useState('')
-  const [adding, setAdding] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
 
@@ -638,40 +639,15 @@ function AgendaView({ tasks, userId, handlers }: {
     t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
   ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
-  async function quickAdd(e: React.FormEvent) {
-    e.preventDefault()
-    const title = quickTitle.trim()
-    if (!title || !userId) return
-    setAdding(true)
-    await supabase.from('tasks').insert({
-      title,
-      status:      'inbox',
-      priority:    'medium',
-      created_by:  userId,
-      assigned_to: userId,
-    })
-    setQuickTitle('')
-    setAdding(false)
-    handlers.onRefresh()
-  }
-
   return (
     <div className="pb-8">
-      {/* Quick add — straight into my inbox */}
-      <form onSubmit={quickAdd}
-        className="flex items-center gap-2 px-6 py-3 border-b border-slate-200 bg-white">
-        <InboxIcon size={15} className="text-slate-400 flex-shrink-0" />
-        <input
-          value={quickTitle}
-          onChange={e => setQuickTitle(e.target.value)}
-          disabled={!userId}
-          className="input flex-1"
-          placeholder={userId ? 'Quick add to my inbox…' : 'Sign in to capture tasks'} />
-        <button type="submit" disabled={adding || !quickTitle.trim() || !userId}
-          className="btn-primary text-xs py-1.5">
-          <Plus size={13} />Add
-        </button>
-      </form>
+      {/* Quick add — natural language straight into my inbox (or the
+          agenda, when a due date was typed) */}
+      <TaskQuickAdd
+        userId={userId}
+        properties={properties.map(p => ({ id: p.id, name: p.name }))}
+        onCreated={onQuickAdd}
+      />
 
       {/* My inbox — collapsible */}
       {myInbox.length > 0 && (
