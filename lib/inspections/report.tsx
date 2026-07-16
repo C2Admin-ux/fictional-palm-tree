@@ -41,6 +41,9 @@ export type ReportData = {
   groups: { inst: SectionInstance; items: ReportItem[] }[]
   actionItems: ReportItem[]
   photos: Record<string, ReportPhoto>
+  // Photos skipped (non-JPEG/PNG format) or that failed to download — the
+  // report discloses the gap rather than silently rendering without them.
+  omittedPhotos: number
 }
 
 // ── Styles ───────────────────────────────────────────────────
@@ -176,6 +179,7 @@ const styles = StyleSheet.create({
 
   notes: { fontSize: 9, color: SLATE_600, marginBottom: 14, lineHeight: 1.4 },
   empty: { fontSize: 9, color: SLATE_400, marginBottom: 14 },
+  omittedNote: { fontSize: 8, color: SLATE_400, marginTop: -10, marginBottom: 14 },
 
   footer: {
     position: 'absolute',
@@ -264,6 +268,13 @@ export function InspectionReport({ data }: { data: ReportData }) {
             <Text style={styles.scoreLabel}>OPEN FINDING{data.openFindings === 1 ? '' : 'S'} REQUIRING ACTION</Text>
           </View>
         </View>
+
+        {/* Missing-photo transparency, tucked under the score block */}
+        {data.omittedPhotos > 0 && (
+          <Text style={styles.omittedNote}>
+            {data.omittedPhotos} photo{data.omittedPhotos === 1 ? '' : 's'} could not be included in this report.
+          </Text>
+        )}
 
         {/* Inspection notes */}
         {data.notes && <Text style={styles.notes}>{data.notes}</Text>}

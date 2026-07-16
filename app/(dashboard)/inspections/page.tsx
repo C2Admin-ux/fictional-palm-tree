@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -68,15 +68,21 @@ export default function InspectionsPage() {
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  const displayed = inspections
+  // A draft mid-walk has partial findings — it has no score yet. null here
+  // both renders as the muted "—" slot and sorts to the bottom regardless
+  // of direction (useSort puts nulls last either way).
+  const displayed = useMemo(() => inspections
     .map(i => ({
       ...i,
       property_name: i.properties?.name ?? '',
       item_count: i.inspection_items.length,
       open_findings: i.inspection_items.filter(it => it.requires_action).length,
-      score: inspectionScore(i.inspection_items),
+      score: i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
-    .sort(sortFn)
+    .sort(sortFn),
+    // sortFn is fully determined by sort + dir.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inspections, sort, dir])
 
   async function deleteInspection(insp: InspectionRow) {
     if (!confirm(`Delete this draft inspection${insp.properties?.name ? ` at ${insp.properties.name}` : ''} and all its findings? This cannot be undone.`)) return
@@ -185,7 +191,9 @@ export default function InspectionsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <GradeBadge score={insp.score} />
+                  {insp.score != null
+                    ? <GradeBadge score={insp.score} />
+                    : <span className="text-slate-300 text-xs">—</span>}
                   {insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
@@ -238,7 +246,9 @@ export default function InspectionsPage() {
                       </span>
                     </td>
                     <td className="px-3 py-3">
-                      <GradeBadge score={insp.score} />
+                      {insp.score != null
+                        ? <GradeBadge score={insp.score} />
+                        : <span className="text-slate-300 text-xs">—</span>}
                     </td>
                     <td className="px-3 py-3 text-right text-slate-700">{insp.item_count}</td>
                     <td className="px-3 py-3 text-right">

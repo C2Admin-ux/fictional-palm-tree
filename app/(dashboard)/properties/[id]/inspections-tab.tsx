@@ -120,7 +120,10 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
-                    <GradeBadge score={insp.score} />
+                    {/* A draft mid-walk has partial findings — no score yet */}
+                    {insp.status !== 'draft'
+                      ? <GradeBadge score={insp.score} />
+                      : <span className="text-slate-300 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-2.5">
                     {insp.open > 0 ? (

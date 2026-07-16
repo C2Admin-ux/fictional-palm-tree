@@ -68,22 +68,29 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   }
 
   // ── Photos: download bytes from the private bucket ─────────
-  // Service-role client for storage; sequential fetches keep serverless
-  // memory sane. Photos are already compressed client-side (~1600px JPEG),
-  // so each is a few hundred KB at most. @react-pdf/renderer embeds only
+  // Service-role client for storage; downloads run 4 at a time — enough
+  // parallelism to matter on a photo-heavy annual, bounded enough to keep
+  // serverless memory sane (photos are already compressed client-side to
+  // ~1600px JPEG, a few hundred KB each). @react-pdf/renderer embeds only
   // JPEG/PNG — rare webp/gif fallback uploads are skipped, and an
-  // individual failed download drops that photo rather than the report.
+  // individual failed download drops that photo rather than the report;
+  // both are counted so the PDF can disclose the omission.
   const admin = await createAdminClient()
   const photos: Record<string, ReportPhoto> = {}
   const allPaths = Array.from(new Set(items.flatMap(i => i.photo_paths)))
-  for (const path of allPaths) {
-    const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-    const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' : ext === 'png' ? 'png' : null
-    if (!format) continue
-    const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
-    if (error || !blob) continue
-    photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
+  let omittedPhotos = 0
+  const queue = [...allPaths]
+  const downloadWorker = async () => {
+    for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+      const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+      const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' as const : ext === 'png' ? 'png' as const : null
+      if (!format) { omittedPhotos++; continue }
+      const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
+      if (error || !blob) { omittedPhotos++; continue }
+      photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(4, allPaths.length) }, downloadWorker))
 
   // ── Assemble + render ───────────────────────────────────────
   const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
@@ -104,6 +111,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     groups: groupItemsByInstance(instances, items),
     actionItems,
     photos,
+    omittedPhotos,
   }
 
   try {
@@ -136,7 +144,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       try { await admin.storage.from(BUCKET).remove([inspection.report_file_path]) } catch { /* non-fatal */ }
     }
 
-    return NextResponse.json({ success: true, path })
+    return NextResponse.json({ success: true, path, omittedPhotos })
   } catch (err) {
     console.error('Report generation failed:', err)
     const detail = err instanceof Error ? err.message : String(err)

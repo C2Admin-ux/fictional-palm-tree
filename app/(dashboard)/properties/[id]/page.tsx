@@ -36,6 +36,7 @@ export default async function PropertyPage({
     { data: documents },
     { data: policies },
     { data: permits },
+    inspectionCountRes,
     { data: inspections },
   ] = await Promise.all([
     supabase.from('tasks').select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
@@ -44,9 +45,14 @@ export default async function PropertyPage({
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('insurance_policies').select('*').eq('property_id', params.id).eq('status', 'active'),
     supabase.from('property_permits').select('*').eq('property_id', params.id).order('issued_date', { ascending: false, nullsFirst: false }),
-    supabase.from('inspections')
-      .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
-      .eq('property_id', params.id).order('inspection_date', { ascending: false }),
+    // The tab label only needs a count — the items-embedded rows are
+    // fetched only when the inspections tab is actually active.
+    supabase.from('inspections').select('id', { count: 'exact', head: true }).eq('property_id', params.id),
+    tab === 'inspections'
+      ? supabase.from('inspections')
+          .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
+          .eq('property_id', params.id).order('inspection_date', { ascending: false })
+      : Promise.resolve({ data: null }),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -55,6 +61,7 @@ export default async function PropertyPage({
   const propDocs = (documents ?? []) as any[]
   const propPolicies = (policies ?? []) as any[]
   const propPermits = permits ?? []
+  const inspectionCount = inspectionCountRes.count ?? 0
   const propInspections = (inspections ?? []) as unknown as InspectionTabRow[]
   const latestMetric = propMetrics[0]
   const p = property as any
@@ -68,7 +75,7 @@ export default async function PropertyPage({
     { id: 'tasks',     label: `Tasks (${propTasks.length})` },
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
-    { id: 'inspections', label: `Inspections (${propInspections.length})` },
+    { id: 'inspections', label: `Inspections (${inspectionCount})` },
     { id: 'building',  label: 'Building' },
     { id: 'permits',   label: `Permits (${propPermits.length})` },
     { id: 'documents', label: `Documents (${propDocs.length})` },
