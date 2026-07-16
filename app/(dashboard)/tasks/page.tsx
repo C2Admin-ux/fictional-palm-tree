@@ -13,11 +13,12 @@ import {
 } from '@/lib/utils'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, AlertTriangle, Clock,
+  Link as LinkIcon, AlertTriangle, Clock, Keyboard,
 } from 'lucide-react'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
+import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { toast } from '@/components/ui/toast'
 import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
@@ -68,6 +69,9 @@ type RowHandlers = {
   onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
   onSnooze: (task: TaskWithRelations, date: string) => void
   onRefresh: () => void
+  // Keyboard-driven row selection (j/k etc.)
+  selectedId: string | null
+  onSelect: (id: string) => void
 }
 
 export default function TasksPage() {
@@ -108,6 +112,9 @@ function TasksInner() {
 
   // Collapsed status sections (All tasks view)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['done']))
+
+  // Keyboard-selected row (j/k navigation)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const fetchTasks = useCallback(async () => {
     const { data } = await supabase
@@ -247,7 +254,26 @@ function TasksInner() {
       toast(`Snoozed until ${formatDateShort(date)}`)
     },
     onRefresh: fetchTasks,
+    selectedId,
+    onSelect: setSelectedId,
   }
+
+  // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
+  // selected row, n/q to the quick-add bar. Same mutation paths as the
+  // buttons. Inert while the modal or any input has focus.
+  const taskById = (id: string) => tasks.find(t => t.id === id)
+  useTaskListShortcuts({
+    enabled: !showForm && !loading,
+    selectedId,
+    setSelectedId,
+    onComplete: id => { const t = taskById(id); if (t) markDone(t) },
+    onDelete: id => { const t = taskById(id); if (t) deleteTask(t) },
+    onEdit: id => { const t = taskById(id); if (t) { setEditTask(t); setShowForm(true) } },
+    onSetPriority: (id, priority) => {
+      const t = taskById(id)
+      if (t) patchTaskOptimistic(supabase, store, t, { priority })
+    },
+  })
 
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
   const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority
@@ -418,6 +444,20 @@ function TasksInner() {
         )}
       </div>
 
+      {/* Keyboard hints — desktop only, kept to one muted line */}
+      <div className="hidden lg:flex items-center gap-3 px-6 py-1.5 border-t border-slate-200 bg-white flex-shrink-0 text-xs text-slate-400">
+        <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
+        {([
+          ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
+          ['e', 'edit'], ['1–4', 'priority'], ['⌫', 'delete'], ['n', 'quick add'],
+        ] as const).map(([key, label]) => (
+          <span key={key} className="flex items-center gap-1 whitespace-nowrap">
+            <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
+            {label}
+          </span>
+        ))}
+      </div>
+
       {showForm && (
         <TaskFormModal
           task={editTask}
@@ -441,8 +481,9 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
   swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
 }) {
-  const { onEdit, onDone, onDelete, onPatch, onSnooze } = handlers
+  const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
+  const selected = handlers.selectedId === task.id
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
@@ -464,10 +505,14 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
   }
 
   const row = (
-    <div className={cn(
-      'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
-      isDone && 'opacity-60'
-    )}>
+    <div
+      data-task-id={task.id}
+      onClick={() => onSelect(task.id)}
+      className={cn(
+        'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
+        isDone && 'opacity-60',
+        selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
+      )}>
       {/* Priority pip — click to change priority */}
       <InlineSelect
         value={task.priority}
@@ -576,8 +621,9 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
         </button>
       </div>
 
-      {/* Due date — inline date picker */}
-      <div className={cn('w-20 text-right flex-shrink-0',
+      {/* Due date — inline date picker (data-due-edit lets the `d`
+          shortcut open it via the same click path) */}
+      <div data-due-edit className={cn('w-20 text-right flex-shrink-0',
         overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
         {overdue && <AlertTriangle size={10} className="inline mr-1" />}
         <InlineDate
@@ -589,8 +635,9 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
       </div>
 
       {/* Snooze presets — no modal needed. Always visible on mobile,
-          hover-revealed on desktop. */}
-      <div className="w-6 flex justify-center">
+          hover-revealed on desktop; the `s` shortcut clicks this same
+          trigger. */}
+      <div data-snooze-trigger className="w-6 flex justify-center">
         <SnoozeMenu
           open={snoozeOpen}
           onOpenChange={setSnoozeOpen}
