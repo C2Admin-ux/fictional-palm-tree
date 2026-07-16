@@ -4,14 +4,15 @@ import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
-import { cn, formatCurrency } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_STYLES } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, HardHat, Search, List, LayoutGrid, AlertTriangle } from 'lucide-react'
+import { Plus, X, HardHat, Search, List, LayoutGrid, AlertTriangle, ChevronRight } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { StatTile } from '@/components/ui/stat-tile'
 import { EmptyState } from '@/components/ui/empty-state'
+import Link from 'next/link'
 import { CapexBoard, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
@@ -97,8 +98,8 @@ function CapexInner() {
   const filtersActive = filterProp || filterCategory || search || (view === 'list' && filterStatus !== 'active')
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-5">
-      <div className="flex items-center justify-between">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="page-title">CapEx Projects</h1>
           <p className="text-sm text-slate-500 mt-0.5">{displayed.length} projects</p>
@@ -109,7 +110,7 @@ function CapexInner() {
       </div>
 
       {/* KPI strip */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
           { label: 'Total Budget', value: formatCurrency(totalBudget, true) },
           { label: 'Actual Spend', value: formatCurrency(totalSpend, true) },
@@ -178,7 +179,54 @@ function CapexInner() {
       ) : view === 'board' ? (
         <CapexBoard projects={displayed} onMove={moveProject} />
       ) : (
-        <div className="card overflow-x-auto">
+        <>
+          {/* Mobile cards — inline editing is desktop-only; tap through to detail */}
+          <div className="space-y-2 md:hidden">
+            {displayed.map(p => {
+              const { pct, over } = budgetUsage(p)
+              const overdue = !!p.target_completion && isOverdue(p.target_completion) && p.status !== 'complete'
+              return (
+                <Link key={p.id} href={`/capex/${p.id}`} className="card-hover p-3 block space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-sm font-medium text-slate-900 leading-snug">{p.title}</span>
+                    <span className={cn('badge capitalize flex-shrink-0', CAPEX_STATUS_STYLES[p.status])}>
+                      {p.status.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                    <span className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ background: propertyColor(p.properties?.name) }} />
+                    <span className="truncate">{p.properties?.name ?? '—'}</span>
+                    {p.target_completion && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className={overdue ? 'text-red-600 font-medium' : undefined}>
+                          {formatDate(p.target_completion)}
+                        </span>
+                      </>
+                    )}
+                    <ChevronRight size={14} className="text-slate-300 ml-auto flex-shrink-0" />
+                  </div>
+                  {(p.budget != null || p.actual_spend != null) && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-slate-100 rounded-full h-1.5">
+                        <div className={cn('h-1.5 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')}
+                          style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-xs text-slate-500 flex-shrink-0">
+                        {formatCurrency(p.actual_spend ?? 0, true)}
+                        <span className="text-slate-300"> / </span>
+                        {formatCurrency(p.budget, true)}
+                      </span>
+                    </div>
+                  )}
+                </Link>
+              )
+            })}
+          </div>
+
+          {/* Desktop table */}
+          <div className="card overflow-x-auto hidden md:block">
             <table className="w-full text-sm min-w-[800px]">
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
@@ -269,7 +317,8 @@ function CapexInner() {
                 })}
               </tbody>
             </table>
-        </div>
+          </div>
+        </>
       )}
 
       {showForm && (
@@ -296,7 +345,7 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
     <Modal title="New CapEx Project" onClose={onClose} maxWidth="lg">
       <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div><label className="label">Title *</label><input required value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input" placeholder="e.g. Roof Replacement — Building A" /></div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div><label className="label">Property *</label><select required value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Category</label><select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} className="input"><option value="">None</option>{CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}</select></div>
             <div><label className="label">Status</label><select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as CapexProject['status'] }))} className="input">{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</select></div>
