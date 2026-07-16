@@ -13,14 +13,14 @@ import { useParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Inspection, InspectionItem } from '@/lib/supabase/types'
 import {
-  cn, propertyColor,
+  cn, propertyColor, formatDate,
   PRIORITY_STYLES, INSPECTION_STATUS_STYLES,
 } from '@/lib/utils'
 import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
   ACTION_PRIORITIES, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import {
   instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
   groupItemsByInstance, type SectionInstance,
@@ -30,6 +30,7 @@ import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
+  FileText, Send, ExternalLink,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
@@ -270,6 +271,15 @@ export default function InspectionDetailPage() {
         </div>
       </div>
 
+      {/* Report: generate/view/send — only once the walk is submitted, and
+          nothing is automatic; both actions are explicit buttons. */}
+      {!isDraft && (
+        <ReportPanel
+          inspection={inspection}
+          onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
+        />
+      )}
+
       {/* Mutation errors surface inline — never silently pretend success */}
       {actionError && (
         <p className="text-xs text-red-600 flex items-center gap-1.5">
@@ -369,6 +379,218 @@ export default function InspectionDetailPage() {
         />
       )}
     </div>
+  )
+}
+
+// ── Report panel ─────────────────────────────────────────────
+// Generate (or regenerate) the PDF report, open it via a signed URL, and
+// email it to the PM. Everything is an explicit button — no auto-sends.
+
+function ReportPanel({ inspection, onUpdated }: {
+  inspection: InspectionDetail
+  onUpdated: (patch: Partial<Inspection>) => void
+}) {
+  const supabase = createClient()
+  const [generating, setGenerating] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [showSend, setShowSend] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const hasReport = !!inspection.report_file_path
+
+  async function generate() {
+    setGenerating(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/inspections/${inspection.id}/report`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) throw new Error(json.error ?? `Report generation failed (${res.status})`)
+      onUpdated({ report_file_path: json.path })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Report generation failed — try again.')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  async function viewPdf() {
+    if (!inspection.report_file_path) return
+    setOpening(true)
+    setError(null)
+    const { data, error: signError } = await supabase.storage
+      .from(BUCKET).createSignedUrl(inspection.report_file_path, 3600)
+    setOpening(false)
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank')
+    else setError(`Could not open the report${signError ? ` — ${signError.message}` : ''}`)
+  }
+
+  return (
+    <div className="card px-4 py-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+          <FileText size={13} className="text-blue-600" />Report
+        </span>
+        {inspection.report_sent_at && (
+          <span className="text-xs text-slate-400">
+            Sent to PM {formatDate(inspection.report_sent_at)}
+          </span>
+        )}
+        <div className="flex items-center gap-2 ml-auto flex-wrap">
+          <button onClick={generate} disabled={generating} className="btn-secondary">
+            <FileText size={14} />
+            {generating ? 'Generating…' : hasReport ? 'Regenerate report' : 'Generate report'}
+          </button>
+          {hasReport && (
+            <>
+              <button onClick={viewPdf} disabled={opening} className="btn-secondary">
+                <ExternalLink size={14} />{opening ? 'Opening…' : 'View PDF'}
+              </button>
+              <button onClick={() => setShowSend(true)} className="btn-primary">
+                <Send size={14} />Send to PM
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {error && (
+        <p className="text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />{error}
+        </p>
+      )}
+      {showSend && (
+        <SendReportModal
+          inspection={inspection}
+          onClose={() => setShowSend(false)}
+          onSent={patch => { setShowSend(false); onUpdated(patch) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Send-to-PM modal ─────────────────────────────────────────
+// Pre-fills the property's PMC primary contact; PMC-linked contacts with
+// emails surface as one-tap add chips. Recipients stay fully editable
+// (comma-separated) — the server only falls back to the PMC contact when
+// the list is empty.
+
+function SendReportModal({ inspection, onClose, onSent }: {
+  inspection: InspectionDetail
+  onClose: () => void
+  onSent: (patch: Partial<Inspection>) => void
+}) {
+  const supabase = createClient()
+  const [to, setTo] = useState('')
+  const [candidates, setCandidates] = useState<{ name: string; email: string }[]>([])
+  const [loadingRecipients, setLoadingRecipients] = useState(true)
+  const [message, setMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase.from('properties')
+        .select('pmc_id, pmcs(primary_contact_name, primary_contact_email)')
+        .eq('id', inspection.property_id).single()
+      if (cancelled) return
+      const prop = data as unknown as {
+        pmc_id: string | null
+        pmcs: { primary_contact_name: string | null; primary_contact_email: string | null } | null
+      } | null
+      const primaryEmail = prop?.pmcs?.primary_contact_email ?? null
+      if (primaryEmail) setTo(primaryEmail)
+      if (prop?.pmc_id) {
+        const { data: contacts } = await supabase.from('contacts')
+          .select('full_name, email').eq('pmc_id', prop.pmc_id).not('email', 'is', null).order('full_name')
+        if (!cancelled) {
+          setCandidates((contacts ?? [])
+            .filter(c => c.email && c.email !== primaryEmail)
+            .map(c => ({ name: c.full_name, email: c.email as string })))
+        }
+      }
+      if (!cancelled) setLoadingRecipients(false)
+    })()
+    return () => { cancelled = true }
+  }, [inspection.property_id])
+
+  const recipients = to.split(',').map(s => s.trim()).filter(Boolean)
+
+  function addCandidate(email: string) {
+    if (recipients.includes(email)) return
+    setTo(prev => prev.trim() ? `${prev.trim().replace(/,\s*$/, '')}, ${email}` : email)
+  }
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault()
+    if (recipients.length === 0) { setError('Add at least one recipient.'); return }
+    setSending(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/inspections/${inspection.id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: recipients, message: message.trim() || undefined }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) throw new Error(json.error ?? `Send failed (${res.status})`)
+      onSent({ status: 'report_sent', report_sent_at: json.sent_at ?? new Date().toISOString() })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Send failed — check connection and try again.')
+      setSending(false)
+    }
+  }
+
+  return (
+    <Modal title="Send Report to PM" onClose={onClose} maxWidth="md">
+      <form onSubmit={send} className="px-6 py-5 space-y-4">
+        <div>
+          <label className="label">To (comma-separated)</label>
+          <input
+            value={to}
+            onChange={e => setTo(e.target.value)}
+            placeholder={loadingRecipients ? 'Loading PMC contact…' : 'pm@example.com'}
+            className="input"
+          />
+          {candidates.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {candidates.map(c => (
+                <button key={c.email} type="button" onClick={() => addCandidate(c.email)}
+                  disabled={recipients.includes(c.email)}
+                  className={cn(
+                    'text-xs border rounded-full px-2.5 py-1 transition-colors',
+                    recipients.includes(c.email)
+                      ? 'border-slate-100 text-slate-300'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                  )}>
+                  + {c.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="label">Message (optional)</label>
+          <textarea value={message} onChange={e => setMessage(e.target.value)}
+            className="input min-h-[70px] resize-none"
+            placeholder="Short note to include above the summary…" />
+        </div>
+        <p className="text-xs text-slate-400">
+          Sends the generated PDF as an attachment with a short summary (score, findings, action items).
+        </p>
+        {error && (
+          <p className="text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle size={12} className="flex-shrink-0" />{error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="submit" disabled={sending || recipients.length === 0} className="btn-primary">
+            <Send size={14} />{sending ? 'Sending…' : 'Send report'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
