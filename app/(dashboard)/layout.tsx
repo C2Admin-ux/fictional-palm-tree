@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn, propertyColor } from '@/lib/utils'
+import { Toaster } from '@/components/ui/toast'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck,
@@ -178,6 +179,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {children}
         </main>
       </div>
+
+      <Toaster />
     </div>
   )
 }

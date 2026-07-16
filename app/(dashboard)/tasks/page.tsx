@@ -19,6 +19,9 @@ import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS 
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import {
+  type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
+} from '@/lib/tasks/mutations'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -57,7 +60,8 @@ const VIEW_TABS: { key: ViewMode; label: string }[] = [
 type RowHandlers = {
   onEdit: (task: TaskWithRelations) => void
   onDone: (task: TaskWithRelations) => void
-  onDelete: (id: string) => void
+  onDelete: (task: TaskWithRelations) => void
+  onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
   onRefresh: () => void
 }
 
@@ -175,25 +179,64 @@ function TasksInner() {
     })
   }
 
-  async function markDone(task: TaskWithRelations) {
-    const newStatus = task.status === 'done' ? 'next_action' : 'done'
-    await supabase.from('tasks').update({
-      status: newStatus,
-      completed_at: newStatus === 'done' ? new Date().toISOString() : null,
-    }).eq('id', task.id)
-    fetchTasks()
+  // ── Optimistic mutation plumbing ───────────────────────────
+  // Local state changes apply instantly; Supabase writes happen in the
+  // background and roll back (with an error toast) on failure.
+
+  // Keep inserts in the same order the fetch would return them
+  // (due_date asc nulls-last, then created_at desc).
+  function sortTasks(list: TaskWithRelations[]): TaskWithRelations[] {
+    return [...list].sort((a, b) => {
+      const ad = a.due_date ?? '9999-12-31'
+      const bd = b.due_date ?? '9999-12-31'
+      if (ad !== bd) return ad.localeCompare(bd)
+      return (b.created_at ?? '').localeCompare(a.created_at ?? '')
+    })
   }
 
-  async function deleteTask(id: string) {
-    if (!confirm('Delete this task?')) return
-    await supabase.from('tasks').delete().eq('id', id)
-    fetchTasks()
+  // Bare rows (recurrence instances, undo re-inserts) lack the joined
+  // display fields — derive them from the already-loaded lookups.
+  function enrich(task: Task): TaskWithRelations {
+    const partial = task as TaskWithRelations
+    const propName = properties.find(p => p.id === task.property_id)?.name
+    const capexTitle = capexProjects.find(c => c.id === task.capex_project_id)?.title
+    return {
+      ...task,
+      properties: partial.properties ?? (propName ? { name: propName } : null),
+      capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
+      contacts: partial.contacts ?? [],
+    }
+  }
+
+  const store: TaskStore = {
+    update: (id, fields) => setTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
+    insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
+    remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
+  }
+
+  function markDone(task: TaskWithRelations) {
+    toggleDoneOptimistic(supabase, store, task)
+  }
+
+  function deleteTask(task: TaskWithRelations) {
+    deleteTaskOptimistic(supabase, store, task, {
+      // The junction rows died with the task — bring them back on undo.
+      onRestored: async () => {
+        const contactIds = (task.contacts ?? []).map(c => c.id)
+        if (contactIds.length > 0) {
+          await supabase.from('task_contacts').insert(
+            contactIds.map(cid => ({ task_id: task.id, contact_id: cid }))
+          )
+        }
+      },
+    })
   }
 
   const handlers: RowHandlers = {
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: markDone,
     onDelete: deleteTask,
+    onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
     onRefresh: fetchTasks,
   }
 
@@ -386,8 +429,7 @@ function TaskRow({ task, handlers, meta }: {
   handlers: RowHandlers
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
 }) {
-  const supabase = createClient()
-  const { onEdit, onDone, onDelete, onRefresh } = handlers
+  const { onEdit, onDone, onDelete, onPatch } = handlers
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
@@ -395,9 +437,10 @@ function TaskRow({ task, handlers, meta }: {
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
 
-  async function patch(fields: Record<string, unknown>) {
-    await supabase.from('tasks').update(fields).eq('id', task.id)
-    onRefresh()
+  // Fire-and-forget: the optimistic store already applied the change,
+  // so the inline-edit primitives never sit in a saving state.
+  function patch(fields: Partial<Task>) {
+    onPatch(task, fields)
   }
 
   function toggleRock() {
@@ -416,7 +459,7 @@ function TaskRow({ task, handlers, meta }: {
       <InlineSelect
         value={task.priority}
         options={PRIORITY_OPTIONS}
-        onSave={v => patch({ priority: v })}
+        onSave={v => patch({ priority: v as Task['priority'] })}
         trigger={
           <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
             style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[task.priority] }} />
@@ -489,12 +532,16 @@ function TaskRow({ task, handlers, meta }: {
         <Mountain size={13} />
       </button>
 
-      {/* Status — inline dropdown */}
+      {/* Status — inline dropdown. Completing routes through onDone so
+          it picks up the undo toast + recurrence handling. */}
       <div className="w-28 hidden md:flex justify-center">
         <InlineSelect
           value={task.status}
           options={STATUS_OPTIONS}
-          onSave={v => patch({ status: v, completed_at: v === 'done' ? new Date().toISOString() : null })}
+          onSave={v => {
+            if (v === 'done') onDone(task)
+            else patch({ status: v as Task['status'], completed_at: null })
+          }}
         />
       </div>
 
@@ -528,9 +575,9 @@ function TaskRow({ task, handlers, meta }: {
         />
       </div>
 
-      {/* Delete */}
+      {/* Delete — instant, with an Undo toast */}
       <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => onDelete(task.id)}
+        <button onClick={() => onDelete(task)}
           className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
           <X size={13} />
         </button>
