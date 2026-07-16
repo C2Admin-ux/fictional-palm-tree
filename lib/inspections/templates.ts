@@ -57,3 +57,7 @@ export const INSPECTION_STATUS_LABELS: Record<string, string> = {
 // PRIORITY_STYLES / PRIORITY_DOT in lib/utils.
 export const ACTION_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const
 export type ActionPriority = (typeof ACTION_PRIORITIES)[number]
+
+export const PRIORITY_LABELS: Record<ActionPriority, string> = {
+  low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
+}

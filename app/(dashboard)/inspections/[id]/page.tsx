@@ -18,9 +18,9 @@ import {
 } from '@/lib/utils'
 import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
-  ACTION_PRIORITIES, type ActionPriority, type TemplateSection,
+  ACTION_PRIORITIES, PRIORITY_LABELS, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import {
   instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
   groupItemsByInstance, type SectionInstance,
@@ -34,10 +34,6 @@ import {
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
-
-const PRIORITY_LABELS: Record<ActionPriority, string> = {
-  low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
-}
 
 export default function InspectionDetailPage() {
   const params = useParams<{ id: string }>()
@@ -457,11 +453,10 @@ function ReportPanel({ inspection, onUpdated }: {
     if (!inspection.report_file_path) return
     setOpening(true)
     setError(null)
-    const { data, error: signError } = await supabase.storage
-      .from(BUCKET).createSignedUrl(inspection.report_file_path, 3600)
+    const { url, error: signError } = await signedFileUrl(supabase, inspection.report_file_path)
     setOpening(false)
-    if (data?.signedUrl) window.open(data.signedUrl, '_blank')
-    else setError(`Could not open the report${signError ? ` — ${signError.message}` : ''}`)
+    if (url) window.open(url, '_blank')
+    else setError(`Could not open the report${signError ? ` — ${signError}` : ''}`)
   }
 
   return (

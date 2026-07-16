@@ -7,7 +7,8 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
-import { inspectionScore, scoreGrade, GRADE_STYLES } from '@/lib/inspections/score'
+import { inspectionScore } from '@/lib/inspections/score'
+import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -184,9 +185,7 @@ export default function InspectionsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={cn('badge', GRADE_STYLES[scoreGrade(insp.score)])}>
-                    {scoreGrade(insp.score)} · {insp.score}
-                  </span>
+                  <GradeBadge score={insp.score} />
                   {insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
@@ -239,9 +238,7 @@ export default function InspectionsPage() {
                       </span>
                     </td>
                     <td className="px-3 py-3">
-                      <span className={cn('badge', GRADE_STYLES[scoreGrade(insp.score)])}>
-                        {scoreGrade(insp.score)} · {insp.score}
-                      </span>
+                      <GradeBadge score={insp.score} />
                     </td>
                     <td className="px-3 py-3 text-right text-slate-700">{insp.item_count}</td>
                     <td className="px-3 py-3 text-right">

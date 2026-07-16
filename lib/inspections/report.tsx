@@ -4,6 +4,8 @@ import {
 } from '@react-pdf/renderer'
 import { instanceLabel, type SectionInstance } from '@/lib/inspections/sections'
 import { GRADE_HEX, type ScoreGrade } from '@/lib/inspections/score'
+import { PRIORITY_LABELS, type ActionPriority } from '@/lib/inspections/templates'
+import { PRIORITY_DOT } from '@/lib/utils'
 
 // The inspection PDF report, rendered server-side (see
 // app/api/inspections/[id]/report/route.ts). Data is fully resolved before
@@ -51,17 +53,6 @@ const SLATE_200 = '#e2e8f0'
 const SLATE_100 = '#f1f5f9'
 const SLATE_50 = '#f8fafc'
 const BLUE_600 = '#2563eb'
-
-// Follow-up priority hex, mirroring PRIORITY_DOT in lib/utils.
-const PRIORITY_HEX: Record<string, string> = {
-  urgent: '#ef4444',
-  high: '#f97316',
-  medium: '#3b82f6',
-  low: '#94a3b8',
-}
-const PRIORITY_LABELS: Record<string, string> = {
-  urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low',
-}
 
 const styles = StyleSheet.create({
   page: {
@@ -205,8 +196,8 @@ const styles = StyleSheet.create({
 function PriorityBadge({ priority }: { priority: string | null }) {
   const key = priority ?? 'medium'
   return (
-    <Text style={[styles.priorityBadge, { backgroundColor: PRIORITY_HEX[key] ?? SLATE_400 }]}>
-      {PRIORITY_LABELS[key] ?? key}
+    <Text style={[styles.priorityBadge, { backgroundColor: PRIORITY_DOT[key] ?? SLATE_400 }]}>
+      {PRIORITY_LABELS[key as ActionPriority] ?? key}
     </Text>
   )
 }

@@ -54,14 +54,19 @@ export function countItemsByInstance(items: SectionedItem[]): Record<string, num
 }
 
 // Groups in template/instance order; only instances that actually have items.
+// Single pass over items (Map bucketing) rather than a filter per instance.
 export function groupItemsByInstance<T extends SectionedItem>(
   instances: SectionInstance[],
   items: T[],
 ): { inst: SectionInstance; items: T[] }[] {
+  const buckets = new Map<string, T[]>()
+  for (const it of items) {
+    const key = instanceKey(it.section_name, it.unit_number)
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(it)
+    else buckets.set(key, [it])
+  }
   return instances
-    .map(inst => ({
-      inst,
-      items: items.filter(it => instanceKey(it.section_name, it.unit_number) === instanceKey(inst.name, inst.unit)),
-    }))
+    .map(inst => ({ inst, items: buckets.get(instanceKey(inst.name, inst.unit)) ?? [] }))
     .filter(g => g.items.length > 0)
 }

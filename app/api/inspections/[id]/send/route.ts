@@ -6,7 +6,7 @@ import type { Inspection } from '@/lib/supabase/types'
 import { INSPECTION_TYPE_LABELS } from '@/lib/inspections/templates'
 import { inspectionScore, scoreGrade, GRADE_HEX } from '@/lib/inspections/score'
 import { BUCKET } from '@/lib/inspections/photos'
-import { formatDate } from '@/lib/utils'
+import { formatDate, escHtml } from '@/lib/utils'
 
 // ── Email the inspection report to the PM ────────────────────
 // POST /api/inspections/[id]/send  (session-authenticated)
@@ -224,8 +224,4 @@ function buildEmailHtml({
 </div>
 </body>
 </html>`
-}
-
-function escHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

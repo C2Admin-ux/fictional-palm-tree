@@ -10,8 +10,9 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, formatDateShort, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
-import { inspectionScore, scoreGrade, GRADE_STYLES } from '@/lib/inspections/score'
-import { BUCKET } from '@/lib/inspections/photos'
+import { inspectionScore } from '@/lib/inspections/score'
+import { GradeBadge } from '@/lib/inspections/grade-badge'
+import { signedFileUrl } from '@/lib/inspections/photos'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { ClipboardCheck, ExternalLink, AlertTriangle, Plus } from 'lucide-react'
 
@@ -43,9 +44,9 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
 
   async function viewReport(path: string) {
     setError(null)
-    const { data, error: signError } = await supabase.storage.from(BUCKET).createSignedUrl(path, 3600)
-    if (data?.signedUrl) window.open(data.signedUrl, '_blank')
-    else setError(`Could not open the report${signError ? ` — ${signError.message}` : ''}`)
+    const { url, error: signError } = await signedFileUrl(supabase, path)
+    if (url) window.open(url, '_blank')
+    else setError(`Could not open the report${signError ? ` — ${signError}` : ''}`)
   }
 
   if (inspections.length === 0) {
@@ -100,7 +101,6 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
           </thead>
           <tbody className="divide-y divide-slate-50">
             {rows.map(insp => {
-              const grade = scoreGrade(insp.score)
               return (
                 <tr key={insp.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2.5">
@@ -120,7 +120,7 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
-                    <span className={cn('badge', GRADE_STYLES[grade])}>{grade} · {insp.score}</span>
+                    <GradeBadge score={insp.score} />
                   </td>
                   <td className="px-4 py-2.5">
                     {insp.open > 0 ? (

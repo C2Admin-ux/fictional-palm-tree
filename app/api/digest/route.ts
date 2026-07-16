@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { Resend } from 'resend'
 import { anthropicConfigured, anthropicJson, callAnthropic } from '@/lib/anthropic'
 import { getSessionUser, isCronRequest, unauthorized } from '@/lib/api-auth'
+import { escHtml } from '@/lib/utils'
 
 // ── Config ───────────────────────────────────────────────────
 const RECIPIENT = process.env.DIGEST_EMAIL ?? 'nick@c2cpllc.com'
@@ -462,9 +463,4 @@ function formatShortDate(dateStr: string | null) {
 function daysLeft(dateStr: string | null): number {
   if (!dateStr) return 999
   return Math.floor((new Date(dateStr + 'T00:00:00').getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-}
-
-function escHtml(str: string | null | undefined): string {
-  if (!str) return ''
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

@@ -118,6 +118,18 @@ export async function signedPhotoUrls(
   return map
 }
 
+// Signed URL for a single stored file (e.g. the generated report PDF) —
+// used by the "View PDF"/"View report" buttons to open the private bucket
+// file in a new tab. Returns the URL or the error message, never throws.
+export async function signedFileUrl(
+  supabase: SupabaseClient,
+  path: string,
+): Promise<{ url: string | null; error: string | null }> {
+  const { data, error } = await supabase.storage.from(BUCKET)
+    .createSignedUrl(path, SIGNED_URL_TTL_S)
+  return { url: data?.signedUrl ?? null, error: error?.message ?? null }
+}
+
 // Best-effort storage cleanup when a finding (or one of its photos) is
 // deleted. Non-fatal: orphaned files are acceptable, lost DB rows are not.
 export async function removeInspectionPhotos(
