@@ -5,7 +5,7 @@ type SupabaseClient = ReturnType<typeof createClient>
 // Photos live in the existing private `c2-documents` bucket, alongside
 // contract/insurance files, at:
 //   ${propertyId}/inspections/${inspectionId}/${stamp}-${i}-${rand}.${ext}
-const BUCKET = 'c2-documents'
+export const BUCKET = 'c2-documents'
 const MAX_EDGE_PX = 1600
 const JPEG_QUALITY = 0.8
 const SIGNED_URL_TTL_S = 3600
