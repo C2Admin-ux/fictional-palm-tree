@@ -430,6 +430,9 @@ function ReportPanel({ inspection, onUpdated }: {
   const [opening, setOpening] = useState(false)
   const [showSend, setShowSend] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The send route can succeed with a warning (email out, status update
+  // failed) — surface it instead of claiming an unqualified success.
+  const [sendWarning, setSendWarning] = useState<string | null>(null)
 
   const hasReport = !!inspection.report_file_path
 
@@ -496,11 +499,21 @@ function ReportPanel({ inspection, onUpdated }: {
           <AlertTriangle size={12} className="flex-shrink-0" />{error}
         </p>
       )}
+      {sendWarning && (
+        <p className="text-xs text-amber-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />
+          <span className="flex-1">{sendWarning}</span>
+          <button onClick={() => setSendWarning(null)} aria-label="Dismiss warning"
+            className="text-amber-400 hover:text-amber-600 flex-shrink-0">
+            <X size={12} />
+          </button>
+        </p>
+      )}
       {showSend && (
         <SendReportModal
           inspection={inspection}
           onClose={() => setShowSend(false)}
-          onSent={patch => { setShowSend(false); onUpdated(patch) }}
+          onSent={(patch, warning) => { setShowSend(false); setSendWarning(warning); onUpdated(patch) }}
         />
       )}
     </div>
@@ -516,7 +529,7 @@ function ReportPanel({ inspection, onUpdated }: {
 function SendReportModal({ inspection, onClose, onSent }: {
   inspection: InspectionDetail
   onClose: () => void
-  onSent: (patch: Partial<Inspection>) => void
+  onSent: (patch: Partial<Inspection>, warning: string | null) => void
 }) {
   const supabase = createClient()
   const [to, setTo] = useState('')
@@ -538,7 +551,9 @@ function SendReportModal({ inspection, onClose, onSent }: {
         pmcs: { primary_contact_name: string | null; primary_contact_email: string | null } | null
       } | null
       const primaryEmail = prop?.pmcs?.primary_contact_email ?? null
-      if (primaryEmail) setTo(primaryEmail)
+      // Prefill only if the user hasn't already typed a recipient — the
+      // fetch races against typing and must never overwrite it.
+      if (primaryEmail) setTo(prev => prev || primaryEmail)
       if (prop?.pmc_id) {
         const { data: contacts } = await supabase.from('contacts')
           .select('full_name, email').eq('pmc_id', prop.pmc_id).not('email', 'is', null).order('full_name')
@@ -573,7 +588,10 @@ function SendReportModal({ inspection, onClose, onSent }: {
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.success) throw new Error(json.error ?? `Send failed (${res.status})`)
-      onSent({ status: 'report_sent', report_sent_at: json.sent_at ?? new Date().toISOString() })
+      onSent(
+        { status: 'report_sent', report_sent_at: json.sent_at ?? new Date().toISOString() },
+        typeof json.warning === 'string' ? json.warning : null,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Send failed — check connection and try again.')
       setSending(false)

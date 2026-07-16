@@ -193,7 +193,7 @@ function buildEmailHtml({
   .score-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
   .stats { border-top: 1px solid #f1f5f9; padding: 12px 20px; font-size: 13px; color: #475569; }
   .stats strong { color: #1e293b; }
-  .message { padding: 14px 20px; border-top: 1px solid #f1f5f9; font-size: 13px; color: #475569; }
+  .message { padding: 14px 20px; border-top: 1px solid #f1f5f9; font-size: 13px; color: #475569; white-space: pre-line; }
   .attach-note { padding: 12px 20px; border-top: 1px solid #f1f5f9; font-size: 12px; color: #64748b; }
   .footer { text-align: center; padding: 16px 0; font-size: 11px; color: #94a3b8; }
 </style>
