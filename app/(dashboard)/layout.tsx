@@ -8,7 +8,7 @@ import { cn, propertyColor } from '@/lib/utils'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck,
-  Settings, Building2, LogOut, ChevronRight,
+  Settings, Building2, LogOut, ChevronRight, Menu, X,
 } from 'lucide-react'
 
 const NAV_PORTFOLIO = [
@@ -39,11 +39,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter()
   const supabase = createClient()
   const [properties, setProperties] = useState<SidebarProperty[]>([])
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
     supabase.from('properties').select('id, name').order('name')
       .then(({ data }) => setProperties(data ?? []))
   }, [])
+
+  // Close the mobile drawer whenever navigation happens
+  useEffect(() => {
+    setSidebarOpen(false)
+  }, [pathname])
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -57,18 +63,39 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      {/* Sidebar */}
-      <aside className="w-56 flex-shrink-0 bg-[#1a2332] flex flex-col overflow-hidden">
+      {/* Mobile drawer backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Sidebar: fixed drawer on mobile, static column on md+ */}
+      <aside className={cn(
+        'fixed inset-y-0 left-0 z-50 w-56 bg-[#1a2332] flex flex-col overflow-hidden',
+        'transition-transform duration-200 ease-out',
+        'md:static md:z-auto md:flex-shrink-0 md:translate-x-0 md:transition-none',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+      )}>
         {/* Logo */}
         <div className="px-4 py-4 border-b border-white/10 flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-md bg-blue-500 flex items-center justify-center flex-shrink-0">
               <Building2 size={14} className="text-white" />
             </div>
-            <div>
+            <div className="flex-1">
               <div className="text-white font-semibold text-sm leading-none">C2 Capital</div>
               <div className="text-slate-400 text-xs mt-0.5">Portfolio Platform</div>
             </div>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="md:hidden p-1.5 -mr-1 text-slate-400 hover:text-white"
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
           </div>
         </div>
 
@@ -130,10 +157,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 overflow-y-auto">
-        {children}
-      </main>
+      {/* Main column */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Mobile top bar */}
+        <header className="md:hidden flex items-center gap-3 px-4 py-3 bg-[#1a2332] flex-shrink-0">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="p-1 -ml-1 text-white"
+            aria-label="Open menu"
+          >
+            <Menu size={20} />
+          </button>
+          <div className="w-6 h-6 rounded-md bg-blue-500 flex items-center justify-center flex-shrink-0">
+            <Building2 size={12} className="text-white" />
+          </div>
+          <span className="text-white font-semibold text-sm">C2 Capital</span>
+        </header>
+
+        <main className="flex-1 overflow-y-auto">
+          {children}
+        </main>
+      </div>
     </div>
   )
 }
