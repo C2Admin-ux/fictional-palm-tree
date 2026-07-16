@@ -6,11 +6,12 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
+import { removeInspectionPhotos } from '@/lib/inspections/photos'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { useSort, Th } from '@/lib/utils/sort'
-import { ClipboardCheck, Plus, Trash2, AlertTriangle, ChevronRight, X } from 'lucide-react'
+import { ClipboardCheck, Plus, Trash2, AlertTriangle, ChevronRight, RotateCcw, X } from 'lucide-react'
 
 type PropertyOption = { id: string; name: string }
 
@@ -32,6 +33,8 @@ export default function InspectionsPage() {
   const [inspections, setInspections] = useState<InspectionRow[]>([])
   const [properties, setProperties] = useState<PropertyOption[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [filterProp, setFilterProp] = useState('')
   const [filterType, setFilterType] = useState('')
@@ -44,7 +47,15 @@ export default function InspectionsPage() {
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
     if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
-    const { data } = await q
+    const { data, error } = await q
+    if (error) {
+      // Never show the false "No inspections yet" empty state on a failed
+      // fetch — surface the error with a retry instead.
+      setFetchError(error.message)
+      setLoading(false)
+      return
+    }
+    setFetchError(null)
     setInspections((data as unknown as InspectionRow[]) ?? [])
     setLoading(false)
   }, [filterProp, filterType, filterStatus])
@@ -66,8 +77,17 @@ export default function InspectionsPage() {
 
   async function deleteInspection(insp: InspectionRow) {
     if (!confirm(`Delete this draft inspection${insp.properties?.name ? ` at ${insp.properties.name}` : ''} and all its findings? This cannot be undone.`)) return
-    await supabase.from('inspections').delete().eq('id', insp.id)
-    fetchInspections()
+    setActionError(null)
+    // Collect photo paths BEFORE the delete cascades the items away. If
+    // this read fails we still delete — orphaned storage files are
+    // acceptable, a lost delete is not.
+    const { data: itemRows } = await supabase.from('inspection_items')
+      .select('photo_paths').eq('inspection_id', insp.id)
+    const { error } = await supabase.from('inspections').delete().eq('id', insp.id)
+    if (error) { setActionError(`Delete failed: ${error.message}`); return }
+    const paths = (itemRows ?? []).flatMap(r => r.photo_paths ?? [])
+    await removeInspectionPhotos(supabase, paths)
+    setInspections(prev => prev.filter(i => i.id !== insp.id))
   }
 
   return (
@@ -109,8 +129,32 @@ export default function InspectionsPage() {
         <span className="ml-auto text-xs text-slate-400">{displayed.length} shown</span>
       </div>
 
+      {/* Mutation errors surface inline — never silently pretend success */}
+      {actionError && (
+        <p className="text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} aria-label="Dismiss error"
+            className="text-red-400 hover:text-red-600 flex-shrink-0">
+            <X size={12} />
+          </button>
+        </p>
+      )}
+
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
+      ) : fetchError ? (
+        <div className="card py-10 text-center space-y-3">
+          <p className="text-sm text-red-600 flex items-center justify-center gap-1.5">
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            Could not load inspections — {fetchError}
+          </p>
+          <button
+            onClick={() => { setLoading(true); setFetchError(null); fetchInspections() }}
+            className="btn-secondary">
+            <RotateCcw size={14} />Retry
+          </button>
+        </div>
       ) : displayed.length === 0 ? (
         <EmptyState
           icon={<ClipboardCheck size={32} />}
