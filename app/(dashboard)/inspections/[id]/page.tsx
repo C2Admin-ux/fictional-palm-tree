@@ -13,32 +13,27 @@ import { useParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Inspection, InspectionItem } from '@/lib/supabase/types'
 import {
-  cn, propertyColor,
+  cn, propertyColor, formatDate,
   PRIORITY_STYLES, INSPECTION_STATUS_STYLES,
 } from '@/lib/utils'
 import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
-  ACTION_PRIORITIES, type ActionPriority, type TemplateSection,
+  ACTION_PRIORITIES, PRIORITY_LABELS, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import {
+  instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
+  groupItemsByInstance, type SectionInstance,
+} from '@/lib/inspections/sections'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
+  FileText, Send, ExternalLink,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
-
-// A section instance = section name + optional unit ("Vacant Unit · 204").
-type SectionInstance = { name: string; unit: string | null }
-
-const instanceKey = (name: string, unit: string | null) => `${name}|${unit ?? ''}`
-const instanceLabel = (s: SectionInstance) => s.unit ? `${s.name} · ${s.unit}` : s.name
-
-const PRIORITY_LABELS: Record<ActionPriority, string> = {
-  low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent',
-}
 
 export default function InspectionDetailPage() {
   const params = useParams<{ id: string }>()
@@ -62,6 +57,11 @@ export default function InspectionDetailPage() {
   // while an upload was in flight.
   const itemsRef = useRef<InspectionItem[]>([])
   useEffect(() => { itemsRef.current = items }, [items])
+
+  // Latest inspection, for the same reason — invalidateReport runs after
+  // async mutations and must see the current report/status fields.
+  const inspectionRef = useRef<InspectionDetail | null>(null)
+  useEffect(() => { inspectionRef.current = inspection }, [inspection])
 
   const fetchInspection = useCallback(async () => {
     const { data, error } = await supabase.from('inspections')
@@ -130,48 +130,48 @@ export default function InspectionDetailPage() {
     setSignTick(n => n + 1)
   }, [])
 
-  async function patchInspection(patch: Partial<Inspection>) {
-    if (!inspection) return
+  async function patchInspection(patch: Partial<Inspection>): Promise<boolean> {
+    if (!inspection) return false
     setActionError(null)
     const { error } = await supabase.from('inspections').update(patch).eq('id', inspection.id)
-    if (error) { setActionError(`Save failed: ${error.message}`); return }
+    if (error) { setActionError(`Save failed: ${error.message}`); return false }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
+    return true
   }
+
+  // Rule: an existing report is invalidated by ANY change to findings or to
+  // the inspection date — the stored PDF no longer reflects reality. Clear
+  // the path + sent state (reverting a report_sent status) so the panel
+  // returns to the fresh Generate state. Removing the orphaned PDF from
+  // storage is best-effort: orphaned files are acceptable, stale sent
+  // badges are not.
+  const invalidateReport = useCallback(async () => {
+    const insp = inspectionRef.current
+    if (!insp?.report_file_path) return
+    const oldPath = insp.report_file_path
+    const patch: Partial<Inspection> = {
+      report_file_path: null,
+      report_sent_at: null,
+      ...(insp.status === 'report_sent' ? { status: 'submitted' as const } : {}),
+    }
+    const { error } = await supabase.from('inspections').update(patch).eq('id', insp.id)
+    if (error) {
+      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before sending.`)
+      return
+    }
+    setInspection(prev => prev ? { ...prev, ...patch } : prev)
+    try { await supabase.storage.from(BUCKET).remove([oldPath]) } catch { /* non-fatal */ }
+  }, [])
 
   // ── Section instances: template + instances already on saved items ──
 
   // Fallback guards against an out-of-vocabulary type on a pre-existing row.
   const template = TEMPLATE_SECTIONS[inspection?.inspection_type ?? 'site_visit'] ?? TEMPLATE_SECTIONS.site_visit
 
-  const instances = useMemo<SectionInstance[]>(() => {
-    const seen = new Set<string>()
-    const out: SectionInstance[] = []
-    const push = (name: string, unit: string | null) => {
-      const key = instanceKey(name, unit)
-      if (seen.has(key)) return
-      seen.add(key)
-      out.push({ name, unit })
-    }
-    for (const section of template) {
-      push(section.name, null)
-      // Unit instances of this duplicable section, in the order captured.
-      for (const it of items) {
-        if (it.section_name === section.name && it.unit_number) push(section.name, it.unit_number)
-      }
-    }
-    // Data-driven: sections already on items even if not in the template.
-    for (const it of items) push(it.section_name, it.unit_number)
-    return out
-  }, [template, items])
+  const instances = useMemo<SectionInstance[]>(
+    () => buildSectionInstances(template, items), [template, items])
 
-  const countByInstance = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const it of items) {
-      const key = instanceKey(it.section_name, it.unit_number)
-      map[key] = (map[key] ?? 0) + 1
-    }
-    return map
-  }, [items])
+  const countByInstance = useMemo(() => countItemsByInstance(items), [items])
 
   // ── Item mutations ───────────────────────────────────────────
 
@@ -184,6 +184,7 @@ export default function InspectionDetailPage() {
     if (error) { setActionError(`Delete failed: ${error.message}`); return }
     await removeInspectionPhotos(supabase, item.photo_paths)
     setItems(prev => prev.filter(i => i.id !== item.id))
+    invalidateReport()
   }
 
   async function appendPhotos(item: InspectionItem, files: File[]) {
@@ -201,6 +202,7 @@ export default function InspectionDetailPage() {
       if (error || !data) throw new Error(error?.message ?? 'Save failed')
       const updated = data as InspectionItem
       setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
+      invalidateReport()
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Photo upload failed — try again.')
     }
@@ -240,12 +242,7 @@ export default function InspectionDetailPage() {
   const isDraft = inspection.status === 'draft'
 
   // Groups in template/instance order; only instances that actually have items.
-  const groups = instances
-    .map(inst => ({
-      inst,
-      items: items.filter(it => instanceKey(it.section_name, it.unit_number) === instanceKey(inst.name, inst.unit)),
-    }))
-    .filter(g => g.items.length > 0)
+  const groups = groupItemsByInstance(instances, items)
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-4 pb-6">
@@ -269,7 +266,9 @@ export default function InspectionDetailPage() {
             <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-1.5">
               <span>Inspected</span>
               <InlineDate value={inspection.inspection_date}
-                onSave={v => { if (v) patchInspection({ inspection_date: v }) }} />
+                onSave={async v => {
+                  if (v && await patchInspection({ inspection_date: v })) invalidateReport()
+                }} />
               <span className="text-slate-300">·</span>
               <span>{items.length} finding{items.length === 1 ? '' : 's'}</span>
               {items.some(i => i.requires_action) && (
@@ -298,9 +297,18 @@ export default function InspectionDetailPage() {
         </div>
         <div className="text-sm text-slate-600 max-w-2xl">
           <InlineText multiline value={inspection.notes} placeholder="Add inspection notes…"
-            onSave={v => patchInspection({ notes: v || null })} />
+            onSave={v => { patchInspection({ notes: v || null }) }} />
         </div>
       </div>
+
+      {/* Report: generate/view/send — only once the walk is submitted, and
+          nothing is automatic; both actions are explicit buttons. */}
+      {!isDraft && (
+        <ReportPanel
+          inspection={inspection}
+          onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
+        />
+      )}
 
       {/* Mutation errors surface inline — never silently pretend success */}
       {actionError && (
@@ -324,7 +332,7 @@ export default function InspectionDetailPage() {
           template={template}
           instances={instances}
           countByInstance={countByInstance}
-          onSaved={saved => setItems(prev => [...prev, saved])}
+          onSaved={saved => { setItems(prev => [...prev, saved]); invalidateReport() }}
         />
       ) : (
         <div className="card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
@@ -397,10 +405,244 @@ export default function InspectionDetailPage() {
           onSaved={updated => {
             setEditItem(null)
             setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
+            invalidateReport()
           }}
         />
       )}
     </div>
+  )
+}
+
+// ── Report panel ─────────────────────────────────────────────
+// Generate (or regenerate) the PDF report, open it via a signed URL, and
+// email it to the PM. Everything is an explicit button — no auto-sends.
+
+function ReportPanel({ inspection, onUpdated }: {
+  inspection: InspectionDetail
+  onUpdated: (patch: Partial<Inspection>) => void
+}) {
+  const supabase = createClient()
+  const [generating, setGenerating] = useState(false)
+  const [opening, setOpening] = useState(false)
+  const [showSend, setShowSend] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // The send route can succeed with a warning (email out, status update
+  // failed) — surface it instead of claiming an unqualified success.
+  const [sendWarning, setSendWarning] = useState<string | null>(null)
+
+  const hasReport = !!inspection.report_file_path
+
+  async function generate() {
+    setGenerating(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/inspections/${inspection.id}/report`, { method: 'POST' })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) throw new Error(json.error ?? `Report generation failed (${res.status})`)
+      // Mirror the server: a freshly generated PDF has by definition not
+      // been sent, so the sent marker clears alongside the new path.
+      onUpdated({ report_file_path: json.path, report_sent_at: null })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Report generation failed — try again.')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  async function viewPdf() {
+    if (!inspection.report_file_path) return
+    setOpening(true)
+    setError(null)
+    const { url, error: signError } = await signedFileUrl(supabase, inspection.report_file_path)
+    setOpening(false)
+    if (url) window.open(url, '_blank')
+    else setError(`Could not open the report${signError ? ` — ${signError}` : ''}`)
+  }
+
+  return (
+    <div className="card px-4 py-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+          <FileText size={13} className="text-blue-600" />Report
+        </span>
+        {/* Invalidation + regeneration both clear report_sent_at, so this
+            only ever describes the PDF currently behind "View PDF". */}
+        {hasReport && inspection.report_sent_at && (
+          <span className="text-xs text-slate-400">
+            Sent to PM {formatDate(inspection.report_sent_at)}
+          </span>
+        )}
+        <div className="flex items-center gap-2 ml-auto flex-wrap">
+          <button onClick={generate} disabled={generating} className="btn-secondary">
+            <FileText size={14} />
+            {generating ? 'Generating…' : hasReport ? 'Regenerate report' : 'Generate report'}
+          </button>
+          {hasReport && (
+            <>
+              <button onClick={viewPdf} disabled={opening} className="btn-secondary">
+                <ExternalLink size={14} />{opening ? 'Opening…' : 'View PDF'}
+              </button>
+              <button onClick={() => setShowSend(true)} className="btn-primary">
+                <Send size={14} />Send to PM
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {error && (
+        <p className="text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />{error}
+        </p>
+      )}
+      {sendWarning && (
+        <p className="text-xs text-amber-600 flex items-center gap-1.5">
+          <AlertTriangle size={12} className="flex-shrink-0" />
+          <span className="flex-1">{sendWarning}</span>
+          <button onClick={() => setSendWarning(null)} aria-label="Dismiss warning"
+            className="text-amber-400 hover:text-amber-600 flex-shrink-0">
+            <X size={12} />
+          </button>
+        </p>
+      )}
+      {showSend && (
+        <SendReportModal
+          inspection={inspection}
+          onClose={() => setShowSend(false)}
+          onSent={(patch, warning) => { setShowSend(false); setSendWarning(warning); onUpdated(patch) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Send-to-PM modal ─────────────────────────────────────────
+// Pre-fills the property's PMC primary contact; PMC-linked contacts with
+// emails surface as one-tap add chips. Recipients stay fully editable
+// (comma-separated) — the server only falls back to the PMC contact when
+// the list is empty.
+
+function SendReportModal({ inspection, onClose, onSent }: {
+  inspection: InspectionDetail
+  onClose: () => void
+  onSent: (patch: Partial<Inspection>, warning: string | null) => void
+}) {
+  const supabase = createClient()
+  const [to, setTo] = useState('')
+  const [candidates, setCandidates] = useState<{ name: string; email: string }[]>([])
+  const [loadingRecipients, setLoadingRecipients] = useState(true)
+  const [message, setMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase.from('properties')
+        .select('pmc_id, pmcs(primary_contact_name, primary_contact_email)')
+        .eq('id', inspection.property_id).single()
+      if (cancelled) return
+      const prop = data as unknown as {
+        pmc_id: string | null
+        pmcs: { primary_contact_name: string | null; primary_contact_email: string | null } | null
+      } | null
+      const primaryEmail = prop?.pmcs?.primary_contact_email ?? null
+      // Prefill only if the user hasn't already typed a recipient — the
+      // fetch races against typing and must never overwrite it.
+      if (primaryEmail) setTo(prev => prev || primaryEmail)
+      if (prop?.pmc_id) {
+        const { data: contacts } = await supabase.from('contacts')
+          .select('full_name, email').eq('pmc_id', prop.pmc_id).not('email', 'is', null).order('full_name')
+        if (!cancelled) {
+          setCandidates((contacts ?? [])
+            .filter(c => c.email && c.email !== primaryEmail)
+            .map(c => ({ name: c.full_name, email: c.email as string })))
+        }
+      }
+      if (!cancelled) setLoadingRecipients(false)
+    })()
+    return () => { cancelled = true }
+  }, [inspection.property_id])
+
+  const recipients = to.split(',').map(s => s.trim()).filter(Boolean)
+
+  function addCandidate(email: string) {
+    if (recipients.includes(email)) return
+    setTo(prev => prev.trim() ? `${prev.trim().replace(/,\s*$/, '')}, ${email}` : email)
+  }
+
+  async function send(e: React.FormEvent) {
+    e.preventDefault()
+    if (recipients.length === 0) { setError('Add at least one recipient.'); return }
+    setSending(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/inspections/${inspection.id}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: recipients, message: message.trim() || undefined }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) throw new Error(json.error ?? `Send failed (${res.status})`)
+      onSent(
+        { status: 'report_sent', report_sent_at: json.sent_at ?? new Date().toISOString() },
+        typeof json.warning === 'string' ? json.warning : null,
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Send failed — check connection and try again.')
+      setSending(false)
+    }
+  }
+
+  return (
+    <Modal title="Send Report to PM" onClose={onClose} maxWidth="md">
+      <form onSubmit={send} className="px-6 py-5 space-y-4">
+        <div>
+          <label className="label">To (comma-separated)</label>
+          <input
+            value={to}
+            onChange={e => setTo(e.target.value)}
+            placeholder={loadingRecipients ? 'Loading PMC contact…' : 'pm@example.com'}
+            className="input"
+          />
+          {candidates.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {candidates.map(c => (
+                <button key={c.email} type="button" onClick={() => addCandidate(c.email)}
+                  disabled={recipients.includes(c.email)}
+                  className={cn(
+                    'text-xs border rounded-full px-2.5 py-1 transition-colors',
+                    recipients.includes(c.email)
+                      ? 'border-slate-100 text-slate-300'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                  )}>
+                  + {c.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="label">Message (optional)</label>
+          <textarea value={message} onChange={e => setMessage(e.target.value)}
+            className="input min-h-[70px] resize-none"
+            placeholder="Short note to include above the summary…" />
+        </div>
+        <p className="text-xs text-slate-400">
+          Sends the generated PDF as an attachment with a short summary (score, findings, action items).
+        </p>
+        {error && (
+          <p className="text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle size={12} className="flex-shrink-0" />{error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="submit" disabled={sending || recipients.length === 0} className="btn-primary">
+            <Send size={14} />{sending ? 'Sending…' : 'Send report'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 

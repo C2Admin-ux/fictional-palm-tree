@@ -76,6 +76,13 @@ export function addDaysToDate(date: string, days: number): string {
   return format(addDays(parseISO(date), days), 'yyyy-MM-dd')
 }
 
+// HTML-escape user/DB strings interpolated into inline email HTML
+// (digest, inspection report send). Null-safe: nullish → ''.
+export function escHtml(str: string | null | undefined): string {
+  if (!str) return ''
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 // ── Traffic light thresholds ────────────────────────────────
 
 export type TrafficLight = 'green' | 'yellow' | 'red' | 'gray'

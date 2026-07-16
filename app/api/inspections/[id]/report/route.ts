@@ -1,0 +1,153 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { getSessionUser, unauthorized } from '@/lib/api-auth'
+import type { Inspection, InspectionItem } from '@/lib/supabase/types'
+import { TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS } from '@/lib/inspections/templates'
+import { buildSectionInstances, groupItemsByInstance } from '@/lib/inspections/sections'
+import { inspectionScore, scoreGrade } from '@/lib/inspections/score'
+import { BUCKET } from '@/lib/inspections/photos'
+import { renderInspectionReport, type ReportData, type ReportPhoto } from '@/lib/inspections/report'
+import { formatDate } from '@/lib/utils'
+
+// ── Generate the inspection PDF report ───────────────────────
+// POST /api/inspections/[id]/report  (session-authenticated)
+//
+// Loads the inspection + findings + property/PMC, downloads the finding
+// photos from storage, renders the PDF with @react-pdf/renderer and stores
+// it back to the private c2-documents bucket. Returns { success, path } —
+// never the PDF bytes themselves (Vercel caps responses at 4.5MB; a
+// photo-heavy report can exceed that). The client opens the stored file
+// via a signed URL. Regenerating upserts the same path.
+
+// Photo downloads + PDF render can take a while on a photo-heavy annual.
+export const maxDuration = 60
+
+type InspectionJoin = Inspection & {
+  properties: { name: string; pmcs: { name: string } | null } | null
+}
+
+export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+  if (!(await getSessionUser())) return unauthorized()
+
+  const supabase = await createClient()
+
+  // Inspection + property + PMC name (session client — RLS applies).
+  const { data: inspectionData, error: inspectionError } = await supabase
+    .from('inspections')
+    .select('*, properties(name, pmcs(name))')
+    .eq('id', params.id)
+    .single()
+  if (inspectionError || !inspectionData) {
+    return NextResponse.json({ error: 'Inspection not found' }, { status: 404 })
+  }
+  const inspection = inspectionData as unknown as InspectionJoin
+
+  // Reports only exist for submitted walks. A draft has partial findings,
+  // and report_sent can't reach here through the UI (regeneration reverts
+  // it to submitted) — guard defensively anyway.
+  if (inspection.status !== 'submitted') {
+    return NextResponse.json({ error: 'Inspection must be submitted first' }, { status: 409 })
+  }
+
+  const { data: itemsData, error: itemsError } = await supabase
+    .from('inspection_items')
+    .select('*')
+    .eq('inspection_id', params.id)
+    .order('created_at')
+  if (itemsError) {
+    return NextResponse.json({ error: 'Could not load findings', detail: itemsError.message }, { status: 500 })
+  }
+  const items = (itemsData ?? []) as InspectionItem[]
+
+  // Inspector display name (best-effort — report renders without it).
+  let inspectorName: string | null = null
+  if (inspection.inspected_by) {
+    const { data: profile } = await supabase
+      .from('user_profiles').select('full_name').eq('id', inspection.inspected_by).single()
+    inspectorName = profile?.full_name ?? null
+  }
+
+  // ── Photos: download bytes from the private bucket ─────────
+  // Service-role client for storage; downloads run 4 at a time — enough
+  // parallelism to matter on a photo-heavy annual, bounded enough to keep
+  // serverless memory sane (photos are already compressed client-side to
+  // ~1600px JPEG, a few hundred KB each). @react-pdf/renderer embeds only
+  // JPEG/PNG — rare webp/gif fallback uploads are skipped, and an
+  // individual failed download drops that photo rather than the report;
+  // both are counted so the PDF can disclose the omission.
+  const admin = await createAdminClient()
+  const photos: Record<string, ReportPhoto> = {}
+  const allPaths = Array.from(new Set(items.flatMap(i => i.photo_paths)))
+  let omittedPhotos = 0
+  const queue = [...allPaths]
+  const downloadWorker = async () => {
+    for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+      const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+      const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' as const : ext === 'png' ? 'png' as const : null
+      if (!format) { omittedPhotos++; continue }
+      const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
+      if (error || !blob) { omittedPhotos++; continue }
+      photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, allPaths.length) }, downloadWorker))
+
+  // ── Assemble + render ───────────────────────────────────────
+  const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
+  const instances = buildSectionInstances(template, items)
+  const actionItems = items.filter(i => i.requires_action)
+  const score = inspectionScore(items)
+
+  const data: ReportData = {
+    propertyName: inspection.properties?.name ?? 'Property',
+    pmcName: inspection.properties?.pmcs?.name ?? null,
+    typeLabel: INSPECTION_TYPE_LABELS[inspection.inspection_type] ?? inspection.inspection_type,
+    dateLabel: formatDate(inspection.inspection_date),
+    inspectorName,
+    notes: inspection.notes,
+    score,
+    grade: scoreGrade(score),
+    openFindings: actionItems.length,
+    groups: groupItemsByInstance(instances, items),
+    actionItems,
+    photos,
+    omittedPhotos,
+  }
+
+  try {
+    const pdf = await renderInspectionReport(data)
+
+    // Store next to the inspection's photos; regenerating overwrites.
+    const path = `${inspection.property_id}/inspections/${inspection.id}/report-${inspection.inspection_date}.pdf`
+    const { error: uploadError } = await admin.storage.from(BUCKET)
+      .upload(path, pdf, { contentType: 'application/pdf', upsert: true })
+    if (uploadError) {
+      return NextResponse.json({ error: 'Could not store report', detail: uploadError.message }, { status: 500 })
+    }
+
+    // A freshly generated PDF has by definition not been sent — clear the
+    // sent marker (the status guard above means status is already
+    // 'submitted', never 'report_sent'). overall_rating persists the score
+    // so SQL can reach it without recomputing from items.
+    const { error: updateError } = await supabase
+      .from('inspections')
+      .update({ report_file_path: path, report_sent_at: null, overall_rating: score })
+      .eq('id', inspection.id)
+    if (updateError) {
+      return NextResponse.json({ error: 'Report stored but could not save its path', detail: updateError.message }, { status: 500 })
+    }
+
+    // If the inspection date changed since the last generation, the old
+    // report sits at a different path — best-effort cleanup (orphaned
+    // files acceptable, a failed generation is not).
+    if (inspection.report_file_path && inspection.report_file_path !== path) {
+      try { await admin.storage.from(BUCKET).remove([inspection.report_file_path]) } catch { /* non-fatal */ }
+    }
+
+    return NextResponse.json({ success: true, path, omittedPhotos })
+  } catch (err) {
+    console.error('Report generation failed:', err)
+    const detail = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: 'Report generation failed', detail }, { status: 500 })
+  }
+}

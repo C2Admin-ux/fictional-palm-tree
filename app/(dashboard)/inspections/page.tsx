@@ -1,12 +1,14 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
+import { inspectionScore } from '@/lib/inspections/score'
+import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -24,7 +26,7 @@ type InspectionRow = {
   notes: string | null
   created_at: string
   properties: { name: string } | null
-  inspection_items: { requires_action: boolean }[]
+  inspection_items: { requires_action: boolean; action_priority: string | null }[]
 }
 
 export default function InspectionsPage() {
@@ -43,7 +45,7 @@ export default function InspectionsPage() {
 
   const fetchInspections = useCallback(async () => {
     let q = supabase.from('inspections')
-      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action)')
+      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action, action_priority)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
     if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
@@ -66,14 +68,21 @@ export default function InspectionsPage() {
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  const displayed = inspections
+  // A draft mid-walk has partial findings — it has no score yet. null here
+  // both renders as the muted "—" slot and sorts to the bottom regardless
+  // of direction (useSort puts nulls last either way).
+  const displayed = useMemo(() => inspections
     .map(i => ({
       ...i,
       property_name: i.properties?.name ?? '',
       item_count: i.inspection_items.length,
       open_findings: i.inspection_items.filter(it => it.requires_action).length,
+      score: i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
-    .sort(sortFn)
+    .sort(sortFn),
+    // sortFn is fully determined by sort + dir.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inspections, sort, dir])
 
   async function deleteInspection(insp: InspectionRow) {
     if (!confirm(`Delete this draft inspection${insp.properties?.name ? ` at ${insp.properties.name}` : ''} and all its findings? This cannot be undone.`)) return
@@ -182,6 +191,9 @@ export default function InspectionsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  {insp.score != null
+                    ? <GradeBadge score={insp.score} />
+                    : <span className="text-slate-300 text-xs">—</span>}
                   {insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
@@ -198,13 +210,14 @@ export default function InspectionsPage() {
 
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden sm:block">
-            <table className="w-full text-sm min-w-[720px]">
+            <table className="w-full text-sm min-w-[800px]">
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
                   <Th label="Property" field="property_name" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                   <Th label="Type" field="inspection_type" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Date" field="inspection_date" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
+                  <Th label="Score" field="score" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Findings" field="item_count" current={sort} dir={dir} onSort={toggle} align="right" />
                   <Th label="Follow-ups" field="open_findings" current={sort} dir={dir} onSort={toggle} align="right" />
                   <th className="w-14" />
@@ -231,6 +244,11 @@ export default function InspectionsPage() {
                       <span className={cn('badge', INSPECTION_STATUS_STYLES[insp.status])}>
                         {INSPECTION_STATUS_LABELS[insp.status] ?? insp.status}
                       </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      {insp.score != null
+                        ? <GradeBadge score={insp.score} />
+                        : <span className="text-slate-300 text-xs">—</span>}
                     </td>
                     <td className="px-3 py-3 text-right text-slate-700">{insp.item_count}</td>
                     <td className="px-3 py-3 text-right">

@@ -5,7 +5,7 @@ type SupabaseClient = ReturnType<typeof createClient>
 // Photos live in the existing private `c2-documents` bucket, alongside
 // contract/insurance files, at:
 //   ${propertyId}/inspections/${inspectionId}/${stamp}-${i}-${rand}.${ext}
-const BUCKET = 'c2-documents'
+export const BUCKET = 'c2-documents'
 const MAX_EDGE_PX = 1600
 const JPEG_QUALITY = 0.8
 const SIGNED_URL_TTL_S = 3600
@@ -116,6 +116,18 @@ export async function signedPhotoUrls(
     if (entry.path && entry.signedUrl) map[entry.path] = { url: entry.signedUrl, expiresAt }
   }
   return map
+}
+
+// Signed URL for a single stored file (e.g. the generated report PDF) —
+// used by the "View PDF"/"View report" buttons to open the private bucket
+// file in a new tab. Returns the URL or the error message, never throws.
+export async function signedFileUrl(
+  supabase: SupabaseClient,
+  path: string,
+): Promise<{ url: string | null; error: string | null }> {
+  const { data, error } = await supabase.storage.from(BUCKET)
+    .createSignedUrl(path, SIGNED_URL_TTL_S)
+  return { url: data?.signedUrl ?? null, error: error?.message ?? null }
 }
 
 // Best-effort storage cleanup when a finding (or one of its photos) is
