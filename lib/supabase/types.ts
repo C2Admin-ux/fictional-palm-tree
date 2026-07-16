@@ -103,13 +103,13 @@ export type Database = {
         ]
       }
       inspections: {
-        Row: { id: string; property_id: string; template_id: string | null; inspected_by: string | null; inspection_date: string; unit_number: string | null; area: string | null; status: 'draft' | 'submitted' | 'report_sent'; overall_rating: number | null; report_file_path: string | null; report_sent_at: string | null; notes: string | null; created_at: string }
+        Row: { id: string; property_id: string; template_id: string | null; inspected_by: string | null; inspection_date: string; inspection_type: 'site_visit' | 'annual'; unit_number: string | null; area: string | null; status: 'draft' | 'submitted' | 'report_sent'; overall_rating: number | null; report_file_path: string | null; report_sent_at: string | null; notes: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['inspections']['Row']> & { property_id: string }
         Update: Partial<Database['public']['Tables']['inspections']['Row']>
         Relationships: []
       }
       inspection_items: {
-        Row: { id: string; inspection_id: string; section_name: string; item_label: string; rating: number | null; condition: string | null; notes: string | null; requires_action: boolean; action_priority: string | null; photo_paths: string[]; task_id: string | null; created_at: string }
+        Row: { id: string; inspection_id: string; section_name: string; unit_number: string | null; item_label: string; rating: number | null; condition: string | null; notes: string | null; requires_action: boolean; action_priority: string | null; photo_paths: string[]; task_id: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['inspection_items']['Row']> & { inspection_id: string; section_name: string; item_label: string }
         Update: Partial<Database['public']['Tables']['inspection_items']['Row']>
         Relationships: []
