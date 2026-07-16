@@ -48,6 +48,7 @@ export function TaskQuickAdd({
         status:      parsed.due_date ? 'next_action' : 'inbox',
         priority:    parsed.priority ?? 'medium',
         due_date:    parsed.due_date ?? null,
+        tags:        parsed.tags ?? [],
         property_id: presetPropertyId ?? parsed.property_id ?? null,
         created_by:  userId,
         assigned_to: userId,
@@ -64,13 +65,14 @@ export function TaskQuickAdd({
   }
 
   const hasChips = value.trim().length > 0 &&
-    (parsed.due_date || parsed.priority || matchedProperty)
+    (parsed.due_date || parsed.priority || matchedProperty || (parsed.tags ?? []).length > 0)
 
   return (
     <form onSubmit={submit} className="px-6 py-3 border-b border-slate-200 bg-white">
       <div className="flex items-center gap-2">
         <InboxIcon size={15} className="text-slate-400 flex-shrink-0" />
         <input
+          data-quick-add-input
           value={value}
           onChange={e => setValue(e.target.value)}
           disabled={!userId}
@@ -113,6 +115,15 @@ export function TaskQuickAdd({
               {matchedProperty.name}
             </span>
           )}
+          {(parsed.tags ?? []).map(tag => (
+            <span key={tag}
+              className={cn('inline-flex items-center text-xs rounded-full px-2 py-0.5 border',
+                tag === 'rock'
+                  ? 'text-amber-700 bg-amber-50 border-amber-200'
+                  : 'text-slate-600 bg-slate-50 border-slate-200')}>
+              #{tag}
+            </span>
+          ))}
         </div>
       )}
     </form>

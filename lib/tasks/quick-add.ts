@@ -13,6 +13,7 @@ export type ParsedQuickAdd = {
   due_date?: string
   priority?: 'low' | 'high' | 'urgent'
   property_id?: string
+  tags?: string[]
   matchedTokens: string[]
 }
 
@@ -152,6 +153,21 @@ export function parseQuickAdd(
   let s = input
   const matchedTokens: string[] = []
   const out: ParsedQuickAdd = { title: '', matchedTokens }
+
+  // 0. "#tag" tokens anywhere (RTM Smart Add style) — "#rock" makes it
+  //    a rock. Unambiguous, so they go first.
+  const tagRe = /(?:^|\s)#([\w-]+)\b/g
+  const tags: string[] = []
+  let tagMatch: RegExpExecArray | null
+  while ((tagMatch = tagRe.exec(s)) !== null) {
+    const tag = tagMatch[1].toLowerCase()
+    if (!tags.includes(tag)) tags.push(tag)
+  }
+  if (tags.length > 0) {
+    out.tags = tags
+    matchedTokens.push(...tags.map(t => `#${t}`))
+    s = s.replace(/(?:^|\s)#[\w-]+\b/g, ' ')
+  }
 
   // 1. "!urgent" / "!high" / "!low" anywhere
   const bang = /(?:^|\s)!(urgent|high|low)\b/i.exec(s)
