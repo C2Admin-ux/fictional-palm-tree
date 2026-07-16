@@ -16,6 +16,9 @@ import {
   Link as LinkIcon, AlertTriangle, Clock,
 } from 'lucide-react'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
+import { SnoozeMenu } from '@/components/tasks/snooze-menu'
+import { SwipeRow } from '@/components/tasks/swipe-row'
+import { toast } from '@/components/ui/toast'
 import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -63,6 +66,7 @@ type RowHandlers = {
   onDone: (task: TaskWithRelations) => void
   onDelete: (task: TaskWithRelations) => void
   onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
+  onSnooze: (task: TaskWithRelations, date: string) => void
   onRefresh: () => void
 }
 
@@ -238,6 +242,10 @@ function TasksInner() {
     onDone: markDone,
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
+    onSnooze: (task, date) => {
+      patchTaskOptimistic(supabase, store, task, { snoozed_until: date })
+      toast(`Snoozed until ${formatDateShort(date)}`)
+    },
     onRefresh: fetchTasks,
   }
 
@@ -378,6 +386,7 @@ function TasksInner() {
                         <div className="w-28 text-xs font-medium text-slate-400 uppercase tracking-wide text-center hidden lg:block">People</div>
                         <div className="w-20 text-xs font-medium text-slate-400 uppercase tracking-wide text-right">Due</div>
                         <div className="w-6" />
+                        <div className="w-6 ml-1" />
                       </div>
 
                       {sectionTasks.map(task => (
@@ -426,12 +435,14 @@ function TasksInner() {
 
 // ── Task Row ─────────────────────────────────────────────────
 
-function TaskRow({ task, handlers, meta }: {
+function TaskRow({ task, handlers, meta, swipeable = false }: {
   task: TaskWithRelations
   handlers: RowHandlers
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
+  swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
 }) {
-  const { onEdit, onDone, onDelete, onPatch } = handlers
+  const { onEdit, onDone, onDelete, onPatch, onSnooze } = handlers
+  const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
@@ -452,7 +463,7 @@ function TaskRow({ task, handlers, meta }: {
     patch({ tags })
   }
 
-  return (
+  const row = (
     <div className={cn(
       'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
       isDone && 'opacity-60'
@@ -577,6 +588,17 @@ function TaskRow({ task, handlers, meta }: {
         />
       </div>
 
+      {/* Snooze presets — no modal needed. Always visible on mobile,
+          hover-revealed on desktop. */}
+      <div className="w-6 flex justify-center">
+        <SnoozeMenu
+          open={snoozeOpen}
+          onOpenChange={setSnoozeOpen}
+          onSnooze={date => onSnooze(task, date)}
+          buttonClassName="md:opacity-0 md:group-hover:opacity-100"
+        />
+      </div>
+
       {/* Delete — instant, with an Undo toast */}
       <div className="w-6 flex justify-center ml-1">
         <button onClick={() => onDelete(task)}
@@ -585,6 +607,15 @@ function TaskRow({ task, handlers, meta }: {
         </button>
       </div>
     </div>
+  )
+
+  if (!swipeable) return row
+  return (
+    <SwipeRow
+      onSwipeRight={() => onDone(task)}
+      onSwipeLeft={() => setSnoozeOpen(true)}>
+      {row}
+    </SwipeRow>
   )
 }
 
@@ -660,7 +691,7 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
             </span>
             <span className="text-xs text-indigo-400">to process</span>
           </button>
-          {inboxOpen && myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+          {inboxOpen && myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} swipeable />)}
         </div>
       )}
 
@@ -680,7 +711,7 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
                 {g.tasks.length}
               </span>
             </div>
-            {g.tasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+            {g.tasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} swipeable />)}
           </div>
         )
       })}
