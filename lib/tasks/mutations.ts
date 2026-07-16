@@ -7,6 +7,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Task } from '@/lib/supabase/types'
 import { toast } from '@/components/ui/toast'
+import { createNextOccurrence } from '@/lib/tasks/recurrence'
+import { formatDateShort } from '@/lib/utils'
 
 type Client = SupabaseClient<Database>
 
@@ -68,9 +70,10 @@ export async function patchTaskOptimistic(
 }
 
 // Complete / un-complete toggle with an Undo toast on completion.
+// Completing a recurring task also spawns its next instance (guarded
+// against double-creation inside createNextOccurrence).
 export async function toggleDoneOptimistic(
-  supabase: Client, store: TaskStore, task: Task,
-  opts?: { onCompleted?: (task: Task) => void | Promise<void> }
+  supabase: Client, store: TaskStore, task: Task
 ) {
   const wasDone = task.status === 'done'
   const fields: Partial<Task> = wasDone
@@ -103,7 +106,13 @@ export async function toggleDoneOptimistic(
     },
   })
 
-  await opts?.onCompleted?.({ ...task, ...fields })
+  if (task.recur_freq) {
+    const created = await createNextOccurrence(supabase, task)
+    if (created) {
+      store.insert(created)
+      toast(`Next occurrence created for ${formatDateShort(created.due_date)}`)
+    }
+  }
 }
 
 // Instant optimistic delete with an Undo toast that re-inserts the
