@@ -281,12 +281,18 @@ function CapexInner() {
                       </td>
                       <td className={cn('px-3 py-2.5 text-right text-sm font-medium', over ? 'text-red-600' : 'text-slate-700')}>{formatCurrency(p.actual_spend, true)}</td>
                       <td className="px-3 py-2.5 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <div className="w-16 bg-slate-100 rounded-full h-1.5">
-                            <div className={cn('h-1.5 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')} style={{ width: `${pct}%` }} />
+                        {p.budget != null && p.budget > 0 ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-16 bg-slate-100 rounded-full h-1.5">
+                              <div className={cn('h-1.5 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')} style={{ width: `${Math.min(pct, 100)}%` }} />
+                            </div>
+                            <span className={cn('text-xs min-w-[2rem] text-right', over ? 'text-red-500 font-medium' : 'text-slate-400')}>{pct}%</span>
                           </div>
-                          <span className={cn('text-xs w-8 text-right', over ? 'text-red-500' : 'text-slate-400')}>{pct}%</span>
-                        </div>
+                        ) : over ? (
+                          <span className="text-xs text-red-500 font-medium whitespace-nowrap">over — no budget</span>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5">
                         <InlineText

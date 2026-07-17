@@ -16,11 +16,12 @@ export type CapexWithProp = CapexProject & { properties?: { name: string } | nul
 export type CapexStatus = CapexProject['status']
 
 // Shared "% Used" bar logic — same numbers the list table shows.
+// pct is the TRUE percentage (can exceed 100) — clamp only the bar
+// width at render. Spend with no budget to burn also counts as over.
 export function budgetUsage(p: CapexProject): { pct: number; over: boolean } {
-  const pct = p.budget && p.budget > 0
-    ? Math.min(Math.round((p.actual_spend ?? 0) / p.budget * 100), 100)
-    : 0
-  const over = (p.actual_spend ?? 0) > (p.budget ?? Infinity)
+  const spend = p.actual_spend ?? 0
+  const pct = p.budget && p.budget > 0 ? Math.round(spend / p.budget * 100) : 0
+  const over = spend > 0 && (p.budget == null || spend > p.budget)
   return { pct, over }
 }
 
@@ -184,13 +185,15 @@ export function ProjectCard({ project: p, showStatus = false, showChevron = fals
               <span className="text-slate-300"> / </span>
               {formatCurrency(p.budget, true)}
             </span>
-            {p.budget != null && p.budget > 0 && (
-              <span className={over ? 'text-red-500' : 'text-slate-400'}>{pct}%</span>
-            )}
+            {p.budget != null && p.budget > 0 ? (
+              <span className={over ? 'text-red-500 font-medium' : 'text-slate-400'}>{pct}%</span>
+            ) : over ? (
+              <span className="text-red-500 font-medium">over — no budget</span>
+            ) : null}
           </div>
           <div className="bg-slate-100 rounded-full h-1">
             <div className={cn('h-1 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')}
-              style={{ width: `${pct}%` }} />
+              style={{ width: `${Math.min(pct, 100)}%` }} />
           </div>
         </div>
       )}
