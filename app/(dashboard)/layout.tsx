@@ -208,7 +208,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Bottom padding below md reserves room for the fixed tab bar,
             so page footers/sticky bars land above it, not behind it */}
-        <main className="flex-1 overflow-y-auto pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
+        <main className="flex-1 overflow-y-auto pb-[calc(3.5rem_+_env(safe-area-inset-bottom))] md:pb-0">
           {children}
         </main>
       </div>
