@@ -12,17 +12,18 @@
 import { useState } from 'react'
 import type { Task } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
+import { subtaskProgress } from '@/lib/tasks/subtasks'
 import { InlineText } from '@/components/ui/inline-edit'
-import { CompleteCircle, DueDateCell } from '@/components/tasks/row-cells'
+import { CompleteCircle, DeleteX, DueDateCell } from '@/components/tasks/row-cells'
 import { CollapseOnComplete, type ExitPhase } from '@/components/tasks/complete-collapse'
-import { ChevronDown, CornerDownRight, Plus, X } from 'lucide-react'
+import { ChevronDown, CornerDownRight, Plus } from 'lucide-react'
 
-export function SubtaskChip({ done, total, expanded, onToggle }: {
-  done: number
-  total: number
+export function SubtaskChip({ subtasks, expanded, onToggle }: {
+  subtasks: Pick<Task, 'status'>[]
   expanded: boolean
   onToggle: () => void
 }) {
+  const { done, total } = subtaskProgress(subtasks)
   return (
     <button
       type="button"
@@ -115,12 +116,7 @@ function SubtaskRow<T extends Task>({ task, selected, onSelect, exitPhase, onTog
         </div>
         <DueDateCell dueDate={task.due_date} isDone={isDone}
           onSave={v => onPatch({ due_date: v })} />
-        <div className="w-6 flex justify-center ml-1">
-          <button onClick={onDelete}
-            className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
-            <X size={13} />
-          </button>
-        </div>
+        <DeleteX onDelete={onDelete} />
       </div>
     </CollapseOnComplete>
   )

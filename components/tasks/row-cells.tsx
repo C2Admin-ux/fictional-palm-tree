@@ -7,7 +7,8 @@
 import type { Task } from '@/lib/supabase/types'
 import { cn, isOverdue, isSoon, PRIORITY_DOT, RECUR_LABELS } from '@/lib/utils'
 import { InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
-import { RefreshCw, Clock, AlertTriangle } from 'lucide-react'
+import { CHECK_MS } from '@/components/tasks/complete-collapse'
+import { RefreshCw, Clock, AlertTriangle, X } from 'lucide-react'
 
 // Priority pip — click to change priority.
 export function PriorityPip({ priority, isDone, onSave }: {
@@ -44,7 +45,10 @@ export function CompleteCircle({ isDone, onToggle }: {
         isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
       )}>
       {isDone && (
-        <svg width="8" height="6" viewBox="0 0 8 6" fill="none" className="check-pop">
+        // Duration comes from CHECK_MS (single source of truth for the
+        // exit timing) — the keyframes live in globals.css.
+        <svg width="8" height="6" viewBox="0 0 8 6" fill="none"
+          style={{ animation: `check-pop ${CHECK_MS}ms ease-out` }}>
           <path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
@@ -67,6 +71,19 @@ export function TaskBadges({ task }: { task: Pick<Task, 'recur_freq' | 'auto_sou
         </span>
       )}
     </span>
+  )
+}
+
+// Hover-revealed delete X — instant optimistic delete with an Undo
+// toast at the call site (parent rows and subtask rows alike).
+export function DeleteX({ onDelete }: { onDelete: () => void }) {
+  return (
+    <div className="w-6 flex justify-center ml-1">
+      <button onClick={onDelete}
+        className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
+        <X size={13} />
+      </button>
+    </div>
   )
 }
 

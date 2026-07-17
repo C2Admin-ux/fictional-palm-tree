@@ -25,7 +25,6 @@ export type TaskShortcutActions = {
   enabled: boolean            // false while a modal is open or the list is loading
   selectedId: string | null
   setSelectedId: (id: string | null) => void
-  onComplete: (id: string) => void
   onDelete: (id: string) => void
   onEdit: (id: string) => void
   onSetPriority: (id: string, priority: Task['priority']) => void
@@ -120,11 +119,10 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
       switch (e.key) {
         case 'c': {
           e.preventDefault()
-          // Click the row's real complete circle so the keyboard gets
-          // the same check-pop + collapse animation as the mouse.
-          const circle = row.querySelector<HTMLElement>('[data-complete-toggle]')
-          if (circle) circle.click()
-          else a.onComplete(a.selectedId)
+          // Click the row's real complete circle so the keyboard rides
+          // the exact same complete + exit-animation path as the mouse
+          // (every row renders one — see CompleteCircle in row-cells).
+          row.querySelector<HTMLElement>('[data-complete-toggle]')?.click()
           return
         }
         case 'e':

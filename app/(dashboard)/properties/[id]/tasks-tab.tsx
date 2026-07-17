@@ -14,15 +14,16 @@ import { InlineText } from '@/components/ui/inline-edit'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
-import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell, DeleteX } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { groupByDue } from '@/lib/tasks/dates'
-import { Moon, ChevronDown, X } from 'lucide-react'
+import { Moon, ChevronDown } from 'lucide-react'
 
 // Row with the task_contacts junction ids joined in, so delete undo
 // can restore the links (same undo contract as the tasks page).
@@ -47,8 +48,12 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
         .gte('completed_at', completedCutoff)
         .order('completed_at', { ascending: false }),
       // Done SUBTASKS have no cutoff — a parent's "2/5" progress chip
-      // must count every completed child, however old.
-      supabase.from('tasks').select('*, task_contacts(contact_id)')
+      // must count every completed child, however old. Lean select:
+      // just what the subtask row renders, plus the identity columns a
+      // delete-undo re-insert needs to stay coherent (property link,
+      // priority).
+      supabase.from('tasks')
+        .select('id, parent_task_id, title, status, due_date, completed_at, property_id, priority, task_contacts(contact_id)')
         .eq('property_id', propertyId).eq('status', 'done')
         .not('parent_task_id', 'is', null),
     ])
@@ -117,7 +122,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
   // cancels the exit animation (failed write / Undo).
   const markDone = useCallback((task: Task) => {
     void toggleDoneOptimistic(supabase, store, task, {
-      openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+      openSubtasks: openSubtasksOf(tasksRef.current, task.id),
       onRevert: () => cancelExit(task.id),
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,22 +139,16 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
   // Subtasks render only inside their parent's drill-down — the
   // grouped lists, the completed section, and their counts all start
-  // from top-level rows. (Render derivations feed from renderTasks so
-  // completing rows stay in place while they animate out.)
-  const topLevel = renderTasks.filter(t => !t.parent_task_id)
-  const childrenByParent = useMemo(() => {
-    const m = new Map<string, TabTask[]>()
-    for (const t of renderTasks) {
-      if (!t.parent_task_id) continue
-      const arr = m.get(t.parent_task_id)
-      if (arr) arr.push(t)
-      else m.set(t.parent_task_id, [t])
-    }
-    return m
-  }, [renderTasks])
+  // from top-level rows (shared helpers, lib/tasks/subtasks.ts).
+  // Render derivations feed from renderTasks so completing rows stay
+  // in place while they animate out.
+  const tops = topLevel(renderTasks)
+  const childMap = useMemo(() => childrenByParent(renderTasks), [renderTasks])
 
-  const openTasks = topLevel.filter(t => t.status !== 'done')
-  const completed = topLevel
+  const openTasks = tops.filter(t => t.status !== 'done')
+  // Done parents render here regardless of the fetch cutoff — that
+  // includes the specially-fetched parents of still-open subtasks.
+  const completed = tops
     .filter(t => t.status === 'done')
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
   const groups = groupByDue(openTasks)
@@ -193,7 +192,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
                 <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
                   onDone={completeTask} userId={userId}
                   exitPhase={phaseOf(t.id)} exitPhaseOf={phaseOf}
-                  subtasks={childrenByParent.get(t.id)}
+                  subtasks={childMap.get(t.id)}
                   expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
               ))}
             </div>
@@ -215,7 +214,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
               <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
                 onDone={completeTask} userId={userId}
                 exitPhase={phaseOf(t.id)} exitPhaseOf={phaseOf}
-                subtasks={childrenByParent.get(t.id)}
+                subtasks={childMap.get(t.id)}
                 expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
             ))}
           </div>
@@ -285,8 +284,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
           <TaskBadges task={task} />
           {subtasks != null && subtasks.length > 0 && (
             <SubtaskChip
-              done={subtasks.filter(s => s.status === 'done').length}
-              total={subtasks.length}
+              subtasks={subtasks}
               expanded={expanded}
               onToggle={() => onToggleExpand(task.id)}
             />
@@ -321,14 +319,9 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
       </div>
 
       {/* Delete — instant, with an Undo toast */}
-      <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => deleteTaskOptimistic(supabase, store, task, {
-          contactIds: (task.task_contacts ?? []).map(tc => tc.contact_id),
-        })}
-          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
-          <X size={13} />
-        </button>
-      </div>
+      <DeleteX onDelete={() => deleteTaskOptimistic(supabase, store, task, {
+        contactIds: (task.task_contacts ?? []).map(tc => tc.contact_id),
+      })} />
     </div>
   )
 

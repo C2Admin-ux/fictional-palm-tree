@@ -12,6 +12,7 @@ import {
   propertyColor,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
+import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
   Link as LinkIcon, Keyboard,
@@ -19,7 +20,7 @@ import {
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
-import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell, DeleteX } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
 import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import { SavedViewsBar } from '@/components/tasks/saved-views'
@@ -76,6 +77,7 @@ const GROUP_BY_OPTIONS: { value: GroupByMode; label: string }[] = [
 // ordering is fixed — so there's nothing to capture there.)
 
 type ViewConfig = {
+  v: 1                    // config schema version (stored in the blob)
   view: ViewMode
   statuses: StatusFilter[]
   property: string
@@ -90,31 +92,42 @@ const DEFAULT_STATUSES: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'bl
 
 // Defensive parse — config is opaque jsonb, so missing/foreign keys
 // fall back to the page defaults instead of crashing a chip.
+// Versioned since Sprint 9 ({ v: 1 }); pre-version blobs share the v1
+// shape. Add a case here when a future version changes the shape.
 function parseViewConfig(raw: Json): ViewConfig {
   const cfg = (raw ?? {}) as Record<string, unknown>
-  const str = (v: unknown) => (typeof v === 'string' ? v : '')
-  const statuses = Array.isArray(cfg.statuses)
-    ? STATUS_ORDER.filter(s => (cfg.statuses as unknown[]).includes(s))
-    : []
-  return {
-    view: cfg.view === 'agenda' || cfg.view === 'review' ? cfg.view : 'all',
-    statuses: statuses.length > 0 ? statuses : DEFAULT_STATUSES,
-    property: str(cfg.property),
-    capex:    str(cfg.capex),
-    contact:  str(cfg.contact),
-    priority: str(cfg.priority),
-    search:   str(cfg.search),
-    groupBy:  cfg.groupBy === 'property' || cfg.groupBy === 'priority' || cfg.groupBy === 'due'
-      ? cfg.groupBy : 'status',
+  switch (cfg.v) {
+    case 1:
+    default: {
+      const str = (v: unknown) => (typeof v === 'string' ? v : '')
+      const statuses = Array.isArray(cfg.statuses)
+        ? STATUS_ORDER.filter(s => (cfg.statuses as unknown[]).includes(s))
+        : []
+      return {
+        v: 1,
+        view: cfg.view === 'agenda' || cfg.view === 'review' ? cfg.view : 'all',
+        statuses: statuses.length > 0 ? statuses : DEFAULT_STATUSES,
+        property: str(cfg.property),
+        capex:    str(cfg.capex),
+        contact:  str(cfg.contact),
+        priority: str(cfg.priority),
+        search:   str(cfg.search),
+        groupBy:  cfg.groupBy === 'property' || cfg.groupBy === 'priority' || cfg.groupBy === 'due'
+          ? cfg.groupBy : 'status',
+      }
+    }
   }
 }
 
+// Key-driven comparison over the actual ViewConfig keys — a field
+// added to the type (and to parse/currentConfig) is compared
+// automatically instead of being silently ignored.
 function sameViewConfig(a: ViewConfig, b: ViewConfig): boolean {
-  return a.view === b.view &&
-    a.statuses.join(',') === b.statuses.join(',') &&
-    a.property === b.property && a.capex === b.capex &&
-    a.contact === b.contact && a.priority === b.priority &&
-    a.search === b.search && a.groupBy === b.groupBy
+  return (Object.keys(a) as (keyof ViewConfig)[]).every(k =>
+    k === 'statuses'
+      ? a.statuses.join(',') === b.statuses.join(',')
+      : a[k] === b[k]
+  )
 }
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
@@ -299,47 +312,41 @@ function TasksInner() {
 
   // Subtasks NEVER render as top-level rows — every list and count in
   // the three views starts from topLevelTasks; children hang off their
-  // parent via childrenByParent (drill-down only).
-  const topLevelTasks = useMemo(() => renderTasks.filter(t => !t.parent_task_id), [renderTasks])
-  const childrenByParent = useMemo(() => {
-    const m = new Map<string, TaskWithRelations[]>()
-    for (const t of renderTasks) {
-      if (!t.parent_task_id) continue
-      const arr = m.get(t.parent_task_id)
-      if (arr) arr.push(t)
-      else m.set(t.parent_task_id, [t])
-    }
-    return m
-  }, [renderTasks])
+  // parent via the child map (drill-down only). Shared helpers:
+  // lib/tasks/subtasks.ts.
+  const topLevelTasks = useMemo(() => topLevel(renderTasks), [renderTasks])
+  const childMap = useMemo(() => childrenByParent(renderTasks), [renderTasks])
   const subtasksOf = useCallback(
-    (id: string) => childrenByParent.get(id), [childrenByParent]
+    (id: string) => childMap.get(id), [childMap]
   )
   const subtaskUi: SubtaskUi = useMemo(
     () => ({ subtasksOf, expandedIds }), [subtasksOf, expandedIds]
   )
 
   // All-view filtering (client side — the shared fetch feeds all three views)
-  const q = search.trim().toLowerCase()
-  const visibleTasks = topLevelTasks.filter(t => {
-    if (!activeStatuses.has(t.status as StatusFilter)) return false
-    if (filterPriority && t.priority !== filterPriority) return false
-    if (filterProp && t.property_id !== filterProp) return false
-    if (filterCapex && t.capex_project_id !== filterCapex) return false
-    if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
-    if (q && !t.title.toLowerCase().includes(q) && !(t.description ?? '').toLowerCase().includes(q)) return false
-    return true
-  })
+  const visibleTasks = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return topLevelTasks.filter(t => {
+      if (!activeStatuses.has(t.status as StatusFilter)) return false
+      if (filterPriority && t.priority !== filterPriority) return false
+      if (filterProp && t.property_id !== filterProp) return false
+      if (filterCapex && t.capex_project_id !== filterCapex) return false
+      if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
+      if (q && !t.title.toLowerCase().includes(q) && !(t.description ?? '').toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [topLevelTasks, activeStatuses, filterPriority, filterProp, filterCapex, filterContact, search])
 
-  const counts = STATUS_ORDER.reduce((acc, s) => {
+  const counts = useMemo(() => STATUS_ORDER.reduce((acc, s) => {
     acc[s] = topLevelTasks.filter(t => t.status === s).length
     return acc
-  }, {} as Record<StatusFilter, number>)
+  }, {} as Record<StatusFilter, number>), [topLevelTasks])
 
   // One collapsible-section shape for every grouping. Status keeps the
   // current order/labels; Property sorts by name with "No property"
   // last; Priority runs urgent→low; Due reuses the shared groupByDue
   // bucketing (Overdue keeps its red tone).
-  const sections: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] =
+  const sections: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = useMemo(() =>
     groupBy === 'property' ? groupByPropertySections(visibleTasks)
     : groupBy === 'priority' ? PRIORITY_ORDER.map(p => ({
         key: p, label: p, tasks: visibleTasks.filter(t => t.priority === p),
@@ -364,7 +371,8 @@ function TasksInner() {
       })()
     : STATUS_ORDER.map(s => ({
         key: s, label: SECTION_LABELS[s], tasks: visibleTasks.filter(t => t.status === s),
-      }))
+      })),
+  [groupBy, visibleTasks])
 
   function toggleStatus(s: StatusFilter) {
     setActiveStatuses(prev => {
@@ -423,7 +431,7 @@ function TasksInner() {
     // onRevert cancels the exit animation (failed write / Undo) so the
     // row reappears instantly.
     (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
-      openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+      openSubtasks: openSubtasksOf(tasksRef.current, task.id),
       onRevert: () => cancelExit(task.id),
     }),
     [supabase, store, cancelExit]
@@ -485,7 +493,6 @@ function TasksInner() {
     enabled: !showForm && !loading,
     selectedId,
     setSelectedId,
-    onComplete: id => { const t = taskById(id); if (t) completeTask(t) },
     onDelete: id => { const t = taskById(id); if (t) deleteTask(t) },
     onEdit: id => { const t = taskById(id); if (t) { setEditTask(t); setShowForm(true) } },
     onSetPriority: (id, priority) => {
@@ -502,7 +509,8 @@ function TasksInner() {
   // A chip is "active" when its stored config matches the live state —
   // touch any filter afterwards and the highlight drops off on its own.
 
-  const currentConfig: ViewConfig = {
+  const currentConfig: ViewConfig = useMemo(() => ({
+    v: 1,
     view,
     statuses: STATUS_ORDER.filter(s => activeStatuses.has(s)), // canonical order
     property: filterProp,
@@ -511,13 +519,21 @@ function TasksInner() {
     priority: filterPriority,
     search,
     groupBy,
-  }
-  const activeViewId = savedViews.find(v => sameViewConfig(currentConfig, parseViewConfig(v.config)))?.id ?? null
+  }), [view, activeStatuses, filterProp, filterCapex, filterContact, filterPriority, search, groupBy])
+
+  // Configs parse once per fetch/edit, not once per render per chip.
+  const parsedViews = useMemo(
+    () => savedViews.map(v => ({ row: v, config: parseViewConfig(v.config) })),
+    [savedViews]
+  )
+  const activeViewId = parsedViews.find(p => sameViewConfig(currentConfig, p.config))?.row.id ?? null
 
   // Applying restores the whole state — including the tab, so an
   // Agenda-based view switches over to Agenda.
   function applySavedView(v: TaskView) {
-    const cfg = parseViewConfig(v.config)
+    // Copy the pre-parsed config (stale-referent clearing mutates it).
+    const parsed = parsedViews.find(p => p.row.id === v.id)?.config ?? parseViewConfig(v.config)
+    const cfg = { ...parsed }
     // Stale referents (deleted/archived property, wrapped-up CapEx
     // project, removed contact) would silently filter everything down
     // to nothing — validate ids against the loaded option lists, clear
@@ -921,8 +937,7 @@ const TaskRow = memo(function TaskRow({
           <TaskBadges task={task} />
           {subtasks != null && subtasks.length > 0 && (
             <SubtaskChip
-              done={subtasks.filter(s => s.status === 'done').length}
-              total={subtasks.length}
+              subtasks={subtasks}
               expanded={expanded}
               onToggle={() => handlers.onToggleExpand(task.id)}
             />
@@ -1009,12 +1024,7 @@ const TaskRow = memo(function TaskRow({
       </div>
 
       {/* Delete — instant, with an Undo toast */}
-      <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => onDelete(task)}
-          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
-          <X size={13} />
-        </button>
-      </div>
+      <DeleteX onDelete={() => onDelete(task)} />
     </div>
   )
 
@@ -1069,8 +1079,9 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
     // Actionable-now semantics. Subtasks never surface as top-level
-    // rows — they live in their parent's drill-down only.
-    const isTopLevel = (t: TaskWithRelations) => !t.parent_task_id
+    // rows — they live in their parent's drill-down only (shared
+    // topLevel helper, lib/tasks/subtasks.ts).
+    const tops = topLevel(tasks)
     const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
     const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
     const isUnblocked = (t: TaskWithRelations) => {
@@ -1080,13 +1091,13 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     }
 
     // Personal inbox: things I captured that still need processing
-    const myInbox = tasks.filter(t =>
-      t.status === 'inbox' && isTopLevel(t) && t.created_by != null && t.created_by === userId && isAwake(t)
+    const myInbox = tops.filter(t =>
+      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
     )
     const inboxIds = new Set(myInbox.map(t => t.id))
 
-    const actionable = tasks.filter(t =>
-      t.status !== 'done' && isTopLevel(t) && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+    const actionable = tops.filter(t =>
+      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
     )
 
     // Shared bucketing (same as the property Tasks tab) — 'Later' is
@@ -1094,8 +1105,8 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const groups = groupByDue(actionable, today, { nodate: 'No due date' })
     const hasDated = groups.some(g => g.tasks.length > 0)
 
-    const snoozed = tasks.filter(t =>
-      t.status !== 'done' && isTopLevel(t) && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+    const snoozed = tops.filter(t =>
+      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
     ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
     return { myInbox, groups, hasDated, snoozed }
@@ -1220,11 +1231,12 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
       subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),
     })
   // Subtasks stay inside their parent's drill-down — every review
-  // section sweeps top-level tasks only.
-  const topLevel = tasks.filter(t => !t.parent_task_id)
-  const myInbox = topLevel.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
+  // section except the obligations horizon sweeps top-level tasks only
+  // (shared topLevel helper, lib/tasks/subtasks.ts).
+  const tops = topLevel(tasks)
+  const myInbox = tops.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
-  const waiting = [...topLevel]
+  const waiting = [...tops]
     .filter(t => t.status === 'waiting')
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
 
@@ -1243,9 +1255,9 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
     return acc
   }, {} as Record<string, TaskWithRelations[]>)
 
-  const rocks = topLevel.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
+  const rocks = tops.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
 
-  const shipped = [...topLevel]
+  const shipped = [...tops]
     .filter(t => t.status === 'done' && t.completed_at != null && (daysUntil(t.completed_at) ?? -999) >= -7)
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
 
