@@ -34,6 +34,7 @@ import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
+import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
 
 type TaskWithRelations = Task & {
@@ -421,10 +422,26 @@ function TasksInner() {
       // Always re-sort on update — a due_date edit must move the row, and
       // the arrays are small enough that sorting every patch is cheap.
       update: (id, fields) => setTasks(prev => sortTasks(prev.map(t => t.id === id ? { ...t, ...fields } : t))),
-      insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
+      // Idempotent by id: creations arrive both from direct calls (the
+      // inline quick-add) and the c2:task-created broadcast — whichever
+      // lands second is a no-op.
+      insert: task => setTasks(prev =>
+        prev.some(t => t.id === task.id) ? prev : sortTasks([...prev, enrich(task)])),
       remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
     }
   }, [])
+
+  // Tasks captured on OTHER surfaces (global sheet, command palette,
+  // record "+ Task" buttons) broadcast themselves — insert them so the
+  // on-screen list never goes stale while this page is open.
+  useEffect(() => {
+    function onTaskCreated(e: Event) {
+      const task = (e as CustomEvent<Task>).detail
+      if (task?.id) store.insert(task)
+    }
+    window.addEventListener(TASK_CREATED_EVENT, onTaskCreated)
+    return () => window.removeEventListener(TASK_CREATED_EVENT, onTaskCreated)
+  }, [store])
 
   const markDone = useCallback(
     // Completing a parent takes its open subtasks with it — one action,

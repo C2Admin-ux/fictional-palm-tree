@@ -22,6 +22,7 @@ import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
+import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
 import { groupByDue } from '@/lib/tasks/dates'
 import { Moon, ChevronDown } from 'lucide-react'
 
@@ -91,12 +92,26 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
   }, [])
 
   // Referentially stable so the memoized rows only re-render when
-  // their own task changes.
+  // their own task changes. Insert is idempotent by id: creations
+  // arrive both from the inline quick-add's direct call and the
+  // c2:task-created broadcast — whichever lands second is a no-op.
   const store: TaskStore = useMemo(() => ({
     update: (id, fields) => setTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
-    insert: task => setTasks(prev => [...prev, task]),
+    insert: task => setTasks(prev => prev.some(t => t.id === task.id) ? prev : [...prev, task]),
     remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
   }), [])
+
+  // Tasks captured on other surfaces (global sheet, palette, record
+  // buttons) broadcast themselves — insert the ones that belong to
+  // this property so the tab never goes stale while open.
+  useEffect(() => {
+    function onTaskCreated(e: Event) {
+      const task = (e as CustomEvent<Task>).detail
+      if (task?.id && task.property_id === propertyId) store.insert(task)
+    }
+    window.addEventListener(TASK_CREATED_EVENT, onTaskCreated)
+    return () => window.removeEventListener(TASK_CREATED_EVENT, onTaskCreated)
+  }, [store, propertyId])
 
   const tasksRef = useRef(tasks); tasksRef.current = tasks
 

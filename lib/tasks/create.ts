@@ -53,6 +53,14 @@ export function findingTaskInsertPayload(opts: {
   }
 }
 
+// Broadcast: every successful insert through this path announces the
+// new row on `window`, so any open list (tasks page, property Tasks
+// tab) can pick it up without a refetch — a task captured from the
+// global sheet or the palette appears on screen immediately.
+// Subscribers dedupe by id, so surfaces that also insert directly
+// (inline quick-add bars) stay correct.
+export const TASK_CREATED_EVENT = 'c2:task-created'
+
 // Insert + return the full row (null on failure — the caller decides
 // how to surface it; some surfaces restore the typed text, others
 // keep the palette open).
@@ -62,5 +70,9 @@ export async function insertTask(supabase: Client, payload: TaskInsert): Promise
     .select('*')
     .single()
   if (error || !data) return null
-  return data as Task
+  const task = data as Task
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<Task>(TASK_CREATED_EVENT, { detail: task }))
+  }
+  return task
 }
