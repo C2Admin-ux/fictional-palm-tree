@@ -77,8 +77,11 @@ export async function toggleDoneOptimistic(
 
   const children = wasDone ? [] : (opts?.openSubtasks ?? [])
   // Children can sit in different statuses — capture each one so Undo
-  // puts every row back exactly where it was.
-  const childPrior = children.map(c => ({ id: c.id, status: c.status, completed_at: c.completed_at }))
+  // puts every row back exactly where it was (title kept for the
+  // partial-failure error toast).
+  const childPrior = children.map(c => ({
+    id: c.id, title: c.title, status: c.status, completed_at: c.completed_at,
+  }))
   const revertChildren = () => {
     for (const p of childPrior) store.update(p.id, { status: p.status, completed_at: p.completed_at })
   }
@@ -119,6 +122,20 @@ export async function toggleDoneOptimistic(
     spawned = await createNextOccurrence(supabase, task)
     if (spawned) store.insert(spawned)
   }
+  // Recurring CHILDREN completed by the bulk write spawn their next
+  // occurrences too. Their parent just went done in this same action,
+  // so createNextOccurrence lifts each spawn to top level (see
+  // nextParentTaskId in recurrence.ts).
+  const spawnedChildren: Task[] = []
+  for (const c of children) {
+    if (!c.recur_freq) continue
+    const s = await createNextOccurrence(supabase, c, { parentStatus: 'done' })
+    if (s) {
+      spawnedChildren.push(s)
+      store.insert(s)
+    }
+  }
+  const spawnedAll = spawned ? [spawned, ...spawnedChildren] : spawnedChildren
 
   const base = children.length > 0
     ? `Completed with ${children.length} subtask${children.length === 1 ? '' : 's'}`
@@ -134,18 +151,37 @@ export async function toggleDoneOptimistic(
         const revert: Partial<Task> = { status: task.status, completed_at: task.completed_at }
         store.update(task.id, revert)
         revertChildren()
-        if (spawned) store.remove(spawned.id)
+        for (const s of spawnedAll) store.remove(s.id)
         void (async () => {
+          // Run EVERY DB revert (parent, each child, each spawned
+          // occurrence) and collect failures. Any row that could not be
+          // undone gets its local state reconciled back to the actual
+          // DB outcome, and one error toast names what stuck — no
+          // silent divergence between screen and database.
+          const failed: string[] = []
           const { error: undoError } = await supabase.from('tasks').update(revert).eq('id', task.id)
-          // Prior statuses differ per child, so restore row by row.
-          for (const p of childPrior) {
-            await supabase.from('tasks')
-              .update({ status: p.status, completed_at: p.completed_at }).eq('id', p.id)
-          }
-          if (spawned) await supabase.from('tasks').delete().eq('id', spawned.id)
           if (undoError) {
             store.update(task.id, fields)
-            toast('Could not undo', { tone: 'error' })
+            failed.push(`“${task.title}”`)
+          }
+          // Prior statuses differ per child, so restore row by row.
+          for (const p of childPrior) {
+            const { error: childError } = await supabase.from('tasks')
+              .update({ status: p.status, completed_at: p.completed_at }).eq('id', p.id)
+            if (childError) {
+              store.update(p.id, { status: 'done', completed_at: now })
+              failed.push(`“${p.title}”`)
+            }
+          }
+          for (const s of spawnedAll) {
+            const { error: deleteError } = await supabase.from('tasks').delete().eq('id', s.id)
+            if (deleteError) {
+              store.insert(s)
+              failed.push(`next occurrence “${s.title}”`)
+            }
+          }
+          if (failed.length > 0) {
+            toast(`Could not undo: ${failed.join(', ')}`, { tone: 'error' })
           }
         })()
       },
@@ -156,10 +192,11 @@ export async function toggleDoneOptimistic(
 // Instant optimistic delete with an Undo toast that re-inserts the
 // captured row (same id — the delete has already committed, so the id
 // is free again). Undo also restores what died with the row:
-// task_contacts junction rows (pass the ids), dependents'
-// blocked_by_task_id links (nulled by the FK's ON DELETE SET NULL),
-// and subtasks (removed by parent_task_id's ON DELETE CASCADE) —
-// captured with their own contact links before the delete commits.
+// task_contacts junction rows (pass the ids), subtasks (removed by
+// parent_task_id's ON DELETE CASCADE, captured with their own contact
+// links before the delete commits), and the blocked_by_task_id links
+// of every dependent — of the task itself AND of its cascading
+// children (all nulled by the FK's ON DELETE SET NULL).
 export async function deleteTaskOptimistic(
   supabase: Client, store: TaskStore, task: Task,
   opts?: { contactIds?: string[] }
@@ -167,13 +204,22 @@ export async function deleteTaskOptimistic(
   store.remove(task.id)
 
   // Capture what the delete will destroy beyond the row itself:
-  // dependents lose their FK (SET NULL), children die with it (CASCADE).
-  const [{ data: deps }, { data: childRows }] = await Promise.all([
-    supabase.from('tasks').select('id').eq('blocked_by_task_id', task.id),
-    supabase.from('tasks').select('*, task_contacts(contact_id)').eq('parent_task_id', task.id),
-  ])
-  const dependentIds = (deps ?? []).map(d => d.id).filter(id => id !== task.id)
+  // children die with it (CASCADE), and dependents of the task AND of
+  // its children lose their blocked_by FK (SET NULL) — so the children
+  // come first, then one dependents query over all the dying ids. Each
+  // dependent keeps its own blocker id for the per-row undo restore.
+  const { data: childRows } = await supabase.from('tasks')
+    .select('*, task_contacts(contact_id)').eq('parent_task_id', task.id)
   const children = (childRows ?? []) as unknown as (Task & { task_contacts: { contact_id: string }[] | null })[]
+  const childIds = children.map(c => c.id)
+
+  const { data: deps } = await supabase.from('tasks')
+    .select('id, blocked_by_task_id')
+    .in('blocked_by_task_id', [task.id, ...childIds])
+  // Rows dying in this delete need no FK handling of their own: the
+  // children are re-inserted verbatim on undo (their blocked_by rides
+  // along in taskInsertPayload).
+  const dependents = (deps ?? []).filter(d => d.id !== task.id && !childIds.includes(d.id))
 
   const { error } = await supabase.from('tasks').delete().eq('id', task.id)
   if (error) {
@@ -184,7 +230,7 @@ export async function deleteTaskOptimistic(
 
   // Mirror the DB's SET NULL / CASCADE locally so no row keeps
   // pointing at a blocker or parent that no longer exists.
-  for (const id of dependentIds) store.update(id, { blocked_by_task_id: null })
+  for (const d of dependents) store.update(d.id, { blocked_by_task_id: null })
   for (const c of children) store.remove(c.id)
 
   toast('Task deleted', {
@@ -216,10 +262,13 @@ export async function deleteTaskOptimistic(
           }
           for (const c of children) store.insert(c)
         }
-        if (dependentIds.length > 0) {
+        // Dependents point back at their ORIGINAL blocker (the task or
+        // one of its children) — restored per row after the rows above
+        // exist again.
+        for (const d of dependents) {
           await supabase.from('tasks')
-            .update({ blocked_by_task_id: task.id }).in('id', dependentIds)
-          for (const id of dependentIds) store.update(id, { blocked_by_task_id: task.id })
+            .update({ blocked_by_task_id: d.blocked_by_task_id }).eq('id', d.id)
+          store.update(d.id, { blocked_by_task_id: d.blocked_by_task_id })
         }
       },
     },

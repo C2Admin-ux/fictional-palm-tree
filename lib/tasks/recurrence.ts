@@ -65,6 +65,21 @@ export function nextOccurrence(task: RecurrenceFields): { due_date: string } | n
   return { due_date }
 }
 
+// Where a recurring task's next occurrence lives. A recurring SUBTASK
+// usually stays under its parent — but if the parent project is
+// already 'done', the spawned occurrence would be INVISIBLE: subtasks
+// never render as top-level rows, and a done parent only surfaces in
+// buried done sections (or falls outside fetch windows entirely). So
+// the occurrence spawns TOP-LEVEL instead: the project is finished;
+// the recurring obligation continues standalone.
+export function nextParentTaskId(
+  task: Pick<Task, 'parent_task_id'>,
+  parentStatus: Task['status'] | null
+): string | null {
+  if (!task.parent_task_id) return null
+  return parentStatus === 'done' ? null : task.parent_task_id
+}
+
 // Create the next instance of a completed recurring task. Returns the
 // inserted row, or null when the series ended, an instance for that
 // due date already exists (un-complete → re-complete guard), or the
@@ -73,9 +88,15 @@ export function nextOccurrence(task: RecurrenceFields): { due_date: string } | n
 // Subtasks: spawning does NOT copy the completed task's subtasks — a
 // recurring PARENT's next occurrence starts with an empty subtask list
 // (only the single row below is inserted). A recurring SUBTASK's next
-// occurrence keeps its parent_task_id: it carries forward through
-// nextOccurrenceBasePayload like any other non-per-instance column.
-export async function createNextOccurrence(supabase: Client, task: Task): Promise<Task | null> {
+// occurrence keeps its parent_task_id UNLESS the parent is done, in
+// which case it spawns top-level (see nextParentTaskId). Callers that
+// already know the parent's status pass it via ctx (the bulk-complete
+// path completes the parent in the same action); otherwise one indexed
+// select resolves it.
+export async function createNextOccurrence(
+  supabase: Client, task: Task,
+  ctx?: { parentStatus?: Task['status'] }
+): Promise<Task | null> {
   const next = nextOccurrence(task)
   if (!next) return null
 
@@ -90,6 +111,13 @@ export async function createNextOccurrence(supabase: Client, task: Task): Promis
     .limit(1)
   if (lookupError || (existing && existing.length > 0)) return null
 
+  let parentStatus: Task['status'] | null = ctx?.parentStatus ?? null
+  if (task.parent_task_id && parentStatus == null) {
+    const { data: parentRow } = await supabase
+      .from('tasks').select('status').eq('id', task.parent_task_id).maybeSingle()
+    parentStatus = (parentRow?.status as Task['status'] | undefined) ?? null
+  }
+
   // Everything that isn't per-instance state carries forward (derived
   // in lib/tasks/payload.ts — one source of truth, keeps future columns).
   const { data: created, error } = await supabase
@@ -98,6 +126,7 @@ export async function createNextOccurrence(supabase: Client, task: Task): Promis
       ...nextOccurrenceBasePayload(task),
       status:          'next_action',
       due_date:        next.due_date,
+      parent_task_id:  nextParentTaskId(task, parentStatus),
       recur_parent_id: parentId,
       recur_count:     (task.recur_count ?? 0) + 1,
     })

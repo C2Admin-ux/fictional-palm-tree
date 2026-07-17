@@ -31,9 +31,11 @@ export function taskInsertPayload(task: Task): TaskInsert {
 // Identity/state that belongs to the completed instance only — the
 // next occurrence gets fresh values for all of these.
 // parent_task_id is deliberately NOT here: a recurring subtask's next
-// occurrence stays under the same parent. (A recurring parent's next
-// occurrence still starts with no children — recurrence inserts one
-// row and never copies subtasks.)
+// occurrence normally stays under the same parent — though the
+// recurrence engine overrides it to top-level when the parent is
+// already done (see nextParentTaskId in recurrence.ts). (A recurring
+// parent's next occurrence still starts with no children — recurrence
+// inserts one row and never copies subtasks.)
 const PER_INSTANCE_KEYS = [
   'id', 'status', 'due_date', 'completed_at', 'snoozed_until',
   'recur_parent_id', 'recur_count', 'auto_source', 'source_record_id',
