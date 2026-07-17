@@ -47,6 +47,7 @@ type RawTaskRow = Task & {
 
 type StatusFilter = 'inbox' | 'next_action' | 'waiting' | 'blocked' | 'done'
 type ViewMode = 'agenda' | 'all' | 'review'
+type GroupByMode = 'status' | 'property' | 'priority' | 'due'
 
 const STATUS_ORDER: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked', 'done']
 const SECTION_LABELS: Record<StatusFilter, string> = {
@@ -56,6 +57,15 @@ const SECTION_LABELS: Record<StatusFilter, string> = {
   blocked:     'Blocked',
   done:        'Completed',
 }
+
+const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const
+
+const GROUP_BY_OPTIONS: { value: GroupByMode; label: string }[] = [
+  { value: 'status',   label: 'Group: Status' },
+  { value: 'property', label: 'Group: Property' },
+  { value: 'priority', label: 'Group: Priority' },
+  { value: 'due',      label: 'Group: Due' },
+]
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
   { key: 'agenda', label: 'Agenda' },
@@ -86,6 +96,24 @@ type RowHandlers = {
 type SubtaskUi = {
   subtasksOf: (id: string) => TaskWithRelations[] | undefined
   expandedIds: Set<string>
+}
+
+// Property grouping for the All view: sections in property-name order,
+// portfolio-wide ("No property") last.
+function groupByPropertySections<T extends Task & { properties?: { name: string } | null }>(
+  tasks: T[]
+): { key: string; label: string; tasks: T[] }[] {
+  const map = new Map<string, { label: string; tasks: T[] }>()
+  for (const t of tasks) {
+    const key = t.property_id ?? 'none'
+    const entry = map.get(key)
+    if (entry) entry.tasks.push(t)
+    else map.set(key, { label: t.properties?.name ?? 'No property', tasks: [t] })
+  }
+  return Array.from(map.entries())
+    .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }))
+    .sort((a, b) =>
+      a.key === 'none' ? 1 : b.key === 'none' ? -1 : a.label.localeCompare(b.label))
 }
 
 // Keep inserts in the same order the fetch would return them
@@ -128,6 +156,11 @@ function TasksInner() {
   const [filterCapex, setFilterCapex] = useState(searchParams.get('capex') ?? '')
   const [filterContact, setFilterContact] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
+  const [search, setSearch] = useState('')
+
+  // How the All-tasks list is sectioned — per-session, captured by
+  // saved views.
+  const [groupBy, setGroupBy] = useState<GroupByMode>('status')
 
   // View mode. Agenda is the default, but deep links that carry a
   // property/capex filter land on the list where those filters live.
@@ -135,8 +168,9 @@ function TasksInner() {
     searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
   )
 
-  // Collapsed status sections (All tasks view)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['done']))
+  // Collapsed sections (All tasks view) — keyed per grouping so a
+  // collapse in one group-by doesn't leak into another.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['status:done']))
 
   // Keyboard-selected row (j/k navigation)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -203,24 +237,37 @@ function TasksInner() {
   )
 
   // All-view filtering (client side — the shared fetch feeds all three views)
+  const q = search.trim().toLowerCase()
   const visibleTasks = topLevelTasks.filter(t => {
     if (!activeStatuses.has(t.status as StatusFilter)) return false
     if (filterPriority && t.priority !== filterPriority) return false
     if (filterProp && t.property_id !== filterProp) return false
     if (filterCapex && t.capex_project_id !== filterCapex) return false
     if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
+    if (q && !t.title.toLowerCase().includes(q) && !(t.description ?? '').toLowerCase().includes(q)) return false
     return true
   })
-
-  const grouped = STATUS_ORDER.reduce((acc, status) => {
-    acc[status] = visibleTasks.filter(t => t.status === status)
-    return acc
-  }, {} as Record<StatusFilter, TaskWithRelations[]>)
 
   const counts = STATUS_ORDER.reduce((acc, s) => {
     acc[s] = topLevelTasks.filter(t => t.status === s).length
     return acc
   }, {} as Record<StatusFilter, number>)
+
+  // One collapsible-section shape for every grouping. Status keeps the
+  // current order/labels; Property sorts by name with "No property"
+  // last; Priority runs urgent→low; Due reuses the shared groupByDue
+  // bucketing (Overdue keeps its red tone).
+  const sections: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] =
+    groupBy === 'property' ? groupByPropertySections(visibleTasks)
+    : groupBy === 'priority' ? PRIORITY_ORDER.map(p => ({
+        key: p, label: p, tasks: visibleTasks.filter(t => t.priority === p),
+      }))
+    : groupBy === 'due' ? groupByDue(visibleTasks).map(g => ({
+        key: g.key, label: g.label, tone: g.tone, tasks: g.tasks,
+      }))
+    : STATUS_ORDER.map(s => ({
+        key: s, label: SECTION_LABELS[s], tasks: visibleTasks.filter(t => t.status === s),
+      }))
 
   function toggleStatus(s: StatusFilter) {
     setActiveStatuses(prev => {
@@ -336,7 +383,7 @@ function TasksInner() {
   })
 
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
-  const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority
+  const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority || search
 
   return (
     <div className="flex flex-col h-full">
@@ -400,13 +447,28 @@ function TasksInner() {
           <FilterSelect value={filterPriority} onChange={setFilterPriority}
             className={cn('w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
             <option value="">All priorities</option>
-            {['urgent', 'high', 'medium', 'low'].map(p => (
+            {PRIORITY_ORDER.map(p => (
               <option key={p} value={p}>{p}</option>
             ))}
           </FilterSelect>
 
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search…"
+            aria-label="Search tasks"
+            className={cn('input-sm w-32', search && 'border-blue-400 bg-blue-50 text-blue-700')}
+          />
+
+          <div className="w-px h-4 bg-slate-200 mx-1" />
+
+          <FilterSelect value={groupBy} onChange={v => setGroupBy(v as GroupByMode)}
+            ariaLabel="Group by"
+            className={cn('w-auto', groupBy !== 'status' && 'border-slate-400 bg-slate-100 text-slate-700')}
+            options={GROUP_BY_OPTIONS.map(o => ({ value: o.value, label: o.label }))} />
+
           {hasActiveFilter && (
-            <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority('') }}
+            <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority(''); setSearch('') }}
               className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
               <X size={12} />Clear filters
             </button>
@@ -444,21 +506,30 @@ function TasksInner() {
             subtaskUi={subtaskUi} />
         ) : (
           <div className="pb-8">
-            {STATUS_ORDER.map(status => {
-              const sectionTasks = grouped[status]
+            {sections.map(section => {
+              const sectionTasks = section.tasks
               if (!sectionTasks.length) return null
-              const isCollapsed = collapsed.has(status)
+              const sectionKey = `${groupBy}:${section.key}`
+              const isCollapsed = collapsed.has(sectionKey)
               return (
-                <div key={status}>
+                <div key={sectionKey}>
                   {/* Section header */}
                   <button
-                    onClick={() => toggleSection(status)}
-                    className="w-full flex items-center gap-2 px-6 py-2 bg-slate-50 border-b border-slate-200 hover:bg-slate-100 transition-colors sticky top-0 z-10">
-                    <ChevronDown size={13} className={cn('text-slate-400 transition-transform', isCollapsed && '-rotate-90')} />
-                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
-                      {SECTION_LABELS[status]}
+                    onClick={() => toggleSection(sectionKey)}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-6 py-2 border-b transition-colors sticky top-0 z-10',
+                      section.tone === 'red'
+                        ? 'bg-red-50 border-red-100 hover:bg-red-100'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                    )}>
+                    <ChevronDown size={13} className={cn('transition-transform', isCollapsed && '-rotate-90',
+                      section.tone === 'red' ? 'text-red-400' : 'text-slate-400')} />
+                    <span className={cn('text-xs font-semibold uppercase tracking-wide',
+                      section.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                      {section.label}
                     </span>
-                    <span className="text-xs text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded-full">
+                    <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
+                      section.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
                       {sectionTasks.length}
                     </span>
                   </button>
