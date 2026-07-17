@@ -1,24 +1,34 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
-  cn, formatDateShort, isOverdue, isSoon, daysUntil,
-  todayISO, addDaysToDate,
-  PRIORITY_DOT, STATUS_STYLES, STATUS_LABELS,
-  RECUR_LABELS, propertyColor,
+  cn, formatDateShort, daysUntil,
+  todayISO,
+  STATUS_STYLES, STATUS_LABELS,
+  propertyColor,
 } from '@/lib/utils'
+import { groupByDue } from '@/lib/tasks/dates'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, AlertTriangle, Clock, Inbox as InboxIcon,
+  Link as LinkIcon, Keyboard,
 } from 'lucide-react'
-import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
+import { SnoozeMenu } from '@/components/tasks/snooze-menu'
+import { SwipeRow } from '@/components/tasks/swipe-row'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
+import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import {
+  type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
+  snoozeTaskOptimistic,
+} from '@/lib/tasks/mutations'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -57,8 +67,24 @@ const VIEW_TABS: { key: ViewMode; label: string }[] = [
 type RowHandlers = {
   onEdit: (task: TaskWithRelations) => void
   onDone: (task: TaskWithRelations) => void
-  onDelete: (id: string) => void
-  onRefresh: () => void
+  onDelete: (task: TaskWithRelations) => void
+  onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
+  onSnooze: (task: TaskWithRelations, date: string) => void
+  // Keyboard-driven row selection (j/k etc.)
+  onSelect: (id: string) => void
+  // Local lookup — lets rows check whether a blocker still exists
+  getTask: (id: string) => TaskWithRelations | undefined
+}
+
+// Keep inserts in the same order the fetch would return them
+// (due_date asc nulls-last, then created_at desc).
+function sortTasks<T extends Task>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const ad = a.due_date ?? '9999-12-31'
+    const bd = b.due_date ?? '9999-12-31'
+    if (ad !== bd) return ad.localeCompare(bd)
+    return (b.created_at ?? '').localeCompare(a.created_at ?? '')
+  })
 }
 
 export default function TasksPage() {
@@ -70,7 +96,7 @@ export default function TasksPage() {
 }
 
 function TasksInner() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const searchParams = useSearchParams()
 
   const [tasks, setTasks] = useState<TaskWithRelations[]>([])
@@ -100,6 +126,9 @@ function TasksInner() {
   // Collapsed status sections (All tasks view)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['done']))
 
+  // Keyboard-selected row (j/k navigation)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
   const fetchTasks = useCallback(async () => {
     const { data } = await supabase
       .from('tasks')
@@ -121,7 +150,7 @@ function TasksInner() {
 
     setTasks(withContacts)
     setLoading(false)
-  }, [])
+  }, [supabase])
 
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
@@ -135,7 +164,7 @@ function TasksInner() {
       .in('status', ['planning', 'approved', 'in_progress'])
       .order('title')
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
-  }, [])
+  }, [supabase])
 
   // All-view filtering (client side — the shared fetch feeds all three views)
   const visibleTasks = tasks.filter(t => {
@@ -175,27 +204,79 @@ function TasksInner() {
     })
   }
 
-  async function markDone(task: TaskWithRelations) {
-    const newStatus = task.status === 'done' ? 'next_action' : 'done'
-    await supabase.from('tasks').update({
-      status: newStatus,
-      completed_at: newStatus === 'done' ? new Date().toISOString() : null,
-    }).eq('id', task.id)
-    fetchTasks()
-  }
+  // ── Optimistic mutation plumbing ───────────────────────────
+  // Local state changes apply instantly; Supabase writes happen in the
+  // background and roll back (with an error toast) on failure.
+  // Store + handlers are referentially stable (latest data via refs)
+  // so the memoized rows only re-render when their own task changes.
 
-  async function deleteTask(id: string) {
-    if (!confirm('Delete this task?')) return
-    await supabase.from('tasks').delete().eq('id', id)
-    fetchTasks()
-  }
+  const tasksRef = useRef(tasks); tasksRef.current = tasks
+  const propertiesRef = useRef(properties); propertiesRef.current = properties
+  const capexRef = useRef(capexProjects); capexRef.current = capexProjects
 
-  const handlers: RowHandlers = {
+  const store: TaskStore = useMemo(() => {
+    // Bare rows (recurrence instances, undo re-inserts) lack the joined
+    // display fields — derive them from the already-loaded lookups.
+    const enrich = (task: Task): TaskWithRelations => {
+      const partial = task as TaskWithRelations
+      const propName = propertiesRef.current.find(p => p.id === task.property_id)?.name
+      const capexTitle = capexRef.current.find(c => c.id === task.capex_project_id)?.title
+      return {
+        ...task,
+        properties: partial.properties ?? (propName ? { name: propName } : null),
+        capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
+        contacts: partial.contacts ?? [],
+      }
+    }
+    return {
+      // Always re-sort on update — a due_date edit must move the row, and
+      // the arrays are small enough that sorting every patch is cheap.
+      update: (id, fields) => setTasks(prev => sortTasks(prev.map(t => t.id === id ? { ...t, ...fields } : t))),
+      insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
+      remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
+    }
+  }, [])
+
+  const markDone = useCallback(
+    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task),
+    [supabase, store]
+  )
+
+  const deleteTask = useCallback(
+    (task: TaskWithRelations) => deleteTaskOptimistic(supabase, store, task, {
+      // The junction rows died with the task — restored on undo.
+      contactIds: (task.contacts ?? []).map(c => c.id),
+    }),
+    [supabase, store]
+  )
+
+  const taskById = useCallback((id: string) => tasksRef.current.find(t => t.id === id), [])
+
+  const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: markDone,
     onDelete: deleteTask,
-    onRefresh: fetchTasks,
-  }
+    onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
+    onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
+    onSelect: setSelectedId,
+    getTask: taskById,
+  }), [supabase, store, markDone, deleteTask, taskById])
+
+  // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
+  // selected row, n/q to the quick-add bar. Same mutation paths as the
+  // buttons. Inert while the modal or any input has focus.
+  useTaskListShortcuts({
+    enabled: !showForm && !loading,
+    selectedId,
+    setSelectedId,
+    onComplete: id => { const t = taskById(id); if (t) markDone(t) },
+    onDelete: id => { const t = taskById(id); if (t) deleteTask(t) },
+    onEdit: id => { const t = taskById(id); if (t) { setEditTask(t); setShowForm(true) } },
+    onSetPriority: (id, priority) => {
+      const t = taskById(id)
+      if (t) patchTaskOptimistic(supabase, store, t, { priority })
+    },
+  })
 
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
   const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority
@@ -298,9 +379,10 @@ function TasksInner() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
-          <AgendaView tasks={tasks} userId={userId} handlers={handlers} />
+          <AgendaView tasks={tasks} userId={userId} handlers={handlers}
+            selectedId={selectedId} properties={properties} onQuickAdd={store.insert} />
         ) : view === 'review' ? (
-          <ReviewView tasks={tasks} userId={userId} handlers={handlers} />
+          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId} />
         ) : (
           <div className="pb-8">
             {STATUS_ORDER.map(status => {
@@ -333,10 +415,12 @@ function TasksInner() {
                         <div className="w-28 text-xs font-medium text-slate-400 uppercase tracking-wide text-center hidden lg:block">People</div>
                         <div className="w-20 text-xs font-medium text-slate-400 uppercase tracking-wide text-right">Due</div>
                         <div className="w-6" />
+                        <div className="w-6 ml-1" />
                       </div>
 
                       {sectionTasks.map(task => (
-                        <TaskRow key={task.id} task={task} handlers={handlers} />
+                        <TaskRow key={task.id} task={task} handlers={handlers}
+                          selected={selectedId === task.id} />
                       ))}
 
                       <div
@@ -364,6 +448,20 @@ function TasksInner() {
         )}
       </div>
 
+      {/* Keyboard hints — desktop only, kept to one muted line */}
+      <div className="hidden lg:flex items-center gap-3 px-6 py-1.5 border-t border-slate-200 bg-white flex-shrink-0 text-xs text-slate-400">
+        <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
+        {([
+          ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
+          ['e', 'edit'], ['1–4', 'priority'], ['⌫', 'delete'], ['n', 'quick add'],
+        ] as const).map(([key, label]) => (
+          <span key={key} className="flex items-center gap-1 whitespace-nowrap">
+            <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
+            {label}
+          </span>
+        ))}
+      </div>
+
       {showForm && (
         <TaskFormModal
           task={editTask}
@@ -371,6 +469,7 @@ function TasksInner() {
           contacts={contacts}
           capexProjects={capexProjects}
           allTasks={tasks}
+          onComplete={markDone}
           onClose={() => { setShowForm(false); setEditTask(null) }}
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
@@ -380,24 +479,31 @@ function TasksInner() {
 }
 
 // ── Task Row ─────────────────────────────────────────────────
+// Memoized: handlers/store are referentially stable, so a row only
+// re-renders when its own task object (or selection) changes.
 
-function TaskRow({ task, handlers, meta }: {
+const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, swipeable = false }: {
   task: TaskWithRelations
   handlers: RowHandlers
+  selected?: boolean      // keyboard-selected (j/k)
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
+  swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
 }) {
-  const supabase = createClient()
-  const { onEdit, onDone, onDelete, onRefresh } = handlers
+  const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
+  const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
-  const overdue = !isDone && isOverdue(task.due_date)
-  const soon = !isDone && !overdue && isSoon(task.due_date, 7)
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
+  // Same semantics as the agenda's isUnblocked: only a blocker that
+  // still exists locally and isn't done counts (no chip on dangling ids).
+  const blocker = task.blocked_by_task_id ? handlers.getTask(task.blocked_by_task_id) : undefined
+  const isBlocked = blocker != null && blocker.status !== 'done'
 
-  async function patch(fields: Record<string, unknown>) {
-    await supabase.from('tasks').update(fields).eq('id', task.id)
-    onRefresh()
+  // Fire-and-forget: the optimistic store already applied the change,
+  // so the inline-edit primitives never sit in a saving state.
+  function patch(fields: Partial<Task>) {
+    onPatch(task, fields)
   }
 
   function toggleRock() {
@@ -407,34 +513,21 @@ function TaskRow({ task, handlers, meta }: {
     patch({ tags })
   }
 
-  return (
-    <div className={cn(
-      'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
-      isDone && 'opacity-60'
-    )}>
+  const row = (
+    <div
+      data-task-id={task.id}
+      onClick={() => onSelect(task.id)}
+      className={cn(
+        'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
+        isDone && 'opacity-60',
+        selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
+      )}>
       {/* Priority pip — click to change priority */}
-      <InlineSelect
-        value={task.priority}
-        options={PRIORITY_OPTIONS}
-        onSave={v => patch({ priority: v })}
-        trigger={
-          <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
-            style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[task.priority] }} />
-        }
-      />
+      <PriorityPip priority={task.priority} isDone={isDone}
+        onSave={priority => patch({ priority })} />
 
       {/* Checkbox */}
-      <button onClick={() => onDone(task)}
-        className={cn(
-          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
-          isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
-        )}>
-        {isDone && (
-          <svg width="8" height="6" viewBox="0 0 8 6" fill="none">
-            <path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </button>
+      <CompleteCircle isDone={isDone} onToggle={() => onDone(task)} />
 
       {/* Title — inline editable */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -444,20 +537,9 @@ function TaskRow({ task, handlers, meta }: {
             onSave={v => patch({ title: v })}
             displayClassName="font-medium"
           />
-          <span className="inline-flex items-center gap-1.5 ml-1">
-            {task.recur_freq && (
-              <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-1.5 py-0.5">
-                <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
-              </span>
-            )}
-            {task.auto_source === 'expiration' && (
-              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                <Clock size={9} />Auto
-              </span>
-            )}
-          </span>
+          <TaskBadges task={task} />
         </div>
-        {(task.properties?.name || task.capex_projects?.title || task.blocked_by_task_id || meta) && (
+        {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {task.properties?.name && (
               <span className="text-xs font-medium px-1.5 py-0.5 rounded"
@@ -470,7 +552,7 @@ function TaskRow({ task, handlers, meta }: {
                 <LinkIcon size={9} />{task.capex_projects.title.slice(0, 24)}
               </span>
             )}
-            {task.blocked_by_task_id && (
+            {isBlocked && (
               <span className="text-xs text-amber-600">⛓ blocked</span>
             )}
             {meta}
@@ -489,12 +571,16 @@ function TaskRow({ task, handlers, meta }: {
         <Mountain size={13} />
       </button>
 
-      {/* Status — inline dropdown */}
+      {/* Status — inline dropdown. Completing routes through onDone so
+          it picks up the undo toast + recurrence handling. */}
       <div className="w-28 hidden md:flex justify-center">
         <InlineSelect
           value={task.status}
           options={STATUS_OPTIONS}
-          onSave={v => patch({ status: v, completed_at: v === 'done' ? new Date().toISOString() : null })}
+          onSave={v => {
+            if (v === 'done') onDone(task)
+            else patch({ status: v as Task['status'], completed_at: null })
+          }}
         />
       </div>
 
@@ -516,115 +602,103 @@ function TaskRow({ task, handlers, meta }: {
         </button>
       </div>
 
-      {/* Due date — inline date picker */}
-      <div className={cn('w-20 text-right flex-shrink-0',
-        overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
-        {overdue && <AlertTriangle size={10} className="inline mr-1" />}
-        <InlineDate
-          value={task.due_date}
-          onSave={v => patch({ due_date: v })}
-          className={cn('text-xs', overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}
-          emptyLabel="no date"
+      {/* Due date — inline date picker (data-due-edit lets the `d`
+          shortcut open it via the same click path) */}
+      <DueDateCell dueDate={task.due_date} isDone={isDone}
+        onSave={v => patch({ due_date: v })} />
+
+      {/* Snooze presets — no modal needed. Always visible on mobile,
+          hover-revealed on desktop; the `s` shortcut clicks this same
+          trigger. */}
+      <div data-snooze-trigger className="w-6 flex justify-center">
+        <SnoozeMenu
+          open={snoozeOpen}
+          onOpenChange={setSnoozeOpen}
+          onSnooze={date => onSnooze(task, date)}
+          buttonClassName="md:opacity-0 md:group-hover:opacity-100"
         />
       </div>
 
-      {/* Delete */}
+      {/* Delete — instant, with an Undo toast */}
       <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => onDelete(task.id)}
+        <button onClick={() => onDelete(task)}
           className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
           <X size={13} />
         </button>
       </div>
     </div>
   )
-}
+
+  if (!swipeable) return row
+  return (
+    <SwipeRow
+      onSwipeRight={() => onDone(task)}
+      onSwipeLeft={() => setSnoozeOpen(true)}>
+      {row}
+    </SwipeRow>
+  )
+})
 
 // ── Agenda View ──────────────────────────────────────────────
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
+  selectedId: string | null
+  properties: Property[]
+  onQuickAdd: (task: Task) => void
 }) {
-  const supabase = createClient()
-  const [quickTitle, setQuickTitle] = useState('')
-  const [adding, setAdding] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
 
   const today = todayISO()
-  const in7 = addDaysToDate(today, 7)
-  const in14 = addDaysToDate(today, 14)
-  const taskById = new Map(tasks.map(t => [t.id, t]))
 
-  // Actionable-now semantics
-  const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
-  const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
-  const isUnblocked = (t: TaskWithRelations) => {
-    if (!t.blocked_by_task_id) return true
-    const blocker = taskById.get(t.blocked_by_task_id)
-    return !blocker || blocker.status === 'done'
-  }
+  const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
+    const taskById = new Map(tasks.map(t => [t.id, t]))
 
-  // Personal inbox: things I captured that still need processing
-  const myInbox = tasks.filter(t =>
-    t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
-  )
-  const inboxIds = new Set(myInbox.map(t => t.id))
+    // Actionable-now semantics
+    const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
+    const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
+    const isUnblocked = (t: TaskWithRelations) => {
+      if (!t.blocked_by_task_id) return true
+      const blocker = taskById.get(t.blocked_by_task_id)
+      return !blocker || blocker.status === 'done'
+    }
 
-  const actionable = tasks.filter(t =>
-    t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
-  )
+    // Personal inbox: things I captured that still need processing
+    const myInbox = tasks.filter(t =>
+      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+    )
+    const inboxIds = new Set(myInbox.map(t => t.id))
 
-  const groups: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = [
-    { key: 'overdue', label: 'Overdue', tone: 'red', tasks: actionable.filter(t => t.due_date != null && t.due_date < today) },
-    { key: 'today',   label: 'Today',                tasks: actionable.filter(t => t.due_date === today) },
-    { key: 'week',    label: 'This week',            tasks: actionable.filter(t => t.due_date != null && t.due_date > today && t.due_date <= in7) },
-    { key: 'later',   label: 'Next 7–14 days',       tasks: actionable.filter(t => t.due_date != null && t.due_date > in7 && t.due_date <= in14) },
-    { key: 'nodate',  label: 'No due date',          tasks: actionable.filter(t => !t.due_date) },
-  ]
-  const hasDated = groups.some(g => g.tasks.length > 0)
+    const actionable = tasks.filter(t =>
+      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+    )
 
-  const snoozed = tasks.filter(t =>
-    t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
-  ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+    // Shared bucketing (same as the property Tasks tab) — 'Later' is
+    // unbounded, so a capture dated months out still shows up.
+    const groups = groupByDue(actionable, today, { nodate: 'No due date' })
+    const hasDated = groups.some(g => g.tasks.length > 0)
 
-  async function quickAdd(e: React.FormEvent) {
-    e.preventDefault()
-    const title = quickTitle.trim()
-    if (!title || !userId) return
-    setAdding(true)
-    await supabase.from('tasks').insert({
-      title,
-      status:      'inbox',
-      priority:    'medium',
-      created_by:  userId,
-      assigned_to: userId,
-    })
-    setQuickTitle('')
-    setAdding(false)
-    handlers.onRefresh()
-  }
+    const snoozed = tasks.filter(t =>
+      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+    ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+
+    return { myInbox, groups, hasDated, snoozed }
+  }, [tasks, userId, today])
 
   return (
     <div className="pb-8">
-      {/* Quick add — straight into my inbox */}
-      <form onSubmit={quickAdd}
-        className="flex items-center gap-2 px-6 py-3 border-b border-slate-200 bg-white">
-        <InboxIcon size={15} className="text-slate-400 flex-shrink-0" />
-        <input
-          value={quickTitle}
-          onChange={e => setQuickTitle(e.target.value)}
-          disabled={!userId}
-          className="input flex-1"
-          placeholder={userId ? 'Quick add to my inbox…' : 'Sign in to capture tasks'} />
-        <button type="submit" disabled={adding || !quickTitle.trim() || !userId}
-          className="btn-primary text-xs py-1.5">
-          <Plus size={13} />Add
-        </button>
-      </form>
+      {/* Quick add — natural language straight into my inbox (or the
+          agenda, when a due date was typed) */}
+      <TaskQuickAdd
+        userId={userId}
+        properties={properties.map(p => ({ id: p.id, name: p.name }))}
+        onCreated={onQuickAdd}
+      />
 
       {/* My inbox — collapsible */}
       {myInbox.length > 0 && (
@@ -637,7 +711,9 @@ function AgendaView({ tasks, userId, handlers }: {
             </span>
             <span className="text-xs text-indigo-400">to process</span>
           </button>
-          {inboxOpen && myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+          {inboxOpen && myInbox.map(t => (
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+          ))}
         </div>
       )}
 
@@ -657,7 +733,9 @@ function AgendaView({ tasks, userId, handlers }: {
                 {g.tasks.length}
               </span>
             </div>
-            {g.tasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+            {g.tasks.map(t => (
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+            ))}
           </div>
         )
       })}
@@ -710,11 +788,14 @@ function AgendaView({ tasks, userId, handlers }: {
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers }: {
+function ReviewView({ tasks, userId, handlers, selectedId }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
+  selectedId: string | null
 }) {
+  const rowProps = (t: TaskWithRelations) =>
+    ({ task: t, handlers, selected: selectedId === t.id })
   const myInbox = tasks.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
   const waiting = [...tasks]
@@ -745,7 +826,7 @@ function ReviewView({ tasks, userId, handlers }: {
         count={myInbox.length}
         hint="Date it, assign it, promote it to a next action — or delete it.">
         {myInbox.length
-          ? myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          ? myInbox.map(t => <TaskRow key={t.id} {...rowProps(t)} />)
           : <SectionEmpty label="Inbox zero. Nothing to process." />}
       </ReviewSection>
 
@@ -759,7 +840,7 @@ function ReviewView({ tasks, userId, handlers }: {
               const waitDays = Math.max(0, -(daysUntil(t.updated_at) ?? 0))
               const names = (t.contacts ?? []).map(c => c.full_name).join(', ')
               return (
-                <TaskRow key={t.id} task={t} handlers={handlers}
+                <TaskRow key={t.id} {...rowProps(t)}
                   meta={
                     <span className="text-xs text-purple-600">
                       waiting {waitDays}d{names ? ` · ${names}` : ''}
@@ -785,7 +866,7 @@ function ReviewView({ tasks, userId, handlers }: {
                   <span className="text-xs font-semibold text-slate-500">{prop}</span>
                   <span className="text-xs text-slate-300">({propTasks.length})</span>
                 </div>
-                {propTasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+                {propTasks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)}
               </div>
             ))
           : <SectionEmpty label="No obligations due within 90 days." />}
@@ -802,7 +883,7 @@ function ReviewView({ tasks, userId, handlers }: {
           <p className="text-xs text-amber-600 mt-0.5">The big things this quarter — are they moving?</p>
         </div>
         {rocks.length
-          ? rocks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          ? rocks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)
           : <SectionEmpty label="No rocks tagged. Use the mountain toggle on a task to mark one." />}
       </div>
 
@@ -813,7 +894,7 @@ function ReviewView({ tasks, userId, handlers }: {
         hint="Done and dusted — momentum check.">
         {shipped.length
           ? shipped.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers}
+              <TaskRow key={t.id} {...rowProps(t)}
                 meta={
                   <span className="text-xs text-emerald-600">
                     done {formatDateShort(t.completed_at)}
@@ -853,12 +934,15 @@ function SectionEmpty({ label }: { label: string }) {
 
 // ── Task Form Modal ──────────────────────────────────────────
 
-function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onClose, onSave }: {
+function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onComplete, onClose, onSave }: {
   task: TaskWithRelations | null
   properties: Property[]
   contacts: Contact[]
   capexProjects: CapexProject[]
   allTasks: TaskWithRelations[]
+  // Shared completion path (recurrence + completed_at + undo toast) —
+  // saving an existing task with status flipped to done routes here.
+  onComplete: (task: TaskWithRelations) => void | Promise<void>
   onClose: () => void
   onSave: () => void
 }) {
@@ -926,16 +1010,34 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
     }
 
+    // Status transitions across done are not plain field writes:
+    // completing routes through the shared completion path (recurrence,
+    // completed_at, undo toast) and un-completing clears the stamp.
+    const goingDone = task != null && task.status !== 'done' && payload.status === 'done'
+    const leavingDone = task != null && task.status === 'done' && payload.status !== 'done'
+
     let taskId: string | undefined
     if (task) {
-      await supabase.from('tasks').update(payload).eq('id', task.id)
+      const update = {
+        ...payload,
+        // Keep the previous status here — onComplete below performs
+        // the actual completion so it behaves like every other path.
+        ...(goingDone ? { status: task.status } : {}),
+        ...(leavingDone ? { completed_at: null } : {}),
+      }
+      await supabase.from('tasks').update(update).eq('id', task.id)
       taskId = task.id
+      if (goingDone) await onComplete({ ...task, ...update })
     } else {
       // Stamp ownership on create so the personal inbox / agenda can
       // tell whose task this is.
       const { data: auth } = await supabase.auth.getUser()
       const { data: inserted } = await supabase.from('tasks')
-        .insert({ ...payload, created_by: auth.user?.id ?? null })
+        .insert({
+          ...payload,
+          completed_at: payload.status === 'done' ? new Date().toISOString() : null,
+          created_by: auth.user?.id ?? null,
+        })
         .select('id')
         .single()
       taskId = inserted?.id

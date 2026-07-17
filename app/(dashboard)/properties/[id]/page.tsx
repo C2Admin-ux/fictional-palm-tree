@@ -9,6 +9,7 @@ import {
 import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft } from 'lucide-react'
 import BuildingTab from './building-tab'
 import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
+import TasksTab from './tasks-tab'
 import { StatusBadge } from '@/components/ui/badge'
 
 export const dynamic = 'force-dynamic'
@@ -30,6 +31,7 @@ export default async function PropertyPage({
   const prop = property as any
 
   const [
+    taskCountRes,
     { data: tasks },
     { data: capexProjects },
     { data: metrics },
@@ -39,7 +41,16 @@ export default async function PropertyPage({
     inspectionCountRes,
     { data: inspections },
   ] = await Promise.all([
-    supabase.from('tasks').select('*').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
+    // Count feeds the Overview card only. The Tasks tab label carries
+    // no number: the interactive tab mutates its list client-side, so a
+    // server-snapshot count next to it would drift out of date.
+    tab === 'overview'
+      ? supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done')
+      : Promise.resolve({ count: null }),
+    // Overview shows a 5-task preview; skip the fetch on other tabs.
+    tab === 'overview'
+      ? supabase.from('tasks').select('id, title, status, priority, due_date').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }).limit(5)
+      : Promise.resolve({ data: null }),
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
@@ -56,6 +67,7 @@ export default async function PropertyPage({
   ])
 
   const propTasks = (tasks ?? []) as any[]
+  const openTaskCount = taskCountRes.count ?? 0
   const propCapex = (capexProjects ?? []) as any[]
   const propMetrics = (metrics ?? []) as any[]
   const propDocs = (documents ?? []) as any[]
@@ -72,7 +84,7 @@ export default async function PropertyPage({
 
   const TABS = [
     { id: 'overview',  label: 'Overview' },
-    { id: 'tasks',     label: `Tasks (${propTasks.length})` },
+    { id: 'tasks',     label: 'Tasks' },
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
     { id: 'inspections', label: `Inspections (${inspectionCount})` },
@@ -122,7 +134,7 @@ export default async function PropertyPage({
               ))}
             </div>
           )}
-          <Link href={`/tasks?property=${params.id}`} className="btn-primary text-xs py-1.5 flex-shrink-0">
+          <Link href={`/properties/${params.id}?tab=tasks`} className="btn-primary text-xs py-1.5 flex-shrink-0">
             <Plus size={12} />Add task
           </Link>
         </div>
@@ -162,7 +174,7 @@ export default async function PropertyPage({
               {/* Tasks */}
               <div className="card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-slate-700">Open Tasks ({propTasks.length})</h3>
+                  <h3 className="text-sm font-semibold text-slate-700">Open Tasks ({openTaskCount})</h3>
                   <Link href={`/properties/${params.id}?tab=tasks`} className="text-xs text-blue-600 hover:underline">View all →</Link>
                 </div>
                 {propTasks.length === 0
@@ -278,29 +290,7 @@ export default async function PropertyPage({
           </div>
         )}
 
-        {tab === 'tasks' && (
-          <div className="max-w-3xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-sm font-semibold text-slate-700">{propTasks.length} open tasks</h2>
-              <Link href={`/tasks?property=${params.id}`} className="btn-primary text-xs py-1.5"><Plus size={12} />Add task</Link>
-            </div>
-            {propTasks.length === 0
-              ? <p className="text-sm text-slate-400 italic">No open tasks for this property.</p>
-              : (
-                <div className="card overflow-hidden">
-                  {propTasks.map((t: any, i: number) => (
-                    <div key={t.id} className={`flex items-center gap-3 px-4 py-2.5 ${i < propTasks.length - 1 ? 'border-b border-slate-100' : ''} hover:bg-slate-50`}>
-                      <div className="w-1 self-stretch rounded-sm flex-shrink-0" style={{ background: PRIORITY_DOT[t.priority as string] ?? '#94a3b8' }} />
-                      <span className="text-sm text-slate-700 flex-1 truncate">{t.title}</span>
-                      <StatusBadge value={t.status} className="text-xs" />
-                      {t.due_date && <span className="text-xs text-slate-400 flex-shrink-0">{formatDate(t.due_date)}</span>}
-                    </div>
-                  ))}
-                </div>
-              )
-            }
-          </div>
-        )}
+        {tab === 'tasks' && <TasksTab propertyId={params.id} />}
 
         {tab === 'capex' && (
           <div className="max-w-3xl">
