@@ -44,6 +44,7 @@ export type Database = {
           recur_end_type: 'never' | 'on' | 'after' | null
           recur_end_date: string | null; recur_end_count: number | null
           recur_count: number; recur_parent_id: string | null
+          parent_task_id: string | null
           auto_source: string | null; source_record_id: string | null
           created_at: string; updated_at: string
         }
@@ -61,6 +62,12 @@ export type Database = {
         Row: { task_id: string; contact_id: string }
         Insert: { task_id: string; contact_id: string }
         Update: never
+        Relationships: []
+      }
+      task_views: {
+        Row: { id: string; user_id: string; name: string; config: Json; sort_order: number; created_at: string | null }
+        Insert: Partial<Database['public']['Tables']['task_views']['Row']> & { user_id: string; name: string; config: Json }
+        Update: Partial<Database['public']['Tables']['task_views']['Row']>
         Relationships: []
       }
       capex_projects: {
@@ -167,6 +174,7 @@ export type UserProfile = Database['public']['Tables']['user_profiles']['Row']
 export type Contact = Database['public']['Tables']['contacts']['Row']
 export type Task = Database['public']['Tables']['tasks']['Row']
 export type TaskComment = Database['public']['Tables']['task_comments']['Row']
+export type TaskView = Database['public']['Tables']['task_views']['Row']
 export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type PmMetric = Database['public']['Tables']['pm_metrics']['Row']

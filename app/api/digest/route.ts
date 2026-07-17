@@ -60,10 +60,14 @@ async function runDigest() {
       { data: claims },
       { data: properties },
     ] = await Promise.all([
+      // Top-level tasks only — subtasks never render outside their
+      // parent's drill-down in the app, so the digest's urgent/high
+      // lists mirror that and skip them.
       supabase.from('tasks')
         .select('*, properties(name)')
         .in('status', ['inbox', 'next_action', 'waiting', 'blocked'])
         .in('priority', ['urgent', 'high'])
+        .is('parent_task_id', null)
         .order('priority', { ascending: true })
         .order('due_date', { ascending: true, nullsFirst: false })
         .limit(20),

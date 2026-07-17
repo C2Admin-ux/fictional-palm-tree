@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
+import type { Json, Task, TaskView, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
   cn, formatDateShort, daysUntil,
   todayISO,
@@ -12,6 +12,7 @@ import {
   propertyColor,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
+import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
   Link as LinkIcon, Keyboard,
@@ -19,7 +20,10 @@ import {
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
-import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell, DeleteX } from '@/components/tasks/row-cells'
+import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
+import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
@@ -27,8 +31,9 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
-  snoozeTaskOptimistic,
+  snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
+import { toast } from '@/components/ui/toast'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -46,6 +51,7 @@ type RawTaskRow = Task & {
 
 type StatusFilter = 'inbox' | 'next_action' | 'waiting' | 'blocked' | 'done'
 type ViewMode = 'agenda' | 'all' | 'review'
+type GroupByMode = 'status' | 'property' | 'priority' | 'due'
 
 const STATUS_ORDER: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked', 'done']
 const SECTION_LABELS: Record<StatusFilter, string> = {
@@ -54,6 +60,74 @@ const SECTION_LABELS: Record<StatusFilter, string> = {
   waiting:     'Waiting for',
   blocked:     'Blocked',
   done:        'Completed',
+}
+
+const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const
+
+const GROUP_BY_OPTIONS: { value: GroupByMode; label: string }[] = [
+  { value: 'status',   label: 'Group: Status' },
+  { value: 'property', label: 'Group: Property' },
+  { value: 'priority', label: 'Group: Priority' },
+  { value: 'due',      label: 'Group: Due' },
+]
+
+// ── Saved views (task_views.config) ──────────────────────────
+// Everything a chip restores: tab, status pills, the four filters,
+// search, and group-by. (The lists have no user-facing sort control —
+// ordering is fixed — so there's nothing to capture there.)
+
+type ViewConfig = {
+  v: 1                    // config schema version (stored in the blob)
+  view: ViewMode
+  statuses: StatusFilter[]
+  property: string
+  capex: string
+  contact: string
+  priority: string
+  search: string
+  groupBy: GroupByMode
+}
+
+const DEFAULT_STATUSES: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked']
+
+// Defensive parse — config is opaque jsonb, so missing/foreign keys
+// fall back to the page defaults instead of crashing a chip.
+// Versioned since Sprint 9 ({ v: 1 }); pre-version blobs share the v1
+// shape. Add a case here when a future version changes the shape.
+function parseViewConfig(raw: Json): ViewConfig {
+  const cfg = (raw ?? {}) as Record<string, unknown>
+  switch (cfg.v) {
+    case 1:
+    default: {
+      const str = (v: unknown) => (typeof v === 'string' ? v : '')
+      const statuses = Array.isArray(cfg.statuses)
+        ? STATUS_ORDER.filter(s => (cfg.statuses as unknown[]).includes(s))
+        : []
+      return {
+        v: 1,
+        view: cfg.view === 'agenda' || cfg.view === 'review' ? cfg.view : 'all',
+        statuses: statuses.length > 0 ? statuses : DEFAULT_STATUSES,
+        property: str(cfg.property),
+        capex:    str(cfg.capex),
+        contact:  str(cfg.contact),
+        priority: str(cfg.priority),
+        search:   str(cfg.search),
+        groupBy:  cfg.groupBy === 'property' || cfg.groupBy === 'priority' || cfg.groupBy === 'due'
+          ? cfg.groupBy : 'status',
+      }
+    }
+  }
+}
+
+// Key-driven comparison over the actual ViewConfig keys — a field
+// added to the type (and to parse/currentConfig) is compared
+// automatically instead of being silently ignored.
+function sameViewConfig(a: ViewConfig, b: ViewConfig): boolean {
+  return (Object.keys(a) as (keyof ViewConfig)[]).every(k =>
+    k === 'statuses'
+      ? a.statuses.join(',') === b.statuses.join(',')
+      : a[k] === b[k]
+  )
 }
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
@@ -74,6 +148,46 @@ type RowHandlers = {
   onSelect: (id: string) => void
   // Local lookup — lets rows check whether a blocker still exists
   getTask: (id: string) => TaskWithRelations | undefined
+  // Presentation-only exit animation state (useExitingRows) — stable
+  // identity; rows read it for their subtask drill-downs.
+  exitPhaseOf: (id: string) => ExitPhase | null
+  // Subtask drill-down: toggle a parent's expanded state / inline add
+  onToggleExpand: (id: string) => void
+  onAddSubtask: (parent: TaskWithRelations, title: string) => void | Promise<void>
+}
+
+// Per-view subtask plumbing: children lookup + which parents are open.
+// (Passed as props, not via handlers, so memoized rows re-render when
+// their own children change — the progress chip must move.)
+type SubtaskUi = {
+  subtasksOf: (id: string) => TaskWithRelations[] | undefined
+  expandedIds: Set<string>
+}
+
+// Keyboard selection can land on a subtask row (j/k walks the DOM in
+// visual order). Resolve it to a prop only for the parent that owns
+// it, so the other memoized rows don't re-render on selection moves.
+function subtaskSelection(ui: SubtaskUi, selectedId: string | null, parentId: string): string | null {
+  if (!selectedId) return null
+  return (ui.subtasksOf(parentId) ?? []).some(s => s.id === selectedId) ? selectedId : null
+}
+
+// Property grouping for the All view: sections in property-name order,
+// portfolio-wide ("No property") last.
+function groupByPropertySections<T extends Task & { properties?: { name: string } | null }>(
+  tasks: T[]
+): { key: string; label: string; tasks: T[] }[] {
+  const map = new Map<string, { label: string; tasks: T[] }>()
+  for (const t of tasks) {
+    const key = t.property_id ?? 'none'
+    const entry = map.get(key)
+    if (entry) entry.tasks.push(t)
+    else map.set(key, { label: t.properties?.name ?? 'No property', tasks: [t] })
+  }
+  return Array.from(map.entries())
+    .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }))
+    .sort((a, b) =>
+      a.key === 'none' ? 1 : b.key === 'none' ? -1 : a.label.localeCompare(b.label))
 }
 
 // Keep inserts in the same order the fetch would return them
@@ -116,6 +230,11 @@ function TasksInner() {
   const [filterCapex, setFilterCapex] = useState(searchParams.get('capex') ?? '')
   const [filterContact, setFilterContact] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
+  const [search, setSearch] = useState('')
+
+  // How the All-tasks list is sectioned — per-session, captured by
+  // saved views.
+  const [groupBy, setGroupBy] = useState<GroupByMode>('status')
 
   // View mode. Agenda is the default, but deep links that carry a
   // property/capex filter land on the list where those filters live.
@@ -123,11 +242,18 @@ function TasksInner() {
     searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
   )
 
-  // Collapsed status sections (All tasks view)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['done']))
+  // Collapsed sections (All tasks view) — keyed per grouping so a
+  // collapse in one group-by doesn't leak into another.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['status:done']))
 
   // Keyboard-selected row (j/k navigation)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Expanded subtask drill-downs — per-session, not persisted
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+
+  // Saved views (task_views, user-scoped)
+  const [savedViews, setSavedViews] = useState<TaskView[]>([])
 
   const fetchTasks = useCallback(async () => {
     const { data } = await supabase
@@ -155,7 +281,17 @@ function TasksInner() {
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    supabase.auth.getUser().then(({ data }) => {
+      const uid = data.user?.id ?? null
+      setUserId(uid)
+      // Saved views ride along with the page load — user-scoped,
+      // ordered by sort_order then age.
+      if (uid) {
+        supabase.from('task_views').select('*').eq('user_id', uid)
+          .order('sort_order').order('created_at')
+          .then(({ data: viewRows }) => setSavedViews((viewRows as TaskView[]) ?? []))
+      }
+    })
     supabase.from('properties').select('*').eq('status', 'active').order('name')
       .then(({ data }) => setProperties(data ?? []))
     supabase.from('contacts').select('*').order('full_name')
@@ -166,25 +302,77 @@ function TasksInner() {
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
   }, [supabase])
 
+  // Presentation-only exit animation for completed rows: the mutation
+  // fires immediately (store + DB + toast + recurrence); useExitingRows
+  // keeps a pre-completion snapshot rendered in place while the check
+  // pop + collapse plays. Every RENDER derivation below feeds from
+  // renderTasks; mutation logic keeps reading the real tasks state.
+  const { begin: beginExit, cancel: cancelExit, overlay, phaseOf } = useExitingRows<TaskWithRelations>()
+  const renderTasks = useMemo(() => overlay(tasks), [overlay, tasks])
+
+  // Subtasks NEVER render as top-level rows — every list and count in
+  // the three views starts from topLevelTasks; children hang off their
+  // parent via the child map (drill-down only). Shared helpers:
+  // lib/tasks/subtasks.ts.
+  const topLevelTasks = useMemo(() => topLevel(renderTasks), [renderTasks])
+  const childMap = useMemo(() => childrenByParent(renderTasks), [renderTasks])
+  const subtasksOf = useCallback(
+    (id: string) => childMap.get(id), [childMap]
+  )
+  const subtaskUi: SubtaskUi = useMemo(
+    () => ({ subtasksOf, expandedIds }), [subtasksOf, expandedIds]
+  )
+
   // All-view filtering (client side — the shared fetch feeds all three views)
-  const visibleTasks = tasks.filter(t => {
-    if (!activeStatuses.has(t.status as StatusFilter)) return false
-    if (filterPriority && t.priority !== filterPriority) return false
-    if (filterProp && t.property_id !== filterProp) return false
-    if (filterCapex && t.capex_project_id !== filterCapex) return false
-    if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
-    return true
-  })
+  const visibleTasks = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return topLevelTasks.filter(t => {
+      if (!activeStatuses.has(t.status as StatusFilter)) return false
+      if (filterPriority && t.priority !== filterPriority) return false
+      if (filterProp && t.property_id !== filterProp) return false
+      if (filterCapex && t.capex_project_id !== filterCapex) return false
+      if (filterContact && !(t.contacts ?? []).some(c => c.id === filterContact)) return false
+      if (q && !t.title.toLowerCase().includes(q) && !(t.description ?? '').toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [topLevelTasks, activeStatuses, filterPriority, filterProp, filterCapex, filterContact, search])
 
-  const grouped = STATUS_ORDER.reduce((acc, status) => {
-    acc[status] = visibleTasks.filter(t => t.status === status)
+  const counts = useMemo(() => STATUS_ORDER.reduce((acc, s) => {
+    acc[s] = topLevelTasks.filter(t => t.status === s).length
     return acc
-  }, {} as Record<StatusFilter, TaskWithRelations[]>)
+  }, {} as Record<StatusFilter, number>), [topLevelTasks])
 
-  const counts = STATUS_ORDER.reduce((acc, s) => {
-    acc[s] = tasks.filter(t => t.status === s).length
-    return acc
-  }, {} as Record<StatusFilter, number>)
+  // One collapsible-section shape for every grouping. Status keeps the
+  // current order/labels; Property sorts by name with "No property"
+  // last; Priority runs urgent→low; Due reuses the shared groupByDue
+  // bucketing (Overdue keeps its red tone).
+  const sections: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = useMemo(() =>
+    groupBy === 'property' ? groupByPropertySections(visibleTasks)
+    : groupBy === 'priority' ? PRIORITY_ORDER.map(p => ({
+        key: p, label: p, tasks: visibleTasks.filter(t => t.priority === p),
+      }))
+    : groupBy === 'due' ? (() => {
+        // Due buckets carry deadline semantics: a done task isn't
+        // "Overdue" and a snoozed task is deliberately parked, so both
+        // move to trailing sections instead of date buckets. Blocked
+        // tasks keep their real deadlines and stay bucketed.
+        const today = todayISO()
+        const doneTasks = visibleTasks.filter(t => t.status === 'done')
+        const snoozedTasks = visibleTasks.filter(t =>
+          t.status !== 'done' && t.snoozed_until != null && t.snoozed_until > today)
+        const parked = new Set([...doneTasks, ...snoozedTasks].map(t => t.id))
+        return [
+          ...groupByDue(visibleTasks.filter(t => !parked.has(t.id)), today).map(g => ({
+            key: g.key as string, label: g.label, tone: g.tone, tasks: g.tasks,
+          })),
+          { key: 'snoozed', label: 'Snoozed', tasks: snoozedTasks },
+          { key: 'done', label: 'Completed', tasks: doneTasks },
+        ]
+      })()
+    : STATUS_ORDER.map(s => ({
+        key: s, label: SECTION_LABELS[s], tasks: visibleTasks.filter(t => t.status === s),
+      })),
+  [groupBy, visibleTasks])
 
   function toggleStatus(s: StatusFilter) {
     setActiveStatuses(prev => {
@@ -238,9 +426,28 @@ function TasksInner() {
   }, [])
 
   const markDone = useCallback(
-    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task),
-    [supabase, store]
+    // Completing a parent takes its open subtasks with it — one action,
+    // one toast, one undo (children resolved from the latest state).
+    // onRevert cancels the exit animation (failed write / Undo) so the
+    // row reappears instantly.
+    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
+      openSubtasks: openSubtasksOf(tasksRef.current, task.id),
+      onRevert: () => cancelExit(task.id),
+    }),
+    [supabase, store, cancelExit]
   )
+
+  // Completion entry point for every surface (circle, swipe, status
+  // dropdown, keyboard 'c', modal saved as done): the mutation fires
+  // immediately; the exit animation is presentation-only. Un-completing
+  // (from a done section) skips the animation entirely.
+  const completeTask = useCallback((task: TaskWithRelations): void | Promise<void> => {
+    if (task.status === 'done') return markDone(task)
+    // Already animating out (e.g. the same task rendered in two Review
+    // sections) — the mutation already fired once.
+    if (!beginExit(task)) return
+    return markDone(task)
+  }, [markDone, beginExit])
 
   const deleteTask = useCallback(
     (task: TaskWithRelations) => deleteTaskOptimistic(supabase, store, task, {
@@ -252,15 +459,32 @@ function TasksInner() {
 
   const taskById = useCallback((id: string) => tasksRef.current.find(t => t.id === id), [])
 
+  // Expand/collapse a parent's drill-down. 'toggle' flips; 'open'/'close'
+  // are idempotent (the keyboard layer's l / h). No-op for childless rows.
+  const toggleExpand = useCallback((id: string, mode: 'open' | 'close' | 'toggle' = 'toggle') => {
+    if (!tasksRef.current.some(t => t.parent_task_id === id)) return
+    setExpandedIds(prev => {
+      const open = mode === 'toggle' ? !prev.has(id) : mode === 'open'
+      if (open === prev.has(id)) return prev
+      const next = new Set(prev)
+      if (open) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
   const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
-    onDone: markDone,
+    onDone: completeTask,
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
     onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
     onSelect: setSelectedId,
     getTask: taskById,
-  }), [supabase, store, markDone, deleteTask, taskById])
+    exitPhaseOf: phaseOf,
+    onToggleExpand: toggleExpand,
+    onAddSubtask: (parent, title) => addSubtaskOptimistic(supabase, store, parent, title, userId),
+  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -269,17 +493,131 @@ function TasksInner() {
     enabled: !showForm && !loading,
     selectedId,
     setSelectedId,
-    onComplete: id => { const t = taskById(id); if (t) markDone(t) },
     onDelete: id => { const t = taskById(id); if (t) deleteTask(t) },
     onEdit: id => { const t = taskById(id); if (t) { setEditTask(t); setShowForm(true) } },
     onSetPriority: (id, priority) => {
       const t = taskById(id)
       if (t) patchTaskOptimistic(supabase, store, t, { priority })
     },
+    onExpand: toggleExpand,
   })
 
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
-  const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority
+  const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority || search
+
+  // ── Saved views ────────────────────────────────────────────
+  // A chip is "active" when its stored config matches the live state —
+  // touch any filter afterwards and the highlight drops off on its own.
+
+  const currentConfig: ViewConfig = useMemo(() => ({
+    v: 1,
+    view,
+    statuses: STATUS_ORDER.filter(s => activeStatuses.has(s)), // canonical order
+    property: filterProp,
+    capex:    filterCapex,
+    contact:  filterContact,
+    priority: filterPriority,
+    search,
+    groupBy,
+  }), [view, activeStatuses, filterProp, filterCapex, filterContact, filterPriority, search, groupBy])
+
+  // Configs parse once per fetch/edit, not once per render per chip.
+  const parsedViews = useMemo(
+    () => savedViews.map(v => ({ row: v, config: parseViewConfig(v.config) })),
+    [savedViews]
+  )
+  const activeViewId = parsedViews.find(p => sameViewConfig(currentConfig, p.config))?.row.id ?? null
+
+  // Applying restores the whole state — including the tab, so an
+  // Agenda-based view switches over to Agenda.
+  function applySavedView(v: TaskView) {
+    // Copy the pre-parsed config (stale-referent clearing mutates it).
+    const parsed = parsedViews.find(p => p.row.id === v.id)?.config ?? parseViewConfig(v.config)
+    const cfg = { ...parsed }
+    // Stale referents (deleted/archived property, wrapped-up CapEx
+    // project, removed contact) would silently filter everything down
+    // to nothing — validate ids against the loaded option lists, clear
+    // the stale ones, and say so.
+    const stale: string[] = []
+    if (cfg.property && !properties.some(p => p.id === cfg.property)) {
+      cfg.property = ''
+      stale.push('property')
+    }
+    if (cfg.capex && !capexProjects.some(c => c.id === cfg.capex)) {
+      cfg.capex = ''
+      stale.push('CapEx project')
+    }
+    if (cfg.contact && !contacts.some(c => c.id === cfg.contact)) {
+      cfg.contact = ''
+      stale.push('contact')
+    }
+    if (stale.length > 0) {
+      toast(`Saved view referenced a removed ${stale.join(' and ')} — filter${stale.length > 1 ? 's' : ''} cleared`)
+    }
+    setView(cfg.view)
+    setActiveStatuses(new Set(cfg.statuses))
+    setFilterProp(cfg.property)
+    setFilterCapex(cfg.capex)
+    setFilterContact(cfg.contact)
+    setFilterPriority(cfg.priority)
+    setSearch(cfg.search)
+    setGroupBy(cfg.groupBy)
+  }
+
+  async function saveCurrentView(name: string) {
+    if (!userId) return
+    const { data, error } = await supabase.from('task_views')
+      .insert({
+        user_id: userId, name,
+        config: currentConfig as unknown as Json,
+        sort_order: savedViews.length,
+      })
+      .select('*')
+      .single()
+    if (error || !data) {
+      toast('Could not save view', { tone: 'error' })
+      return
+    }
+    setSavedViews(prev => [...prev, data as TaskView])
+  }
+
+  function renameSavedView(v: TaskView, name: string) {
+    setSavedViews(prev => prev.map(x => x.id === v.id ? { ...x, name } : x))
+    void supabase.from('task_views').update({ name }).eq('id', v.id).then(({ error }) => {
+      if (error) {
+        setSavedViews(prev => prev.map(x => x.id === v.id ? { ...x, name: v.name } : x))
+        toast('Could not rename view', { tone: 'error' })
+      }
+    })
+  }
+
+  function deleteSavedView(v: TaskView) {
+    setSavedViews(prev => prev.filter(x => x.id !== v.id))
+    void supabase.from('task_views').delete().eq('id', v.id).then(({ error }) => {
+      if (error) {
+        setSavedViews(prev => [...prev, v])
+        toast('Could not delete view', { tone: 'error' })
+        return
+      }
+      toast(`Deleted view "${v.name}"`, {
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            // Same id — the delete committed, so it's free to re-insert.
+            setSavedViews(prev => [...prev, v])
+            const { error: restoreError } = await supabase.from('task_views').insert({
+              id: v.id, user_id: v.user_id, name: v.name,
+              config: v.config, sort_order: v.sort_order,
+            })
+            if (restoreError) {
+              setSavedViews(prev => prev.filter(x => x.id !== v.id))
+              toast('Could not restore view', { tone: 'error' })
+            }
+          },
+        },
+      })
+    })
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -300,6 +638,20 @@ function TasksInner() {
           <Plus size={13} />Add task
         </button>
       </div>
+
+      {/* Saved views — chips restore a whole page state (tab, pills,
+          filters, search, group-by); shown on every tab since applying
+          one can switch tabs anyway */}
+      {(savedViews.length > 0 || view === 'all') && (
+        <SavedViewsBar
+          views={savedViews}
+          activeId={activeViewId}
+          onApply={applySavedView}
+          onSaveNew={saveCurrentView}
+          onRename={renameSavedView}
+          onDelete={deleteSavedView}
+        />
+      )}
 
       {/* Filter bar — All tasks view only */}
       {view === 'all' && (
@@ -343,13 +695,28 @@ function TasksInner() {
           <FilterSelect value={filterPriority} onChange={setFilterPriority}
             className={cn('w-auto', filterPriority && 'border-red-400 bg-red-50 text-red-700')}>
             <option value="">All priorities</option>
-            {['urgent', 'high', 'medium', 'low'].map(p => (
+            {PRIORITY_ORDER.map(p => (
               <option key={p} value={p}>{p}</option>
             ))}
           </FilterSelect>
 
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search…"
+            aria-label="Search tasks"
+            className={cn('input-sm w-32', search && 'border-blue-400 bg-blue-50 text-blue-700')}
+          />
+
+          <div className="w-px h-4 bg-slate-200 mx-1" />
+
+          <FilterSelect value={groupBy} onChange={v => setGroupBy(v as GroupByMode)}
+            ariaLabel="Group by"
+            className={cn('w-auto', groupBy !== 'status' && 'border-slate-400 bg-slate-100 text-slate-700')}
+            options={GROUP_BY_OPTIONS.map(o => ({ value: o.value, label: o.label }))} />
+
           {hasActiveFilter && (
-            <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority('') }}
+            <button onClick={() => { setFilterProp(''); setFilterCapex(''); setFilterContact(''); setFilterPriority(''); setSearch('') }}
               className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
               <X size={12} />Clear filters
             </button>
@@ -379,27 +746,38 @@ function TasksInner() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
-          <AgendaView tasks={tasks} userId={userId} handlers={handlers}
-            selectedId={selectedId} properties={properties} onQuickAdd={store.insert} />
+          <AgendaView tasks={renderTasks} userId={userId} handlers={handlers}
+            selectedId={selectedId} properties={properties} onQuickAdd={store.insert}
+            subtaskUi={subtaskUi} />
         ) : view === 'review' ? (
-          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId} />
+          <ReviewView tasks={renderTasks} userId={userId} handlers={handlers} selectedId={selectedId}
+            subtaskUi={subtaskUi} />
         ) : (
           <div className="pb-8">
-            {STATUS_ORDER.map(status => {
-              const sectionTasks = grouped[status]
+            {sections.map(section => {
+              const sectionTasks = section.tasks
               if (!sectionTasks.length) return null
-              const isCollapsed = collapsed.has(status)
+              const sectionKey = `${groupBy}:${section.key}`
+              const isCollapsed = collapsed.has(sectionKey)
               return (
-                <div key={status}>
+                <div key={sectionKey}>
                   {/* Section header */}
                   <button
-                    onClick={() => toggleSection(status)}
-                    className="w-full flex items-center gap-2 px-6 py-2 bg-slate-50 border-b border-slate-200 hover:bg-slate-100 transition-colors sticky top-0 z-10">
-                    <ChevronDown size={13} className={cn('text-slate-400 transition-transform', isCollapsed && '-rotate-90')} />
-                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
-                      {SECTION_LABELS[status]}
+                    onClick={() => toggleSection(sectionKey)}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-6 py-2 border-b transition-colors sticky top-0 z-10',
+                      section.tone === 'red'
+                        ? 'bg-red-50 border-red-100 hover:bg-red-100'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                    )}>
+                    <ChevronDown size={13} className={cn('transition-transform', isCollapsed && '-rotate-90',
+                      section.tone === 'red' ? 'text-red-400' : 'text-slate-400')} />
+                    <span className={cn('text-xs font-semibold uppercase tracking-wide',
+                      section.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                      {section.label}
                     </span>
-                    <span className="text-xs text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded-full">
+                    <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
+                      section.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
                       {sectionTasks.length}
                     </span>
                   </button>
@@ -420,7 +798,11 @@ function TasksInner() {
 
                       {sectionTasks.map(task => (
                         <TaskRow key={task.id} task={task} handlers={handlers}
-                          selected={selectedId === task.id} />
+                          selected={selectedId === task.id}
+                          exitPhase={handlers.exitPhaseOf(task.id)}
+                          subtasks={subtaskUi.subtasksOf(task.id)}
+                          expanded={subtaskUi.expandedIds.has(task.id)}
+                          subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, task.id)} />
                       ))}
 
                       <div
@@ -453,7 +835,8 @@ function TasksInner() {
         <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
         {([
           ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
-          ['e', 'edit'], ['1–4', 'priority'], ['⌫', 'delete'], ['n', 'quick add'],
+          ['e', 'edit'], ['1–4', 'priority'], ['l/h', 'subtasks'], ['⌫', 'delete'],
+          ['n', 'quick add'],
         ] as const).map(([key, label]) => (
           <span key={key} className="flex items-center gap-1 whitespace-nowrap">
             <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
@@ -469,7 +852,7 @@ function TasksInner() {
           contacts={contacts}
           capexProjects={capexProjects}
           allTasks={tasks}
-          onComplete={markDone}
+          onComplete={completeTask}
           onClose={() => { setShowForm(false); setEditTask(null) }}
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
@@ -482,16 +865,30 @@ function TasksInner() {
 // Memoized: handlers/store are referentially stable, so a row only
 // re-renders when its own task object (or selection) changes.
 
-const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, swipeable = false }: {
+const TaskRow = memo(function TaskRow({
+  task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
+  subtaskSelectedId = null, exitPhase = null,
+}: {
   task: TaskWithRelations
   handlers: RowHandlers
   selected?: boolean      // keyboard-selected (j/k)
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
   swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
+  subtasks?: TaskWithRelations[]  // children of this row (parents only)
+  expanded?: boolean              // drill-down open (page-level session state)
+  subtaskSelectedId?: string | null  // keyboard selection inside the drill-down
+  exitPhase?: ExitPhase | null    // presentation-only completion exit (useExitingRows)
 }) {
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
+  // RTM completion feel, presentation-only: every completion surface on
+  // this row (circle, swipe, status dropdown, keyboard 'c' via
+  // data-complete-toggle) calls onDone, which fires the mutation
+  // IMMEDIATELY and starts the exit animation; while it plays, this row
+  // is the pre-completion snapshot (exitPhase non-null: check popped,
+  // pointer-events off, collapsing). Un-completing skips the animation.
+  const leaving = exitPhase != null
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
@@ -527,7 +924,7 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
         onSave={priority => patch({ priority })} />
 
       {/* Checkbox */}
-      <CompleteCircle isDone={isDone} onToggle={() => onDone(task)} />
+      <CompleteCircle isDone={isDone || leaving} onToggle={() => onDone(task)} />
 
       {/* Title — inline editable */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -538,6 +935,13 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
             displayClassName="font-medium"
           />
           <TaskBadges task={task} />
+          {subtasks != null && subtasks.length > 0 && (
+            <SubtaskChip
+              subtasks={subtasks}
+              expanded={expanded}
+              onToggle={() => handlers.onToggleExpand(task.id)}
+            />
+          )}
         </div>
         {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -620,22 +1024,36 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
       </div>
 
       {/* Delete — instant, with an Undo toast */}
-      <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => onDelete(task)}
-          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
-          <X size={13} />
-        </button>
-      </div>
+      <DeleteX onDelete={() => onDelete(task)} />
     </div>
   )
 
-  if (!swipeable) return row
-  return (
+  const body = swipeable ? (
     <SwipeRow
       onSwipeRight={() => onDone(task)}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
+  ) : row
+
+  // The collapse wraps the row AND its expanded drill-down: completing
+  // a parent takes the whole block out in one motion.
+  return (
+    <CollapseOnComplete phase={exitPhase}>
+      {body}
+      {subtasks != null && subtasks.length > 0 && expanded && (
+        <SubtaskList
+          subtasks={subtasks}
+          selectedId={subtaskSelectedId}
+          onSelect={onSelect}
+          exitPhaseOf={handlers.exitPhaseOf}
+          onToggleDone={onDone}
+          onPatch={onPatch}
+          onDelete={onDelete}
+          onAdd={title => handlers.onAddSubtask(task, title)}
+        />
+      )}
+    </CollapseOnComplete>
   )
 })
 
@@ -643,13 +1061,14 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
   properties: Property[]
   onQuickAdd: (task: Task) => void
+  subtaskUi: SubtaskUi
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
@@ -659,7 +1078,10 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
-    // Actionable-now semantics
+    // Actionable-now semantics. Subtasks never surface as top-level
+    // rows — they live in their parent's drill-down only (shared
+    // topLevel helper, lib/tasks/subtasks.ts).
+    const tops = topLevel(tasks)
     const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
     const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
     const isUnblocked = (t: TaskWithRelations) => {
@@ -669,12 +1091,12 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     }
 
     // Personal inbox: things I captured that still need processing
-    const myInbox = tasks.filter(t =>
+    const myInbox = tops.filter(t =>
       t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
     )
     const inboxIds = new Set(myInbox.map(t => t.id))
 
-    const actionable = tasks.filter(t =>
+    const actionable = tops.filter(t =>
       t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
     )
 
@@ -683,7 +1105,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const groups = groupByDue(actionable, today, { nodate: 'No due date' })
     const hasDated = groups.some(g => g.tasks.length > 0)
 
-    const snoozed = tasks.filter(t =>
+    const snoozed = tops.filter(t =>
       t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
     ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
@@ -712,7 +1134,10 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             <span className="text-xs text-indigo-400">to process</span>
           </button>
           {inboxOpen && myInbox.map(t => (
-            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+              exitPhase={handlers.exitPhaseOf(t.id)}
+              subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
+              subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
           ))}
         </div>
       )}
@@ -734,7 +1159,10 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
               </span>
             </div>
             {g.tasks.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+                exitPhase={handlers.exitPhaseOf(t.id)}
+                subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
+                subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
             ))}
           </div>
         )
@@ -788,20 +1216,35 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers, selectedId }: {
+function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
+  subtaskUi: SubtaskUi
 }) {
   const rowProps = (t: TaskWithRelations) =>
-    ({ task: t, handlers, selected: selectedId === t.id })
-  const myInbox = tasks.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
+    ({
+      task: t, handlers, selected: selectedId === t.id,
+      exitPhase: handlers.exitPhaseOf(t.id),
+      subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
+      subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),
+    })
+  // Subtasks stay inside their parent's drill-down — every review
+  // section except the obligations horizon sweeps top-level tasks only
+  // (shared topLevel helper, lib/tasks/subtasks.ts).
+  const tops = topLevel(tasks)
+  const myInbox = tops.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
-  const waiting = [...tasks]
+  const waiting = [...tops]
     .filter(t => t.status === 'waiting')
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
 
+  // Defense in depth: obligations sweep ALL tasks, not just top-level.
+  // Auto-generated deadline tasks are supposed to stay top-level (the
+  // modal enforces it), but if one somehow became a subtask it must
+  // still surface here — a missed renewal is worse than a duplicate
+  // row. Subtasked obligations render with their parent as context.
   const obligations = tasks.filter(t =>
     t.auto_source != null && t.status !== 'done' &&
     t.due_date != null && (daysUntil(t.due_date) ?? 999) <= 90
@@ -812,9 +1255,9 @@ function ReviewView({ tasks, userId, handlers, selectedId }: {
     return acc
   }, {} as Record<string, TaskWithRelations[]>)
 
-  const rocks = tasks.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
+  const rocks = tops.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
 
-  const shipped = [...tasks]
+  const shipped = [...tops]
     .filter(t => t.status === 'done' && t.completed_at != null && (daysUntil(t.completed_at) ?? -999) >= -7)
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
 
@@ -866,7 +1309,16 @@ function ReviewView({ tasks, userId, handlers, selectedId }: {
                   <span className="text-xs font-semibold text-slate-500">{prop}</span>
                   <span className="text-xs text-slate-300">({propTasks.length})</span>
                 </div>
-                {propTasks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)}
+                {propTasks.map(t => {
+                  const parent = t.parent_task_id ? handlers.getTask(t.parent_task_id) : undefined
+                  return (
+                    <TaskRow key={t.id} {...rowProps(t)}
+                      meta={parent ? (
+                        <span className="text-xs text-slate-400">in “{parent.title.slice(0, 40)}”</span>
+                      ) : undefined}
+                    />
+                  )
+                })}
               </div>
             ))
           : <SectionEmpty label="No obligations due within 90 days." />}
@@ -952,6 +1404,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     title: string; description: string; property_id: string
     capex_project_id: string; status: string; priority: string
     due_date: string; snoozed_until: string; blocked_by_task_id: string
+    parent_task_id: string
     tags: string; recur_freq: string; recur_interval: string
     recur_unit: string; recur_end_type: string; recur_end_date: string
     recur_end_count: string
@@ -967,6 +1420,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     due_date:           task?.due_date ?? '',
     snoozed_until:      task?.snoozed_until ?? '',
     blocked_by_task_id: task?.blocked_by_task_id ?? '',
+    parent_task_id:     task?.parent_task_id ?? '',
     tags:               task?.tags?.join(', ') ?? '',
     recur_freq:         task?.recur_freq ?? '',
     recur_interval:     task?.recur_interval?.toString() ?? '2',
@@ -980,6 +1434,8 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     (task?.contacts ?? []).map((c: Contact) => c.id)
   )
   const [saving, setSaving] = useState(false)
+  // Inline error under the Parent-task select (server-truth guard)
+  const [parentError, setParentError] = useState<string | null>(null)
 
   function toggleContact(id: string) {
     setSelectedContacts(prev =>
@@ -989,6 +1445,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setParentError(null)
     setSaving(true)
 
     const payload = {
@@ -1001,6 +1458,13 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       due_date:           form.due_date || null,
       snoozed_until:      form.snoozed_until || null,
       blocked_by_task_id: form.blocked_by_task_id || null,
+      // A task with children can never gain a parent (hasChildren hides
+      // the control), and auto-generated deadline tasks stay top-level
+      // (isAutoSource hides it too) — both preserve whatever the task
+      // already had.
+      parent_task_id:     hasChildren || isAutoSource
+        ? (task?.parent_task_id ?? null)
+        : (form.parent_task_id || null),
       tags:               form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
       recur_freq:         (form.recur_freq || null) as Task['recur_freq'],
       recur_interval:     form.recur_freq === 'custom' ? parseInt(form.recur_interval) || null : null,
@@ -1008,6 +1472,26 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       recur_end_type:     form.recur_freq ? (form.recur_end_type as Task['recur_end_type']) : null,
       recur_end_date:     form.recur_end_type === 'on' ? form.recur_end_date || null : null,
       recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
+    }
+
+    // Server-truth guard when attaching a NEW parent: the local list
+    // can be stale (another tab may have subtasked or deleted the
+    // pick), and writing anyway would create a depth-2 chain or a
+    // dangling edge. One select against the real row before saving.
+    const newParentId = payload.parent_task_id
+    if (newParentId != null && newParentId !== (task?.parent_task_id ?? null)) {
+      const { data: parentRow } = await supabase.from('tasks')
+        .select('id, parent_task_id').eq('id', newParentId).maybeSingle()
+      if (!parentRow) {
+        setParentError('That parent task no longer exists — pick another, or None.')
+        setSaving(false)
+        return
+      }
+      if (parentRow.parent_task_id != null) {
+        setParentError('That task has become a subtask itself — only one level of nesting is allowed.')
+        setSaving(false)
+        return
+      }
     }
 
     // Status transitions across done are not plain field writes:
@@ -1063,6 +1547,23 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
 
   const blockableTasks = allTasks.filter(t =>
     t.id !== task?.id && t.status !== 'done'
+  )
+
+  // Single-level nesting is an app rule: a task that already has
+  // children can't itself become a subtask (that would make 2 levels),
+  // and a subtask can't be picked as a parent. Tasks WITH children are
+  // valid parents. Auto-generated deadline tasks (renewals,
+  // expirations) must stay top-level so the Review obligations horizon
+  // and the auto-task dedupe keep seeing them.
+  const hasChildren = task != null && allTasks.some(t => t.parent_task_id === task.id)
+  const isAutoSource = task?.auto_source != null
+  // Done tasks aren't offered as new parents, but the CURRENT parent
+  // always appears (labelled "(completed)" when done) so the select
+  // shows the true state instead of silently blanking; "None" still
+  // clears it.
+  const parentOptions = allTasks.filter(t =>
+    t.id !== task?.id && t.parent_task_id == null &&
+    (t.status !== 'done' || t.id === task?.parent_task_id)
   )
 
   return (
@@ -1139,6 +1640,36 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
               {filteredCapex.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
+
+          {/* Parent task — makes this a subtask (single level) */}
+          {hasChildren || isAutoSource ? (
+            <div>
+              <label className="label">Parent task</label>
+              <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                {isAutoSource
+                  ? 'Auto-generated deadline tasks stay top-level so they always surface in the obligations horizon.'
+                  : 'This task has subtasks, so it can’t become a subtask itself (one level only).'}
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="label">Parent task</label>
+              <select value={form.parent_task_id}
+                onChange={e => setForm(f => ({ ...f, parent_task_id: e.target.value }))}
+                className="input">
+                <option value="">None — top-level task</option>
+                {parentOptions.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.title.slice(0, 60)}{t.status === 'done' ? ' (completed)' : ''}
+                  </option>
+                ))}
+              </select>
+              {parentError && (
+                <p className="text-xs text-red-600 mt-1">{parentError}</p>
+              )}
+              <p className="text-xs text-slate-400 mt-1">Subtasks live inside their parent’s drill-down, not in the main lists</p>
+            </div>
+          )}
 
           {/* Blocked by */}
           {form.status === 'blocked' && (

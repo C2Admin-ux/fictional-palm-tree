@@ -22,7 +22,11 @@ export default async function DashboardPage() {
   ] = await Promise.all([
     supabase.from('properties').select('*, pmcs(name)').eq('status', 'active').order('name'),
     supabase.from('pm_metrics').select('*').order('period_month', { ascending: false }),
-    supabase.from('tasks').select('id, status, priority, property_id, title, due_date').neq('status', 'done'),
+    // Top-level tasks only: subtasks never render outside their
+    // parent's drill-down, so the KPI count, overdue count, per-property
+    // counts, and the Top Open Tasks list all exclude them.
+    supabase.from('tasks').select('id, status, priority, property_id, title, due_date')
+      .neq('status', 'done').is('parent_task_id', null),
     supabase.from('capex_projects').select('id, property_id, title, status, budget, actual_spend').in('status', ['planning', 'approved', 'in_progress']),
     supabase.from('insurance_policies').select('id, property_id, policy_type, carrier, expiry_date, status').eq('status', 'active'),
     supabase.from('insurance_claims').select('id, property_id, status, amount_claimed').neq('status', 'closed').neq('status', 'denied'),
