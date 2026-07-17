@@ -59,8 +59,24 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
         return
       }
 
-      const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-task-id]'))
-      const ids = rows.map(el => el.dataset.taskId as string)
+      // Held-down keys only repeat navigation — a repeating Delete or c
+      // would mow through the list.
+      const isNav = e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp'
+      if (e.repeat && !isNav) return
+
+      // Visual order from the DOM, deduped (the Review view can render
+      // the same task in several sections — navigation uses the first
+      // occurrence so indexOf can traverse the whole list).
+      const rows: HTMLElement[] = []
+      const ids: string[] = []
+      const seen = new Set<string>()
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>('[data-task-id]'))) {
+        const id = el.dataset.taskId as string
+        if (seen.has(id)) continue
+        seen.add(id)
+        rows.push(el)
+        ids.push(id)
+      }
       const idx = a.selectedId ? ids.indexOf(a.selectedId) : -1
 
       switch (e.key) {
