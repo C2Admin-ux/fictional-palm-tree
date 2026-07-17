@@ -14,7 +14,7 @@ import type { Task } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
 import { InlineText } from '@/components/ui/inline-edit'
 import { CompleteCircle, DueDateCell } from '@/components/tasks/row-cells'
-import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
+import { CollapseOnComplete, type ExitPhase } from '@/components/tasks/complete-collapse'
 import { ChevronDown, CornerDownRight, Plus, X } from 'lucide-react'
 
 export function SubtaskChip({ done, total, expanded, onToggle }: {
@@ -45,8 +45,11 @@ export function SubtaskChip({ done, total, expanded, onToggle }: {
 // selectedId/onSelect are optional (the property tab has no keyboard
 // layer): rows carry data-task-id, so j/k walks into the drill-down
 // and c/d/e/⌫ act on the selected subtask.
+// exitPhaseOf reports the page-level exit animation state for a row
+// (see useExitingRows) — completing fires the mutation immediately and
+// the collapse here is presentation-only.
 export function SubtaskList<T extends Task>({
-  subtasks, onToggleDone, onPatch, onDelete, onAdd, selectedId = null, onSelect,
+  subtasks, onToggleDone, onPatch, onDelete, onAdd, selectedId = null, onSelect, exitPhaseOf,
 }: {
   subtasks: T[]
   onToggleDone: (task: T) => void
@@ -55,6 +58,7 @@ export function SubtaskList<T extends Task>({
   onAdd: (title: string) => void | Promise<void>
   selectedId?: string | null
   onSelect?: (id: string) => void
+  exitPhaseOf?: (id: string) => ExitPhase | null
 }) {
   // Open first, completed (muted, un-completable) after.
   const open = subtasks.filter(t => t.status !== 'done')
@@ -66,6 +70,7 @@ export function SubtaskList<T extends Task>({
         <SubtaskRow key={t.id} task={t}
           selected={t.id === selectedId}
           onSelect={onSelect}
+          exitPhase={exitPhaseOf?.(t.id) ?? null}
           onToggleDone={() => onToggleDone(t)}
           onPatch={fields => onPatch(t, fields)}
           onDelete={() => onDelete(t)} />
@@ -75,21 +80,24 @@ export function SubtaskList<T extends Task>({
   )
 }
 
-function SubtaskRow<T extends Task>({ task, selected, onSelect, onToggleDone, onPatch, onDelete }: {
+function SubtaskRow<T extends Task>({ task, selected, onSelect, exitPhase, onToggleDone, onPatch, onDelete }: {
   task: T
   selected: boolean
   onSelect?: (id: string) => void
+  exitPhase: ExitPhase | null
   onToggleDone: () => void
   onPatch: (fields: Partial<Task>) => void
   onDelete: () => void
 }) {
   const isDone = task.status === 'done'
-  // Same RTM completion feel as full rows: check pop, collapse out,
-  // then the mutation lands (the row reappears in the muted done tail
-  // of this list, where un-completing is instant and unanimated).
-  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, onToggleDone)
+  // Same RTM completion feel as full rows — check pop, collapse out —
+  // but purely visual: onToggleDone already fired the mutation, and this
+  // row is the pre-completion snapshot kept in place by useExitingRows.
+  // It reappears in the muted done tail of this list once the exit ends
+  // (un-completing from there is instant and unanimated).
+  const leaving = exitPhase != null
   return (
-    <CollapseOnComplete collapsing={collapsing}>
+    <CollapseOnComplete phase={exitPhase}>
       <div
         data-task-id={task.id}
         onClick={() => onSelect?.(task.id)}
@@ -99,7 +107,7 @@ function SubtaskRow<T extends Task>({ task, selected, onSelect, onToggleDone, on
           selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
         )}>
         <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
-        <CompleteCircle isDone={isDone || checked} onToggle={trigger} />
+        <CompleteCircle isDone={isDone || leaving} onToggle={onToggleDone} />
         <div className="flex-1 min-w-0 py-1.5">
           <div className={cn('text-sm text-slate-800', isDone && 'line-through text-slate-400')}>
             <InlineText value={task.title} onSave={v => onPatch({ title: v })} />

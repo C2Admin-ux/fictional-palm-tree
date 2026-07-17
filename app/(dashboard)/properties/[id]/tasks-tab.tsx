@@ -16,7 +16,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
-import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
+import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
@@ -87,29 +87,47 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
     })
   }, [])
 
+  // Presentation-only exit animation (same contract as the tasks page):
+  // the mutation fires immediately, and useExitingRows keeps the
+  // pre-completion snapshot rendered in place while the exit plays.
+  const { begin: beginExit, cancel: cancelExit, overlay, phaseOf } = useExitingRows<TabTask>()
+  const renderTasks = useMemo(() => overlay(tasks), [overlay, tasks])
+
   // Completing a parent completes its open subtasks too — one action,
-  // one toast, one undo (same contract as the tasks page).
+  // one toast, one undo (same contract as the tasks page). onRevert
+  // cancels the exit animation (failed write / Undo).
   const markDone = useCallback((task: Task) => {
     void toggleDoneOptimistic(supabase, store, task, {
       openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+      onRevert: () => cancelExit(task.id),
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store])
+  }, [store, cancelExit])
+
+  // Completion entry point for every surface (circle, swipe, subtask
+  // rows): mutation immediately, exit animation presentation-only.
+  // Un-completing (from Recently completed) skips the animation.
+  const completeTask = useCallback((task: TabTask) => {
+    if (task.status === 'done') { markDone(task); return }
+    if (!beginExit(task)) return // already animating out
+    markDone(task)
+  }, [markDone, beginExit])
 
   // Subtasks render only inside their parent's drill-down — the
   // grouped lists, the completed section, and their counts all start
-  // from top-level rows.
-  const topLevel = tasks.filter(t => !t.parent_task_id)
+  // from top-level rows. (Render derivations feed from renderTasks so
+  // completing rows stay in place while they animate out.)
+  const topLevel = renderTasks.filter(t => !t.parent_task_id)
   const childrenByParent = useMemo(() => {
     const m = new Map<string, TabTask[]>()
-    for (const t of tasks) {
+    for (const t of renderTasks) {
       if (!t.parent_task_id) continue
       const arr = m.get(t.parent_task_id)
       if (arr) arr.push(t)
       else m.set(t.parent_task_id, [t])
     }
     return m
-  }, [tasks])
+  }, [renderTasks])
 
   const openTasks = topLevel.filter(t => t.status !== 'done')
   const completed = topLevel
@@ -154,7 +172,8 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
               </div>
               {g.tasks.map(t => (
                 <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
-                  onDone={markDone} userId={userId}
+                  onDone={completeTask} userId={userId}
+                  exitPhase={phaseOf(t.id)} exitPhaseOf={phaseOf}
                   subtasks={childrenByParent.get(t.id)}
                   expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
               ))}
@@ -175,7 +194,8 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
             </button>
             {completedOpen && completed.map(t => (
               <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
-                onDone={markDone} userId={userId}
+                onDone={completeTask} userId={userId}
+                exitPhase={phaseOf(t.id)} exitPhaseOf={phaseOf}
                 subtasks={childrenByParent.get(t.id)}
                 expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
             ))}
@@ -190,24 +210,29 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
 const PropertyTaskRow = memo(function PropertyTaskRow({
   task, supabase, store, onDone, userId, subtasks, expanded = false, onToggleExpand,
+  exitPhase = null, exitPhaseOf,
 }: {
   task: TabTask
   supabase: ReturnType<typeof createClient>
   store: TaskStore
-  onDone: (task: Task) => void
+  onDone: (task: TabTask) => void
   userId: string | null
   subtasks?: TabTask[]
   expanded?: boolean
   onToggleExpand: (id: string) => void
+  exitPhase?: ExitPhase | null              // this row's exit animation state
+  exitPhaseOf?: (id: string) => ExitPhase | null  // for the subtask drill-down
 }) {
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
   const today = todayISO()
   const snoozed = !isDone && task.snoozed_until != null && task.snoozed_until > today
-  // RTM completion feel — same wrapper as the tasks page rows: check
-  // pop, collapse, then the mutation. Un-completing (from Recently
-  // completed) passes straight through with no animation.
-  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, () => onDone(task))
+  // RTM completion feel — same wrapper as the tasks page rows, but
+  // presentation-only: onDone fires the mutation immediately, and this
+  // row is the pre-completion snapshot animating out (see
+  // useExitingRows). Un-completing (from Recently completed) passes
+  // straight through with no animation.
+  const leaving = exitPhase != null
 
   function patch(fields: Partial<Task>) {
     patchTaskOptimistic(supabase, store, task, fields)
@@ -227,8 +252,8 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
         onSave={priority => patch({ priority })} />
 
       {/* Complete / un-complete circle */}
-      <CompleteCircle isDone={isDone || checked}
-        onToggle={trigger} />
+      <CompleteCircle isDone={isDone || leaving}
+        onToggle={() => onDone(task)} />
 
       {/* Title */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -290,7 +315,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
 
   const body = isDone ? row : (
     <SwipeRow
-      onSwipeRight={trigger}
+      onSwipeRight={() => onDone(task)}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
@@ -299,11 +324,12 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
   // The collapse wraps the row AND its expanded drill-down: completing
   // a parent takes the whole block out in one motion.
   return (
-    <CollapseOnComplete collapsing={collapsing}>
+    <CollapseOnComplete phase={exitPhase}>
       {body}
       {subtasks != null && subtasks.length > 0 && expanded && (
         <SubtaskList
           subtasks={subtasks}
+          exitPhaseOf={exitPhaseOf}
           onToggleDone={onDone}
           onPatch={(t, fields) => patchTaskOptimistic(supabase, store, t, fields)}
           onDelete={t => deleteTaskOptimistic(supabase, store, t, {

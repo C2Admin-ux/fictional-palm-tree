@@ -60,9 +60,14 @@ export function snoozeTaskOptimistic(
 // (pass them via opts.openSubtasks): one toast, one Undo that restores
 // the parent AND every child to its prior status. Un-completing never
 // touches children.
+//
+// opts.onRevert fires whenever a completion is walked back locally
+// (failed write rollback, or the user hitting Undo) — the pages use it
+// to cancel the row's presentation-only exit animation so the row
+// reappears instantly (see useExitingRows in complete-collapse.tsx).
 export async function toggleDoneOptimistic(
   supabase: Client, store: TaskStore, task: Task,
-  opts?: { openSubtasks?: Task[] }
+  opts?: { openSubtasks?: Task[]; onRevert?: () => void }
 ) {
   const wasDone = task.status === 'done'
   const now = new Date().toISOString()
@@ -85,6 +90,7 @@ export async function toggleDoneOptimistic(
   if (error) {
     store.update(task.id, { status: task.status, completed_at: task.completed_at })
     revertChildren()
+    opts?.onRevert?.()
     toast('Could not update task', { tone: 'error' })
     return
   }
@@ -98,6 +104,7 @@ export async function toggleDoneOptimistic(
       // user never sees a half-completed project.
       store.update(task.id, { status: task.status, completed_at: task.completed_at })
       revertChildren()
+      opts?.onRevert?.()
       await supabase.from('tasks')
         .update({ status: task.status, completed_at: task.completed_at }).eq('id', task.id)
       toast('Could not update task', { tone: 'error' })
@@ -123,6 +130,7 @@ export async function toggleDoneOptimistic(
     action: {
       label: 'Undo',
       onClick: () => {
+        opts?.onRevert?.()
         const revert: Partial<Task> = { status: task.status, completed_at: task.completed_at }
         store.update(task.id, revert)
         revertChildren()

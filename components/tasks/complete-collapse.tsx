@@ -2,63 +2,99 @@
 
 // RTM-style completion feel, implemented once for every surface
 // (agenda rows, All view sections, Review, property tab, subtask rows):
-//   1. the complete circle fills with a brief check pop (~150ms —
-//      the .check-pop keyframe in globals.css)
-//   2. the row collapses (height + opacity + slight translate, ~250ms
-//      ease-out) and leaves the list
+//   1. the complete circle fills with a brief check pop (CHECK_MS —
+//      the check-pop keyframe in globals.css)
+//   2. the row collapses (height + opacity + slight translate,
+//      COLLAPSE_MS ease-out) and leaves the list
 // Pure CSS transitions — the height animation is the grid-template-rows
 // 1fr→0fr trick, so nothing gets measured and no animation library is
-// involved. The actual mutation fires only after the collapse, so the
-// optimistic store removes an already-invisible row; Undo re-inserts a
-// fresh row instantly (no reverse animation). Un-completing (from a
-// done section) skips the animation entirely.
+// involved.
+//
+// The mutation is NEVER deferred behind the animation: completing fires
+// the optimistic store update + DB write + toast + recurrence
+// immediately, and the exit is presentation-only. useExitingRows keeps
+// a pre-completion snapshot of each leaving row so the list's
+// filters/groups keep rendering it in place (visually "completing":
+// check popped, pointer-events off, collapsing) until the animation
+// ends. Undo or a failed write cancels the exit, so the row reappears
+// instantly; unmounting mid-animation just drops the transient state —
+// the data is already persisted.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 export const CHECK_MS = 150     // circle fill + check pop before the collapse
 export const COLLAPSE_MS = 250  // height/opacity/translate exit
 
-// Drives the two-phase exit. `trigger` replaces the row's direct
-// complete call: un-completing passes straight through; completing
-// plays check → collapse → complete(). Repeat triggers mid-animation
-// are ignored, and if the task flips to done while the row stays
-// mounted (e.g. it moves into a Completed section) the transient state
-// resets so the row reappears normally.
-export function useCompleteCollapse(isDone: boolean, complete: () => void) {
-  const [checked, setChecked] = useState(false)
-  const [collapsing, setCollapsing] = useState(false)
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
-  const running = useRef(false)
+export type ExitPhase = 'check' | 'collapse'
 
-  useEffect(() => {
-    if (isDone && (checked || collapsing)) {
-      setChecked(false)
-      setCollapsing(false)
-      running.current = false
-    }
-  }, [isDone, checked, collapsing])
+// Transient exit state for one list surface. The complete handler calls
+// begin(task) with the PRE-completion row, then fires the mutation; the
+// list substitutes the snapshot back in via overlay() so the row stays
+// where it was while it animates out.
+export function useExitingRows<T extends { id: string }>() {
+  const [rows, setRows] = useState<Map<string, { snapshot: T; phase: ExitPhase }>>(new Map())
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>[]>())
 
-  useEffect(() => () => { for (const t of timers.current) clearTimeout(t) }, [])
+  // Ends an exit early (Undo, failed write) or on schedule — the row
+  // simply renders from real store state again.
+  const cancel = useCallback((id: string) => {
+    for (const t of timers.current.get(id) ?? []) clearTimeout(t)
+    timers.current.delete(id)
+    setRows(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
-  function trigger() {
-    if (isDone) { complete(); return }  // un-complete: no animation
-    if (running.current) return
-    running.current = true
-    setChecked(true)
-    timers.current.push(setTimeout(() => setCollapsing(true), CHECK_MS))
-    timers.current.push(setTimeout(() => {
-      running.current = false
-      complete()
-    }, CHECK_MS + COLLAPSE_MS))
-  }
+  // Snapshot BEFORE the mutation flips the row. Returns false when the
+  // row is already exiting (repeat trigger — e.g. the same task rendered
+  // in two Review sections) so the caller skips the double mutation.
+  const begin = useCallback((task: T): boolean => {
+    if (timers.current.has(task.id)) return false
+    setRows(prev => new Map(prev).set(task.id, { snapshot: task, phase: 'check' }))
+    timers.current.set(task.id, [
+      setTimeout(() => setRows(prev => {
+        const entry = prev.get(task.id)
+        if (!entry || entry.phase === 'collapse') return prev
+        return new Map(prev).set(task.id, { ...entry, phase: 'collapse' })
+      }), CHECK_MS),
+      setTimeout(() => cancel(task.id), CHECK_MS + COLLAPSE_MS),
+    ])
+    return true
+  }, [cancel])
 
-  return { checked, collapsing, trigger }
+  // Unmount mid-animation: drop the timers only. Harmless — the
+  // mutation already fired when the exit began.
+  useEffect(() => () => {
+    timers.current.forEach(list => { for (const t of list) clearTimeout(t) })
+  }, [])
+
+  // Substitute leaving rows with their pre-completion snapshots so the
+  // surrounding filters/groups/counts keep the row exactly where it was
+  // while the exit plays. Feed every RENDER derivation from this;
+  // mutation logic keeps reading the real store.
+  const overlay = useCallback((tasks: T[]): T[] =>
+    rows.size === 0 ? tasks : tasks.map(t => rows.get(t.id)?.snapshot ?? t),
+    [rows])
+
+  // Referentially stable (reads through a ref) so it can ride inside a
+  // stable handlers bundle — memoized rows re-render via their computed
+  // exitPhase prop, not via this function's identity.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const phaseOf = useCallback((id: string): ExitPhase | null =>
+    rowsRef.current.get(id)?.phase ?? null, [])
+
+  return { begin, cancel, overlay, phaseOf }
 }
 
-export function CollapseOnComplete({ collapsing, children }: {
-  collapsing: boolean
+export function CollapseOnComplete({ phase, children }: {
+  phase: ExitPhase | null
   children: React.ReactNode
 }) {
+  const collapsing = phase === 'collapse'
   return (
     <div
       style={{
@@ -67,9 +103,9 @@ export function CollapseOnComplete({ collapsing, children }: {
         opacity: collapsing ? 0 : 1,
         transform: collapsing ? 'translateX(10px)' : 'none',
         transition: `grid-template-rows ${COLLAPSE_MS}ms ease-out, opacity ${COLLAPSE_MS}ms ease-out, transform ${COLLAPSE_MS}ms ease-out`,
-        // Interactive-safe while leaving — nothing under the pointer
-        // can be clicked mid-collapse.
-        pointerEvents: collapsing ? 'none' : undefined,
+        // Interactive-safe for the whole exit (check + collapse) — the
+        // mutation already fired; nothing under the pointer can double-act.
+        pointerEvents: phase != null ? 'none' : undefined,
       }}>
       {/* overflow only clips during the exit — at rest it would cut off
           the row's own dropdowns (snooze presets, priority pip) */}

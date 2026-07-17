@@ -21,7 +21,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
-import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
+import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
@@ -135,6 +135,9 @@ type RowHandlers = {
   onSelect: (id: string) => void
   // Local lookup — lets rows check whether a blocker still exists
   getTask: (id: string) => TaskWithRelations | undefined
+  // Presentation-only exit animation state (useExitingRows) — stable
+  // identity; rows read it for their subtask drill-downs.
+  exitPhaseOf: (id: string) => ExitPhase | null
   // Subtask drill-down: toggle a parent's expanded state / inline add
   onToggleExpand: (id: string) => void
   onAddSubtask: (parent: TaskWithRelations, title: string) => void | Promise<void>
@@ -286,20 +289,28 @@ function TasksInner() {
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
   }, [supabase])
 
+  // Presentation-only exit animation for completed rows: the mutation
+  // fires immediately (store + DB + toast + recurrence); useExitingRows
+  // keeps a pre-completion snapshot rendered in place while the check
+  // pop + collapse plays. Every RENDER derivation below feeds from
+  // renderTasks; mutation logic keeps reading the real tasks state.
+  const { begin: beginExit, cancel: cancelExit, overlay, phaseOf } = useExitingRows<TaskWithRelations>()
+  const renderTasks = useMemo(() => overlay(tasks), [overlay, tasks])
+
   // Subtasks NEVER render as top-level rows — every list and count in
   // the three views starts from topLevelTasks; children hang off their
   // parent via childrenByParent (drill-down only).
-  const topLevelTasks = useMemo(() => tasks.filter(t => !t.parent_task_id), [tasks])
+  const topLevelTasks = useMemo(() => renderTasks.filter(t => !t.parent_task_id), [renderTasks])
   const childrenByParent = useMemo(() => {
     const m = new Map<string, TaskWithRelations[]>()
-    for (const t of tasks) {
+    for (const t of renderTasks) {
       if (!t.parent_task_id) continue
       const arr = m.get(t.parent_task_id)
       if (arr) arr.push(t)
       else m.set(t.parent_task_id, [t])
     }
     return m
-  }, [tasks])
+  }, [renderTasks])
   const subtasksOf = useCallback(
     (id: string) => childrenByParent.get(id), [childrenByParent]
   )
@@ -394,11 +405,26 @@ function TasksInner() {
   const markDone = useCallback(
     // Completing a parent takes its open subtasks with it — one action,
     // one toast, one undo (children resolved from the latest state).
+    // onRevert cancels the exit animation (failed write / Undo) so the
+    // row reappears instantly.
     (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
       openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+      onRevert: () => cancelExit(task.id),
     }),
-    [supabase, store]
+    [supabase, store, cancelExit]
   )
+
+  // Completion entry point for every surface (circle, swipe, status
+  // dropdown, keyboard 'c', modal saved as done): the mutation fires
+  // immediately; the exit animation is presentation-only. Un-completing
+  // (from a done section) skips the animation entirely.
+  const completeTask = useCallback((task: TaskWithRelations): void | Promise<void> => {
+    if (task.status === 'done') return markDone(task)
+    // Already animating out (e.g. the same task rendered in two Review
+    // sections) — the mutation already fired once.
+    if (!beginExit(task)) return
+    return markDone(task)
+  }, [markDone, beginExit])
 
   const deleteTask = useCallback(
     (task: TaskWithRelations) => deleteTaskOptimistic(supabase, store, task, {
@@ -426,15 +452,16 @@ function TasksInner() {
 
   const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
-    onDone: markDone,
+    onDone: completeTask,
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
     onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
     onSelect: setSelectedId,
     getTask: taskById,
+    exitPhaseOf: phaseOf,
     onToggleExpand: toggleExpand,
     onAddSubtask: (parent, title) => addSubtaskOptimistic(supabase, store, parent, title, userId),
-  }), [supabase, store, markDone, deleteTask, taskById, toggleExpand, userId])
+  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -443,7 +470,7 @@ function TasksInner() {
     enabled: !showForm && !loading,
     selectedId,
     setSelectedId,
-    onComplete: id => { const t = taskById(id); if (t) markDone(t) },
+    onComplete: id => { const t = taskById(id); if (t) completeTask(t) },
     onDelete: id => { const t = taskById(id); if (t) deleteTask(t) },
     onEdit: id => { const t = taskById(id); if (t) { setEditTask(t); setShowForm(true) } },
     onSetPriority: (id, priority) => {
@@ -668,11 +695,11 @@ function TasksInner() {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
-          <AgendaView tasks={tasks} userId={userId} handlers={handlers}
+          <AgendaView tasks={renderTasks} userId={userId} handlers={handlers}
             selectedId={selectedId} properties={properties} onQuickAdd={store.insert}
             subtaskUi={subtaskUi} />
         ) : view === 'review' ? (
-          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId}
+          <ReviewView tasks={renderTasks} userId={userId} handlers={handlers} selectedId={selectedId}
             subtaskUi={subtaskUi} />
         ) : (
           <div className="pb-8">
@@ -721,6 +748,7 @@ function TasksInner() {
                       {sectionTasks.map(task => (
                         <TaskRow key={task.id} task={task} handlers={handlers}
                           selected={selectedId === task.id}
+                          exitPhase={handlers.exitPhaseOf(task.id)}
                           subtasks={subtaskUi.subtasksOf(task.id)}
                           expanded={subtaskUi.expandedIds.has(task.id)}
                           subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, task.id)} />
@@ -773,7 +801,7 @@ function TasksInner() {
           contacts={contacts}
           capexProjects={capexProjects}
           allTasks={tasks}
-          onComplete={markDone}
+          onComplete={completeTask}
           onClose={() => { setShowForm(false); setEditTask(null) }}
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
@@ -788,7 +816,7 @@ function TasksInner() {
 
 const TaskRow = memo(function TaskRow({
   task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
-  subtaskSelectedId = null,
+  subtaskSelectedId = null, exitPhase = null,
 }: {
   task: TaskWithRelations
   handlers: RowHandlers
@@ -798,15 +826,18 @@ const TaskRow = memo(function TaskRow({
   subtasks?: TaskWithRelations[]  // children of this row (parents only)
   expanded?: boolean              // drill-down open (page-level session state)
   subtaskSelectedId?: string | null  // keyboard selection inside the drill-down
+  exitPhase?: ExitPhase | null    // presentation-only completion exit (useExitingRows)
 }) {
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
-  // RTM completion feel: check pop, then the row collapses out before
-  // the store removes it. Every completion surface on this row (circle,
-  // swipe, status dropdown, keyboard 'c' via data-complete-toggle)
-  // routes through `trigger`. Un-completing skips the animation.
-  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, () => onDone(task))
+  // RTM completion feel, presentation-only: every completion surface on
+  // this row (circle, swipe, status dropdown, keyboard 'c' via
+  // data-complete-toggle) calls onDone, which fires the mutation
+  // IMMEDIATELY and starts the exit animation; while it plays, this row
+  // is the pre-completion snapshot (exitPhase non-null: check popped,
+  // pointer-events off, collapsing). Un-completing skips the animation.
+  const leaving = exitPhase != null
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
@@ -842,7 +873,7 @@ const TaskRow = memo(function TaskRow({
         onSave={priority => patch({ priority })} />
 
       {/* Checkbox */}
-      <CompleteCircle isDone={isDone || checked} onToggle={trigger} />
+      <CompleteCircle isDone={isDone || leaving} onToggle={() => onDone(task)} />
 
       {/* Title — inline editable */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -901,7 +932,7 @@ const TaskRow = memo(function TaskRow({
           value={task.status}
           options={STATUS_OPTIONS}
           onSave={v => {
-            if (v === 'done') trigger()
+            if (v === 'done') onDone(task)
             else patch({ status: v as Task['status'], completed_at: null })
           }}
         />
@@ -954,7 +985,7 @@ const TaskRow = memo(function TaskRow({
 
   const body = swipeable ? (
     <SwipeRow
-      onSwipeRight={trigger}
+      onSwipeRight={() => onDone(task)}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
@@ -963,13 +994,14 @@ const TaskRow = memo(function TaskRow({
   // The collapse wraps the row AND its expanded drill-down: completing
   // a parent takes the whole block out in one motion.
   return (
-    <CollapseOnComplete collapsing={collapsing}>
+    <CollapseOnComplete phase={exitPhase}>
       {body}
       {subtasks != null && subtasks.length > 0 && expanded && (
         <SubtaskList
           subtasks={subtasks}
           selectedId={subtaskSelectedId}
           onSelect={onSelect}
+          exitPhaseOf={handlers.exitPhaseOf}
           onToggleDone={onDone}
           onPatch={onPatch}
           onDelete={onDelete}
@@ -1057,6 +1089,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
           </button>
           {inboxOpen && myInbox.map(t => (
             <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+              exitPhase={handlers.exitPhaseOf(t.id)}
               subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
               subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
           ))}
@@ -1081,6 +1114,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             </div>
             {g.tasks.map(t => (
               <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+                exitPhase={handlers.exitPhaseOf(t.id)}
                 subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
                 subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
             ))}
@@ -1146,6 +1180,7 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
   const rowProps = (t: TaskWithRelations) =>
     ({
       task: t, handlers, selected: selectedId === t.id,
+      exitPhase: handlers.exitPhaseOf(t.id),
       subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
       subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),
     })

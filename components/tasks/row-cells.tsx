@@ -30,8 +30,9 @@ export function PriorityPip({ priority, isDone, onSave }: {
 
 // Complete / un-complete circle. data-complete-toggle lets the `c`
 // shortcut click this exact button, so the keyboard rides the same
-// check-pop + collapse path as the mouse (see complete-collapse.tsx —
-// callers pass isDone || checked while the exit animation runs).
+// complete-immediately + exit-animation path as the mouse (see
+// complete-collapse.tsx — callers pass isDone || leaving so the check
+// shows while the presentation-only exit runs).
 export function CompleteCircle({ isDone, onToggle }: {
   isDone: boolean
   onToggle: () => void
