@@ -7,10 +7,11 @@ import { createClient } from '@/lib/supabase/client'
 import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
   cn, formatDateShort, isOverdue, isSoon, daysUntil,
-  todayISO, addDaysToDate,
+  todayISO,
   PRIORITY_DOT, STATUS_STYLES, STATUS_LABELS,
   RECUR_LABELS, propertyColor,
 } from '@/lib/utils'
+import { groupByDue } from '@/lib/tasks/dates'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
   Link as LinkIcon, AlertTriangle, Clock, Keyboard,
@@ -682,8 +683,6 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
   const [snoozedOpen, setSnoozedOpen] = useState(false)
 
   const today = todayISO()
-  const in7 = addDaysToDate(today, 7)
-  const in14 = addDaysToDate(today, 14)
   const taskById = new Map(tasks.map(t => [t.id, t]))
 
   // Actionable-now semantics
@@ -705,13 +704,9 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
     t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
   )
 
-  const groups: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = [
-    { key: 'overdue', label: 'Overdue', tone: 'red', tasks: actionable.filter(t => t.due_date != null && t.due_date < today) },
-    { key: 'today',   label: 'Today',                tasks: actionable.filter(t => t.due_date === today) },
-    { key: 'week',    label: 'This week',            tasks: actionable.filter(t => t.due_date != null && t.due_date > today && t.due_date <= in7) },
-    { key: 'later',   label: 'Next 7–14 days',       tasks: actionable.filter(t => t.due_date != null && t.due_date > in7 && t.due_date <= in14) },
-    { key: 'nodate',  label: 'No due date',          tasks: actionable.filter(t => !t.due_date) },
-  ]
+  // Shared bucketing (same as the property Tasks tab) — 'Later' is
+  // unbounded, so a capture dated months out still shows up.
+  const groups = groupByDue(actionable, today, { nodate: 'No due date' })
   const hasDated = groups.some(g => g.tasks.length > 0)
 
   const snoozed = tasks.filter(t =>

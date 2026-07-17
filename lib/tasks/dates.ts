@@ -11,9 +11,7 @@ export function tomorrowISO(from: string = todayISO()): string {
 
 // Next Monday strictly after `from` (a Monday maps to the following week).
 export function nextMondayISO(from: string = todayISO()): string {
-  const dow = getDay(parseISO(from)) // 0 = Sunday … 6 = Saturday
-  const days = ((1 - dow + 7) % 7) || 7
-  return addDaysToDate(from, days)
+  return nextWeekdayISO(1, from)
 }
 
 // Same day next month (clamped to month end by date-fns).
@@ -35,7 +33,9 @@ export const SNOOZE_PRESETS: { key: string; label: string; compute: (today: stri
   { key: 'next_month', label: 'Next month',      compute: nextMonthISO },
 ]
 
-// ── Due-date grouping (property Tasks tab) ───────────────────
+// ── Due-date grouping (tasks page agenda + property Tasks tab) ──
+// One bucketing implementation: Overdue / Today / This week /
+// Later (unbounded — nothing dated far out ever disappears) / No date.
 
 export type DueGroupKey = 'overdue' | 'today' | 'week' | 'later' | 'nodate'
 
@@ -48,7 +48,9 @@ const DUE_GROUP_LABELS: Record<DueGroupKey, string> = {
 }
 
 export function groupByDue<T extends { due_date: string | null }>(
-  tasks: T[], today: string = todayISO()
+  tasks: T[],
+  today: string = todayISO(),
+  labels: Partial<Record<DueGroupKey, string>> = {}
 ): { key: DueGroupKey; label: string; tone?: 'red'; tasks: T[] }[] {
   const in7 = addDaysToDate(today, 7)
   return [
@@ -57,5 +59,5 @@ export function groupByDue<T extends { due_date: string | null }>(
     { key: 'week' as const,    tasks: tasks.filter(t => t.due_date != null && t.due_date > today && t.due_date <= in7) },
     { key: 'later' as const,   tasks: tasks.filter(t => t.due_date != null && t.due_date > in7) },
     { key: 'nodate' as const,  tasks: tasks.filter(t => !t.due_date) },
-  ].map(g => ({ ...g, label: DUE_GROUP_LABELS[g.key] }))
+  ].map(g => ({ ...g, label: labels[g.key] ?? DUE_GROUP_LABELS[g.key] }))
 }
