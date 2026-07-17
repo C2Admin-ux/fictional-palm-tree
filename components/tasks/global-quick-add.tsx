@@ -48,23 +48,41 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
 
   // Property preset resolved from the current route. Property pages
   // resolve synchronously; inspection pages resolve via one cheap
-  // lookup of the inspection's property_id when the sheet opens.
+  // lookup of the inspection's property_id when the sheet opens. The
+  // sheet still opens instantly — while the lookup is pending, submit
+  // is held (a fast Enter must not create the task with no property);
+  // on lookup failure the sheet falls back to preset-off capture with
+  // parser property matching enabled.
   const routePropertyId = propertyIdFromPath(pathname)
   const inspectionId = inspectionIdFromPath(pathname)
-  const [inspectionPropertyId, setInspectionPropertyId] = useState<string | null>(null)
+  type Lookup =
+    | { status: 'idle' | 'loading' | 'error'; propertyId: null }
+    | { status: 'done'; propertyId: string | null }
+  const [inspectionLookup, setInspectionLookup] = useState<Lookup>({ status: 'idle', propertyId: null })
 
   useEffect(() => {
-    if (!open || !inspectionId) { setInspectionPropertyId(null); return }
+    if (!open || !inspectionId) { setInspectionLookup({ status: 'idle', propertyId: null }); return }
     let cancelled = false
+    setInspectionLookup({ status: 'loading', propertyId: null })
     supabase.from('inspections').select('property_id').eq('id', inspectionId).maybeSingle()
-      .then(({ data }) => { if (!cancelled) setInspectionPropertyId(data?.property_id ?? null) })
+      .then(
+        ({ data, error }) => {
+          if (cancelled) return
+          if (error) setInspectionLookup({ status: 'error', propertyId: null })
+          else setInspectionLookup({ status: 'done', propertyId: data?.property_id ?? null })
+        },
+        () => { if (!cancelled) setInspectionLookup({ status: 'error', propertyId: null }) },
+      )
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, inspectionId])
 
+  const presetPending = inspectionId != null && !routePropertyId && inspectionLookup.status === 'loading'
+
   // Only preset a property the sidebar list actually knows — a stale
-  // route id degrades gracefully to portfolio-wide capture.
-  const presetId = routePropertyId ?? inspectionPropertyId
+  // route id (or a failed lookup) degrades gracefully to
+  // portfolio-wide capture.
+  const presetId = routePropertyId ?? inspectionLookup.propertyId
   const presetProperty = presetId ? properties.find(p => p.id === presetId) ?? null : null
 
   // Escape closes (the input's own Escape blurs first — second press
@@ -93,6 +111,9 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
         <div className="flex items-center gap-2 px-6 py-3 border-b border-slate-100">
           <InboxIcon size={14} className="text-slate-400 flex-shrink-0" />
           <span className="text-sm font-semibold text-slate-900 flex-1">Quick add task</span>
+          {presetPending && (
+            <span className="w-20 h-5 rounded-full bg-slate-100 animate-pulse" aria-label="Resolving property context" />
+          )}
           {presetProperty && (
             <span
               className="inline-flex items-center gap-1.5 text-xs font-medium rounded-full px-2 py-0.5"
@@ -111,7 +132,8 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
         <TaskQuickAdd
           userId={userId}
           autoFocus
-          properties={presetProperty ? [] : properties}
+          disabled={presetPending}
+          properties={presetProperty || presetPending ? [] : properties}
           presetPropertyId={presetProperty?.id ?? null}
           placeholder={presetProperty
             ? `Add a task for ${presetProperty.name}…`

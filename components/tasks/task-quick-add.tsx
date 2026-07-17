@@ -16,6 +16,7 @@ import { Plus, Inbox as InboxIcon, CalendarDays, Sparkles } from 'lucide-react'
 
 export function TaskQuickAdd({
   userId, properties = [], presetPropertyId = null, onCreated, placeholder, autoFocus = false,
+  disabled = false,
 }: {
   userId: string | null
   // Property names for NL matching — pass [] to disable (preset context)
@@ -24,6 +25,7 @@ export function TaskQuickAdd({
   onCreated: (task: Task) => void
   placeholder?: string
   autoFocus?: boolean  // capture sheet: keyboard up the moment it opens
+  disabled?: boolean   // hold submit (e.g. a context preset still resolving)
 }) {
   const supabase = createClient()
   const [value, setValue] = useState('')
@@ -37,7 +39,7 @@ export function TaskQuickAdd({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!parsed.title || !userId || adding) return
+    if (!parsed.title || !userId || adding || disabled) return
     const snapshot = value
     setValue('') // optimistic: clear the bar immediately
     setAdding(true)
@@ -73,7 +75,7 @@ export function TaskQuickAdd({
         />
         <button
           type="submit"
-          disabled={adding || !parsed.title || !userId}
+          disabled={adding || disabled || !parsed.title || !userId}
           className="btn-primary text-xs py-1.5">
           <Plus size={13} />Add
         </button>
