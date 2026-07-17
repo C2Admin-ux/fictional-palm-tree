@@ -8,6 +8,8 @@
 //   e                  open the edit modal
 //   1 / 2 / 3 / 4      priority urgent / high / medium / low
 //   Delete / Backspace delete (optimistic + undo toast)
+//   l / h (or Enter)   expand / collapse the row's subtasks (vim-style:
+//                      l opens the drill-down, h closes it, Enter toggles)
 //   n / q              focus the quick-add bar · Escape backs out
 //
 // Visual order comes from the DOM ([data-task-id] rows), so it works
@@ -27,6 +29,9 @@ export type TaskShortcutActions = {
   onDelete: (id: string) => void
   onEdit: (id: string) => void
   onSetPriority: (id: string, priority: Task['priority']) => void
+  // Subtask drill-down: 'open' | 'close' | 'toggle' — a no-op for rows
+  // without children (the page decides).
+  onExpand: (id: string, mode: 'open' | 'close' | 'toggle') => void
 }
 
 const PRIORITY_KEYS: Record<string, Task['priority']> = {
@@ -128,6 +133,21 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
           a.setSelectedId(fallback) // keep the flow going after a delete
           return
         }
+        case 'l':
+          e.preventDefault()
+          a.onExpand(a.selectedId, 'open')
+          return
+        case 'h':
+          e.preventDefault()
+          a.onExpand(a.selectedId, 'close')
+          return
+        case 'Enter':
+          // Leave focused buttons alone — Enter should click them, not
+          // toggle the selected row's drill-down.
+          if ((document.activeElement as HTMLElement | null)?.tagName === 'BUTTON') return
+          e.preventDefault()
+          a.onExpand(a.selectedId, 'toggle')
+          return
         case 's':
           e.preventDefault()
           row.querySelector<HTMLElement>('[data-snooze-trigger] button')?.click()

@@ -20,6 +20,7 @@ import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
@@ -27,7 +28,7 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
-  snoozeTaskOptimistic,
+  snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
 
 type TaskWithRelations = Task & {
@@ -74,6 +75,17 @@ type RowHandlers = {
   onSelect: (id: string) => void
   // Local lookup — lets rows check whether a blocker still exists
   getTask: (id: string) => TaskWithRelations | undefined
+  // Subtask drill-down: toggle a parent's expanded state / inline add
+  onToggleExpand: (id: string) => void
+  onAddSubtask: (parent: TaskWithRelations, title: string) => void | Promise<void>
+}
+
+// Per-view subtask plumbing: children lookup + which parents are open.
+// (Passed as props, not via handlers, so memoized rows re-render when
+// their own children change — the progress chip must move.)
+type SubtaskUi = {
+  subtasksOf: (id: string) => TaskWithRelations[] | undefined
+  expandedIds: Set<string>
 }
 
 // Keep inserts in the same order the fetch would return them
@@ -129,6 +141,9 @@ function TasksInner() {
   // Keyboard-selected row (j/k navigation)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
+  // Expanded subtask drill-downs — per-session, not persisted
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+
   const fetchTasks = useCallback(async () => {
     const { data } = await supabase
       .from('tasks')
@@ -166,8 +181,29 @@ function TasksInner() {
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
   }, [supabase])
 
+  // Subtasks NEVER render as top-level rows — every list and count in
+  // the three views starts from topLevelTasks; children hang off their
+  // parent via childrenByParent (drill-down only).
+  const topLevelTasks = useMemo(() => tasks.filter(t => !t.parent_task_id), [tasks])
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, TaskWithRelations[]>()
+    for (const t of tasks) {
+      if (!t.parent_task_id) continue
+      const arr = m.get(t.parent_task_id)
+      if (arr) arr.push(t)
+      else m.set(t.parent_task_id, [t])
+    }
+    return m
+  }, [tasks])
+  const subtasksOf = useCallback(
+    (id: string) => childrenByParent.get(id), [childrenByParent]
+  )
+  const subtaskUi: SubtaskUi = useMemo(
+    () => ({ subtasksOf, expandedIds }), [subtasksOf, expandedIds]
+  )
+
   // All-view filtering (client side — the shared fetch feeds all three views)
-  const visibleTasks = tasks.filter(t => {
+  const visibleTasks = topLevelTasks.filter(t => {
     if (!activeStatuses.has(t.status as StatusFilter)) return false
     if (filterPriority && t.priority !== filterPriority) return false
     if (filterProp && t.property_id !== filterProp) return false
@@ -182,7 +218,7 @@ function TasksInner() {
   }, {} as Record<StatusFilter, TaskWithRelations[]>)
 
   const counts = STATUS_ORDER.reduce((acc, s) => {
-    acc[s] = tasks.filter(t => t.status === s).length
+    acc[s] = topLevelTasks.filter(t => t.status === s).length
     return acc
   }, {} as Record<StatusFilter, number>)
 
@@ -238,7 +274,11 @@ function TasksInner() {
   }, [])
 
   const markDone = useCallback(
-    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task),
+    // Completing a parent takes its open subtasks with it — one action,
+    // one toast, one undo (children resolved from the latest state).
+    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
+      openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+    }),
     [supabase, store]
   )
 
@@ -252,6 +292,20 @@ function TasksInner() {
 
   const taskById = useCallback((id: string) => tasksRef.current.find(t => t.id === id), [])
 
+  // Expand/collapse a parent's drill-down. 'toggle' flips; 'open'/'close'
+  // are idempotent (the keyboard layer's l / h). No-op for childless rows.
+  const toggleExpand = useCallback((id: string, mode: 'open' | 'close' | 'toggle' = 'toggle') => {
+    if (!tasksRef.current.some(t => t.parent_task_id === id)) return
+    setExpandedIds(prev => {
+      const open = mode === 'toggle' ? !prev.has(id) : mode === 'open'
+      if (open === prev.has(id)) return prev
+      const next = new Set(prev)
+      if (open) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
   const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: markDone,
@@ -260,7 +314,9 @@ function TasksInner() {
     onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
     onSelect: setSelectedId,
     getTask: taskById,
-  }), [supabase, store, markDone, deleteTask, taskById])
+    onToggleExpand: toggleExpand,
+    onAddSubtask: (parent, title) => addSubtaskOptimistic(supabase, store, parent, title, userId),
+  }), [supabase, store, markDone, deleteTask, taskById, toggleExpand, userId])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -276,6 +332,7 @@ function TasksInner() {
       const t = taskById(id)
       if (t) patchTaskOptimistic(supabase, store, t, { priority })
     },
+    onExpand: toggleExpand,
   })
 
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
@@ -380,9 +437,11 @@ function TasksInner() {
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
           <AgendaView tasks={tasks} userId={userId} handlers={handlers}
-            selectedId={selectedId} properties={properties} onQuickAdd={store.insert} />
+            selectedId={selectedId} properties={properties} onQuickAdd={store.insert}
+            subtaskUi={subtaskUi} />
         ) : view === 'review' ? (
-          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId} />
+          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId}
+            subtaskUi={subtaskUi} />
         ) : (
           <div className="pb-8">
             {STATUS_ORDER.map(status => {
@@ -420,7 +479,9 @@ function TasksInner() {
 
                       {sectionTasks.map(task => (
                         <TaskRow key={task.id} task={task} handlers={handlers}
-                          selected={selectedId === task.id} />
+                          selected={selectedId === task.id}
+                          subtasks={subtaskUi.subtasksOf(task.id)}
+                          expanded={subtaskUi.expandedIds.has(task.id)} />
                       ))}
 
                       <div
@@ -453,7 +514,8 @@ function TasksInner() {
         <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
         {([
           ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
-          ['e', 'edit'], ['1–4', 'priority'], ['⌫', 'delete'], ['n', 'quick add'],
+          ['e', 'edit'], ['1–4', 'priority'], ['l/h', 'subtasks'], ['⌫', 'delete'],
+          ['n', 'quick add'],
         ] as const).map(([key, label]) => (
           <span key={key} className="flex items-center gap-1 whitespace-nowrap">
             <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
@@ -482,12 +544,16 @@ function TasksInner() {
 // Memoized: handlers/store are referentially stable, so a row only
 // re-renders when its own task object (or selection) changes.
 
-const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, swipeable = false }: {
+const TaskRow = memo(function TaskRow({
+  task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
+}: {
   task: TaskWithRelations
   handlers: RowHandlers
   selected?: boolean      // keyboard-selected (j/k)
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
   swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
+  subtasks?: TaskWithRelations[]  // children of this row (parents only)
+  expanded?: boolean              // drill-down open (page-level session state)
 }) {
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
@@ -538,6 +604,14 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
             displayClassName="font-medium"
           />
           <TaskBadges task={task} />
+          {subtasks != null && subtasks.length > 0 && (
+            <SubtaskChip
+              done={subtasks.filter(s => s.status === 'done').length}
+              total={subtasks.length}
+              expanded={expanded}
+              onToggle={() => handlers.onToggleExpand(task.id)}
+            />
+          )}
         </div>
         {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -629,13 +703,26 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
     </div>
   )
 
-  if (!swipeable) return row
-  return (
+  const body = swipeable ? (
     <SwipeRow
       onSwipeRight={() => onDone(task)}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
+  ) : row
+
+  if (subtasks == null || subtasks.length === 0 || !expanded) return body
+  return (
+    <>
+      {body}
+      <SubtaskList
+        subtasks={subtasks}
+        onToggleDone={onDone}
+        onPatch={onPatch}
+        onDelete={onDelete}
+        onAdd={title => handlers.onAddSubtask(task, title)}
+      />
+    </>
   )
 })
 
@@ -643,13 +730,14 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
   properties: Property[]
   onQuickAdd: (task: Task) => void
+  subtaskUi: SubtaskUi
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
@@ -659,7 +747,9 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
-    // Actionable-now semantics
+    // Actionable-now semantics. Subtasks never surface as top-level
+    // rows — they live in their parent's drill-down only.
+    const isTopLevel = (t: TaskWithRelations) => !t.parent_task_id
     const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
     const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
     const isUnblocked = (t: TaskWithRelations) => {
@@ -670,12 +760,12 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 
     // Personal inbox: things I captured that still need processing
     const myInbox = tasks.filter(t =>
-      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+      t.status === 'inbox' && isTopLevel(t) && t.created_by != null && t.created_by === userId && isAwake(t)
     )
     const inboxIds = new Set(myInbox.map(t => t.id))
 
     const actionable = tasks.filter(t =>
-      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+      t.status !== 'done' && isTopLevel(t) && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
     )
 
     // Shared bucketing (same as the property Tasks tab) — 'Later' is
@@ -684,7 +774,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const hasDated = groups.some(g => g.tasks.length > 0)
 
     const snoozed = tasks.filter(t =>
-      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+      t.status !== 'done' && isTopLevel(t) && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
     ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
     return { myInbox, groups, hasDated, snoozed }
@@ -712,7 +802,8 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             <span className="text-xs text-indigo-400">to process</span>
           </button>
           {inboxOpen && myInbox.map(t => (
-            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+              subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)} />
           ))}
         </div>
       )}
@@ -734,7 +825,8 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
               </span>
             </div>
             {g.tasks.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+                subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)} />
             ))}
           </div>
         )
@@ -788,21 +880,28 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers, selectedId }: {
+function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
+  subtaskUi: SubtaskUi
 }) {
   const rowProps = (t: TaskWithRelations) =>
-    ({ task: t, handlers, selected: selectedId === t.id })
-  const myInbox = tasks.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
+    ({
+      task: t, handlers, selected: selectedId === t.id,
+      subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
+    })
+  // Subtasks stay inside their parent's drill-down — every review
+  // section sweeps top-level tasks only.
+  const topLevel = tasks.filter(t => !t.parent_task_id)
+  const myInbox = topLevel.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
-  const waiting = [...tasks]
+  const waiting = [...topLevel]
     .filter(t => t.status === 'waiting')
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
 
-  const obligations = tasks.filter(t =>
+  const obligations = topLevel.filter(t =>
     t.auto_source != null && t.status !== 'done' &&
     t.due_date != null && (daysUntil(t.due_date) ?? 999) <= 90
   )
@@ -812,9 +911,9 @@ function ReviewView({ tasks, userId, handlers, selectedId }: {
     return acc
   }, {} as Record<string, TaskWithRelations[]>)
 
-  const rocks = tasks.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
+  const rocks = topLevel.filter(t => (t.tags ?? []).includes('rock') && t.status !== 'done')
 
-  const shipped = [...tasks]
+  const shipped = [...topLevel]
     .filter(t => t.status === 'done' && t.completed_at != null && (daysUntil(t.completed_at) ?? -999) >= -7)
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
 
@@ -952,6 +1051,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     title: string; description: string; property_id: string
     capex_project_id: string; status: string; priority: string
     due_date: string; snoozed_until: string; blocked_by_task_id: string
+    parent_task_id: string
     tags: string; recur_freq: string; recur_interval: string
     recur_unit: string; recur_end_type: string; recur_end_date: string
     recur_end_count: string
@@ -967,6 +1067,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     due_date:           task?.due_date ?? '',
     snoozed_until:      task?.snoozed_until ?? '',
     blocked_by_task_id: task?.blocked_by_task_id ?? '',
+    parent_task_id:     task?.parent_task_id ?? '',
     tags:               task?.tags?.join(', ') ?? '',
     recur_freq:         task?.recur_freq ?? '',
     recur_interval:     task?.recur_interval?.toString() ?? '2',
@@ -1001,6 +1102,9 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       due_date:           form.due_date || null,
       snoozed_until:      form.snoozed_until || null,
       blocked_by_task_id: form.blocked_by_task_id || null,
+      // A task with children can never gain a parent (hasChildren hides
+      // the control) — this preserves whatever it already had (null).
+      parent_task_id:     hasChildren ? (task?.parent_task_id ?? null) : (form.parent_task_id || null),
       tags:               form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
       recur_freq:         (form.recur_freq || null) as Task['recur_freq'],
       recur_interval:     form.recur_freq === 'custom' ? parseInt(form.recur_interval) || null : null,
@@ -1063,6 +1167,15 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
 
   const blockableTasks = allTasks.filter(t =>
     t.id !== task?.id && t.status !== 'done'
+  )
+
+  // Single-level nesting is an app rule: a task that already has
+  // children can't itself become a subtask (that would make 2 levels),
+  // and a subtask can't be picked as a parent. Tasks WITH children are
+  // valid parents.
+  const hasChildren = task != null && allTasks.some(t => t.parent_task_id === task.id)
+  const parentOptions = allTasks.filter(t =>
+    t.id !== task?.id && t.parent_task_id == null && t.status !== 'done'
   )
 
   return (
@@ -1139,6 +1252,29 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
               {filteredCapex.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
+
+          {/* Parent task — makes this a subtask (single level) */}
+          {hasChildren ? (
+            <div>
+              <label className="label">Parent task</label>
+              <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                This task has subtasks, so it can’t become a subtask itself (one level only).
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="label">Parent task</label>
+              <select value={form.parent_task_id}
+                onChange={e => setForm(f => ({ ...f, parent_task_id: e.target.value }))}
+                className="input">
+                <option value="">None — top-level task</option>
+                {parentOptions.map(t => (
+                  <option key={t.id} value={t.id}>{t.title.slice(0, 60)}</option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">Subtasks live inside their parent’s drill-down, not in the main lists</p>
+            </div>
+          )}
 
           {/* Blocked by */}
           {form.status === 'blocked' && (

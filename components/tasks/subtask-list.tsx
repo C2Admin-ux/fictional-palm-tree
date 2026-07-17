@@ -1,0 +1,124 @@
+'use client'
+
+// Single-level subtask drill-down, shared by the tasks page and the
+// property profile Tasks tab. Two pieces:
+//   SubtaskChip — the "2/5" progress chip + chevron rendered inside a
+//     parent row (subtle; click toggles the expanded list).
+//   SubtaskList — the indented rows revealed under an expanded parent:
+//     complete circle, inline title, due date, delete — the lean
+//     affordance set from row-cells — plus an inline "+ subtask" input.
+// Expansion state lives in the calling page (per-session React state).
+
+import { useState } from 'react'
+import type { Task } from '@/lib/supabase/types'
+import { cn } from '@/lib/utils'
+import { InlineText } from '@/components/ui/inline-edit'
+import { CompleteCircle, DueDateCell } from '@/components/tasks/row-cells'
+import { ChevronDown, CornerDownRight, Plus, X } from 'lucide-react'
+
+export function SubtaskChip({ done, total, expanded, onToggle }: {
+  done: number
+  total: number
+  expanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); onToggle() }}
+      title={expanded ? 'Hide subtasks' : 'Show subtasks'}
+      className={cn(
+        'inline-flex items-center gap-0.5 ml-1.5 text-xs rounded-full pl-1 pr-1.5 py-0.5 border transition-colors align-middle',
+        done === total
+          ? 'text-emerald-600 bg-emerald-50 border-emerald-200 hover:bg-emerald-100'
+          : 'text-slate-500 bg-slate-50 border-slate-200 hover:bg-slate-100'
+      )}>
+      <ChevronDown size={10} className={cn('transition-transform', !expanded && '-rotate-90')} />
+      {done}/{total}
+    </button>
+  )
+}
+
+// Handlers mirror the parent row's — subtask rows reuse the exact same
+// optimistic mutation paths (complete → undo toast, delete → undo).
+export function SubtaskList<T extends Task>({ subtasks, onToggleDone, onPatch, onDelete, onAdd }: {
+  subtasks: T[]
+  onToggleDone: (task: T) => void
+  onPatch: (task: T, fields: Partial<Task>) => void
+  onDelete: (task: T) => void
+  onAdd: (title: string) => void | Promise<void>
+}) {
+  // Open first, completed (muted, un-completable) after.
+  const open = subtasks.filter(t => t.status !== 'done')
+  const done = subtasks.filter(t => t.status === 'done')
+
+  return (
+    <div className="bg-slate-50/50 border-b border-slate-100">
+      {[...open, ...done].map(t => (
+        <SubtaskRow key={t.id} task={t}
+          onToggleDone={() => onToggleDone(t)}
+          onPatch={fields => onPatch(t, fields)}
+          onDelete={() => onDelete(t)} />
+      ))}
+      <SubtaskAdd onAdd={onAdd} />
+    </div>
+  )
+}
+
+function SubtaskRow<T extends Task>({ task, onToggleDone, onPatch, onDelete }: {
+  task: T
+  onToggleDone: () => void
+  onPatch: (fields: Partial<Task>) => void
+  onDelete: () => void
+}) {
+  const isDone = task.status === 'done'
+  return (
+    <div
+      data-task-id={task.id}
+      className={cn(
+        'flex items-center pl-14 pr-6 py-0 min-h-[32px] border-b border-slate-100 last:border-b-0 group hover:bg-slate-100/60 transition-colors',
+        isDone && 'opacity-60'
+      )}>
+      <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
+      <CompleteCircle isDone={isDone} onToggle={onToggleDone} />
+      <div className="flex-1 min-w-0 py-1.5">
+        <div className={cn('text-sm text-slate-800', isDone && 'line-through text-slate-400')}>
+          <InlineText value={task.title} onSave={v => onPatch({ title: v })} />
+        </div>
+      </div>
+      <DueDateCell dueDate={task.due_date} isDone={isDone}
+        onSave={v => onPatch({ due_date: v })} />
+      <div className="w-6 flex justify-center ml-1">
+        <button onClick={onDelete}
+          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
+          <X size={13} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SubtaskAdd({ onAdd }: { onAdd: (title: string) => void | Promise<void> }) {
+  const [value, setValue] = useState('')
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    const title = value.trim()
+    if (!title) return
+    setValue('') // optimistic: clear immediately, ready for the next one
+    await onAdd(title)
+  }
+
+  return (
+    <form onSubmit={submit} className="flex items-center pl-[70px] pr-6 py-1.5">
+      <Plus size={12} className="text-slate-300 mr-2 flex-shrink-0" />
+      <input
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { setValue(''); (e.target as HTMLInputElement).blur() } }}
+        placeholder="Add subtask…"
+        className="flex-1 min-w-0 bg-transparent text-sm text-slate-700 placeholder:text-slate-300 placeholder:italic focus:outline-none py-0.5"
+      />
+    </form>
+  )
+}

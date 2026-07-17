@@ -55,20 +55,54 @@ export function snoozeTaskOptimistic(
 // against double-creation inside createNextOccurrence) BEFORE the
 // toast, so Undo can remove the spawned instance along with reverting
 // the completion.
+//
+// Completing a PARENT completes its open subtasks in the same action
+// (pass them via opts.openSubtasks): one toast, one Undo that restores
+// the parent AND every child to its prior status. Un-completing never
+// touches children.
 export async function toggleDoneOptimistic(
-  supabase: Client, store: TaskStore, task: Task
+  supabase: Client, store: TaskStore, task: Task,
+  opts?: { openSubtasks?: Task[] }
 ) {
   const wasDone = task.status === 'done'
+  const now = new Date().toISOString()
   const fields: Partial<Task> = wasDone
     ? { status: 'next_action', completed_at: null }
-    : { status: 'done', completed_at: new Date().toISOString() }
+    : { status: 'done', completed_at: now }
+
+  const children = wasDone ? [] : (opts?.openSubtasks ?? [])
+  // Children can sit in different statuses — capture each one so Undo
+  // puts every row back exactly where it was.
+  const childPrior = children.map(c => ({ id: c.id, status: c.status, completed_at: c.completed_at }))
+  const revertChildren = () => {
+    for (const p of childPrior) store.update(p.id, { status: p.status, completed_at: p.completed_at })
+  }
 
   store.update(task.id, fields)
+  for (const c of children) store.update(c.id, { status: 'done', completed_at: now })
+
   const { error } = await supabase.from('tasks').update(fields).eq('id', task.id)
   if (error) {
     store.update(task.id, { status: task.status, completed_at: task.completed_at })
+    revertChildren()
     toast('Could not update task', { tone: 'error' })
     return
+  }
+
+  if (children.length > 0) {
+    const { error: childError } = await supabase.from('tasks')
+      .update({ status: 'done', completed_at: now })
+      .in('id', children.map(c => c.id))
+    if (childError) {
+      // Parent landed but children didn't — roll everything back so the
+      // user never sees a half-completed project.
+      store.update(task.id, { status: task.status, completed_at: task.completed_at })
+      revertChildren()
+      await supabase.from('tasks')
+        .update({ status: task.status, completed_at: task.completed_at }).eq('id', task.id)
+      toast('Could not update task', { tone: 'error' })
+      return
+    }
   }
 
   if (wasDone) return
@@ -79,18 +113,27 @@ export async function toggleDoneOptimistic(
     if (spawned) store.insert(spawned)
   }
 
-  const message = spawned
-    ? `Completed — next occurrence ${formatDateShort(spawned.due_date)}`
+  const base = children.length > 0
+    ? `Completed with ${children.length} subtask${children.length === 1 ? '' : 's'}`
     : 'Completed'
+  const message = spawned
+    ? `${base} — next occurrence ${formatDateShort(spawned.due_date)}`
+    : base
   toast(message, {
     action: {
       label: 'Undo',
       onClick: () => {
         const revert: Partial<Task> = { status: task.status, completed_at: task.completed_at }
         store.update(task.id, revert)
+        revertChildren()
         if (spawned) store.remove(spawned.id)
         void (async () => {
           const { error: undoError } = await supabase.from('tasks').update(revert).eq('id', task.id)
+          // Prior statuses differ per child, so restore row by row.
+          for (const p of childPrior) {
+            await supabase.from('tasks')
+              .update({ status: p.status, completed_at: p.completed_at }).eq('id', p.id)
+          }
           if (spawned) await supabase.from('tasks').delete().eq('id', spawned.id)
           if (undoError) {
             store.update(task.id, fields)
@@ -105,18 +148,24 @@ export async function toggleDoneOptimistic(
 // Instant optimistic delete with an Undo toast that re-inserts the
 // captured row (same id — the delete has already committed, so the id
 // is free again). Undo also restores what died with the row:
-// task_contacts junction rows (pass the ids) and dependents'
-// blocked_by_task_id links (nulled by the FK's ON DELETE SET NULL).
+// task_contacts junction rows (pass the ids), dependents'
+// blocked_by_task_id links (nulled by the FK's ON DELETE SET NULL),
+// and subtasks (removed by parent_task_id's ON DELETE CASCADE) —
+// captured with their own contact links before the delete commits.
 export async function deleteTaskOptimistic(
   supabase: Client, store: TaskStore, task: Task,
   opts?: { contactIds?: string[] }
 ) {
   store.remove(task.id)
 
-  // Capture dependents before the delete nulls their FK.
-  const { data: deps } = await supabase
-    .from('tasks').select('id').eq('blocked_by_task_id', task.id)
-  const dependentIds = (deps ?? []).map(d => d.id)
+  // Capture what the delete will destroy beyond the row itself:
+  // dependents lose their FK (SET NULL), children die with it (CASCADE).
+  const [{ data: deps }, { data: childRows }] = await Promise.all([
+    supabase.from('tasks').select('id').eq('blocked_by_task_id', task.id),
+    supabase.from('tasks').select('*, task_contacts(contact_id)').eq('parent_task_id', task.id),
+  ])
+  const dependentIds = (deps ?? []).map(d => d.id).filter(id => id !== task.id)
+  const children = (childRows ?? []) as unknown as (Task & { task_contacts: { contact_id: string }[] | null })[]
 
   const { error } = await supabase.from('tasks').delete().eq('id', task.id)
   if (error) {
@@ -125,9 +174,10 @@ export async function deleteTaskOptimistic(
     return
   }
 
-  // Mirror the DB's SET NULL locally so no row keeps pointing at a
-  // blocker that no longer exists.
+  // Mirror the DB's SET NULL / CASCADE locally so no row keeps
+  // pointing at a blocker or parent that no longer exists.
   for (const id of dependentIds) store.update(id, { blocked_by_task_id: null })
+  for (const c of children) store.remove(c.id)
 
   toast('Task deleted', {
     action: {
@@ -146,6 +196,18 @@ export async function deleteTaskOptimistic(
             contactIds.map(cid => ({ task_id: task.id, contact_id: cid }))
           )
         }
+        // Children after the parent (their FK needs the parent row) —
+        // same ids, so expanded state and blockers pointing at them heal.
+        if (children.length > 0) {
+          await supabase.from('tasks').insert(children.map(c => taskInsertPayload(c)))
+          const childContacts = children.flatMap(c =>
+            (c.task_contacts ?? []).map(tc => ({ task_id: c.id, contact_id: tc.contact_id }))
+          )
+          if (childContacts.length > 0) {
+            await supabase.from('task_contacts').insert(childContacts)
+          }
+          for (const c of children) store.insert(c)
+        }
         if (dependentIds.length > 0) {
           await supabase.from('tasks')
             .update({ blocked_by_task_id: task.id }).in('id', dependentIds)
@@ -154,4 +216,31 @@ export async function deleteTaskOptimistic(
       },
     },
   })
+}
+
+// Inline "+ subtask" capture from an expanded parent: plain title,
+// inherits the parent's property, lands as an immediately-actionable
+// next_action owned by the current user. (Quick-add never creates
+// subtasks — this is the only creation path besides the modal's
+// parent select.)
+export async function addSubtaskOptimistic(
+  supabase: Client, store: TaskStore, parent: Task, title: string, userId: string | null
+): Promise<void> {
+  const { data, error } = await supabase.from('tasks')
+    .insert({
+      title,
+      parent_task_id: parent.id,
+      property_id:    parent.property_id,
+      status:         'next_action',
+      priority:       'medium',
+      created_by:     userId,
+      assigned_to:    userId,
+    })
+    .select('*')
+    .single()
+  if (error || !data) {
+    toast('Could not add subtask', { tone: 'error' })
+    return
+  }
+  store.insert(data as Task)
 }

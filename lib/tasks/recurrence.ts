@@ -69,6 +69,12 @@ export function nextOccurrence(task: RecurrenceFields): { due_date: string } | n
 // inserted row, or null when the series ended, an instance for that
 // due date already exists (un-complete → re-complete guard), or the
 // insert failed.
+//
+// Subtasks: spawning does NOT copy the completed task's subtasks — a
+// recurring PARENT's next occurrence starts with an empty subtask list
+// (only the single row below is inserted). A recurring SUBTASK's next
+// occurrence keeps its parent_task_id: it carries forward through
+// nextOccurrenceBasePayload like any other non-per-instance column.
 export async function createNextOccurrence(supabase: Client, task: Task): Promise<Task | null> {
   const next = nextOccurrence(task)
   if (!next) return null

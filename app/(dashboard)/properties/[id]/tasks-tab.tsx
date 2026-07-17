@@ -6,7 +6,7 @@
 // property. Open tasks grouped by due date; recently completed
 // collapsed at the bottom with un-complete toggles.
 
-import { useCallback, useEffect, useMemo, useState, memo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Task } from '@/lib/supabase/types'
 import { cn, formatDateShort, todayISO } from '@/lib/utils'
@@ -15,9 +15,10 @@ import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
+import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
-  snoozeTaskOptimistic,
+  snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { groupByDue } from '@/lib/tasks/dates'
 import { Moon, ChevronDown, X } from 'lucide-react'
@@ -35,7 +36,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
   const fetchTasks = useCallback(async () => {
     const completedCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
-    const [{ data: open }, { data: recentDone }] = await Promise.all([
+    const [{ data: open }, { data: recentDone }, { data: doneSubs }] = await Promise.all([
       supabase.from('tasks').select('*, task_contacts(contact_id)')
         .eq('property_id', propertyId).neq('status', 'done')
         .order('due_date', { ascending: true, nullsFirst: false })
@@ -44,8 +45,16 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
         .eq('property_id', propertyId).eq('status', 'done')
         .gte('completed_at', completedCutoff)
         .order('completed_at', { ascending: false }),
+      // Done SUBTASKS have no cutoff — a parent's "2/5" progress chip
+      // must count every completed child, however old.
+      supabase.from('tasks').select('*, task_contacts(contact_id)')
+        .eq('property_id', propertyId).eq('status', 'done')
+        .not('parent_task_id', 'is', null),
     ])
-    setTasks([...(open ?? []), ...(recentDone ?? [])] as unknown as TabTask[])
+    const merged = [...(open ?? []), ...(recentDone ?? []), ...(doneSubs ?? [])] as unknown as TabTask[]
+    // Recently-done subtasks appear in both done queries — dedupe by id.
+    const seen = new Set<string>()
+    setTasks(merged.filter(t => !seen.has(t.id) && (seen.add(t.id), true)))
     setLoading(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propertyId])
@@ -64,8 +73,45 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
     remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
   }), [])
 
-  const openTasks = tasks.filter(t => t.status !== 'done')
-  const completed = tasks
+  const tasksRef = useRef(tasks); tasksRef.current = tasks
+
+  // Expanded subtask drill-downs — per-session, not persisted
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  // Completing a parent completes its open subtasks too — one action,
+  // one toast, one undo (same contract as the tasks page).
+  const markDone = useCallback((task: Task) => {
+    void toggleDoneOptimistic(supabase, store, task, {
+      openSubtasks: tasksRef.current.filter(t => t.parent_task_id === task.id && t.status !== 'done'),
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store])
+
+  // Subtasks render only inside their parent's drill-down — the
+  // grouped lists, the completed section, and their counts all start
+  // from top-level rows.
+  const topLevel = tasks.filter(t => !t.parent_task_id)
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, TabTask[]>()
+    for (const t of tasks) {
+      if (!t.parent_task_id) continue
+      const arr = m.get(t.parent_task_id)
+      if (arr) arr.push(t)
+      else m.set(t.parent_task_id, [t])
+    }
+    return m
+  }, [tasks])
+
+  const openTasks = topLevel.filter(t => t.status !== 'done')
+  const completed = topLevel
     .filter(t => t.status === 'done')
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
   const groups = groupByDue(openTasks)
@@ -106,7 +152,10 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
                 </span>
               </div>
               {g.tasks.map(t => (
-                <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store} />
+                <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
+                  onDone={markDone} userId={userId}
+                  subtasks={childrenByParent.get(t.id)}
+                  expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
               ))}
             </div>
           )
@@ -124,7 +173,10 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
               <span className="text-xs text-slate-400">last 14 days</span>
             </button>
             {completedOpen && completed.map(t => (
-              <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store} />
+              <PropertyTaskRow key={t.id} task={t} supabase={supabase} store={store}
+                onDone={markDone} userId={userId}
+                subtasks={childrenByParent.get(t.id)}
+                expanded={expandedIds.has(t.id)} onToggleExpand={toggleExpand} />
             ))}
           </div>
         )}
@@ -135,10 +187,17 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
 // ── Row ──────────────────────────────────────────────────────
 
-const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }: {
+const PropertyTaskRow = memo(function PropertyTaskRow({
+  task, supabase, store, onDone, userId, subtasks, expanded = false, onToggleExpand,
+}: {
   task: TabTask
   supabase: ReturnType<typeof createClient>
   store: TaskStore
+  onDone: (task: Task) => void
+  userId: string | null
+  subtasks?: TabTask[]
+  expanded?: boolean
+  onToggleExpand: (id: string) => void
 }) {
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
@@ -164,7 +223,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
 
       {/* Complete / un-complete circle */}
       <CompleteCircle isDone={isDone}
-        onToggle={() => toggleDoneOptimistic(supabase, store, task)} />
+        onToggle={() => onDone(task)} />
 
       {/* Title */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -175,6 +234,14 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
             displayClassName="font-medium"
           />
           <TaskBadges task={task} />
+          {subtasks != null && subtasks.length > 0 && (
+            <SubtaskChip
+              done={subtasks.filter(s => s.status === 'done').length}
+              total={subtasks.length}
+              expanded={expanded}
+              onToggle={() => onToggleExpand(task.id)}
+            />
+          )}
         </div>
         {(snoozed || (isDone && task.completed_at)) && (
           <div className="flex items-center gap-2 mt-0.5">
@@ -216,12 +283,27 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
     </div>
   )
 
-  if (isDone) return row
-  return (
+  const body = isDone ? row : (
     <SwipeRow
-      onSwipeRight={() => toggleDoneOptimistic(supabase, store, task)}
+      onSwipeRight={() => onDone(task)}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
+  )
+
+  if (subtasks == null || subtasks.length === 0 || !expanded) return body
+  return (
+    <>
+      {body}
+      <SubtaskList
+        subtasks={subtasks}
+        onToggleDone={onDone}
+        onPatch={(t, fields) => patchTaskOptimistic(supabase, store, t, fields)}
+        onDelete={t => deleteTaskOptimistic(supabase, store, t, {
+          contactIds: (t.task_contacts ?? []).map(tc => tc.contact_id),
+        })}
+        onAdd={title => addSubtaskOptimistic(supabase, store, task, title, userId)}
+      />
+    </>
   )
 })

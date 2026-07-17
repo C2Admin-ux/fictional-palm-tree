@@ -45,11 +45,13 @@ export default async function PropertyPage({
     // no number: the interactive tab mutates its list client-side, so a
     // server-snapshot count next to it would drift out of date.
     tab === 'overview'
-      ? supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done')
+      // Subtasks stay inside their parent's drill-down — the Overview
+      // count and preview track top-level tasks only.
+      ? supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done').is('parent_task_id', null)
       : Promise.resolve({ count: null }),
     // Overview shows a 5-task preview; skip the fetch on other tabs.
     tab === 'overview'
-      ? supabase.from('tasks').select('id, title, status, priority, due_date').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }).limit(5)
+      ? supabase.from('tasks').select('id, title, status, priority, due_date').eq('property_id', params.id).neq('status', 'done').is('parent_task_id', null).order('due_date', { ascending: true, nullsFirst: false }).limit(5)
       : Promise.resolve({ data: null }),
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
