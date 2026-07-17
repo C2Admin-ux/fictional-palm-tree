@@ -77,9 +77,12 @@ export function CommandPalette({ properties, userId }: {
   const [creating, setCreating] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
 
-  // Session cache for the lazy lists — fetched once, on first open.
+  // Session cache for the lazy lists — stale-while-revalidate: every
+  // open shows the cached lists instantly and refetches; the fresh
+  // result replaces the cache when it lands. A failed fetch keeps the
+  // stale cache (and the guard resets, so the next open retries).
   const [fetched, setFetched] = useState<{ tasks: Item[]; capex: Item[] } | null>(null)
-  const fetchStarted = useRef(false)
+  const fetchInFlight = useRef(false)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -96,26 +99,33 @@ export function CommandPalette({ properties, userId }: {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  // Lazy fetch: titles + ids only, cached for the session.
+  // Lazy fetch: titles + ids only, refreshed on every open so created
+  // tasks become findable and deleted capex rows stop navigating to a
+  // not-found page.
   useEffect(() => {
-    if (!open || fetchStarted.current) return
-    fetchStarted.current = true
+    if (!open || fetchInFlight.current) return
+    fetchInFlight.current = true
     ;(async () => {
-      const [{ data: taskRows }, { data: capexRows }] = await Promise.all([
-        supabase.from('tasks').select('id, title').neq('status', 'done')
-          .order('created_at', { ascending: false }).limit(300),
-        supabase.from('capex_projects').select('id, title')
-          .in('status', ['planning', 'approved', 'in_progress'])
-          .order('title'),
-      ])
-      setFetched({
-        tasks: (taskRows ?? []).map(t => ({
-          key: `task:${t.id}`, kind: 'task' as const, label: t.title, href: '/tasks',
-        })),
-        capex: (capexRows ?? []).map(c => ({
-          key: `capex:${c.id}`, kind: 'capex' as const, label: c.title, href: `/capex/${c.id}`,
-        })),
-      })
+      try {
+        const [{ data: taskRows, error: taskError }, { data: capexRows, error: capexError }] = await Promise.all([
+          supabase.from('tasks').select('id, title').neq('status', 'done')
+            .order('created_at', { ascending: false }).limit(300),
+          supabase.from('capex_projects').select('id, title')
+            .in('status', ['planning', 'approved', 'in_progress'])
+            .order('title'),
+        ])
+        if (taskError || capexError) return // keep whatever cache exists
+        setFetched({
+          tasks: (taskRows ?? []).map(t => ({
+            key: `task:${t.id}`, kind: 'task' as const, label: t.title, href: '/tasks',
+          })),
+          capex: (capexRows ?? []).map(c => ({
+            key: `capex:${c.id}`, kind: 'capex' as const, label: c.title, href: `/capex/${c.id}`,
+          })),
+        })
+      } finally {
+        fetchInFlight.current = false
+      }
     })()
   }, [open, supabase])
 
@@ -160,6 +170,11 @@ export function CommandPalette({ properties, userId }: {
       toast('Could not add task', { tone: 'error' })
       return
     }
+    // Findable on the very next open, even before the refetch lands.
+    setFetched(prev => prev && {
+      ...prev,
+      tasks: [{ key: `task:${created.id}`, kind: 'task' as const, label: created.title, href: '/tasks' }, ...prev.tasks],
+    })
     close()
     toast('Added to Tasks', {
       action: { label: 'View', onClick: () => router.push('/tasks') },
