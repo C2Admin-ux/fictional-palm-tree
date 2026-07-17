@@ -20,15 +20,21 @@ export type ParsedQuickAdd = {
 // Optional connector words stripped along with a date token
 // ("due friday" → both words go).
 const PRE_DATE = String.raw`(?:\b(?:on|by|due)\s+)?`
+// Required connector — gates the ambiguous tokens below.
+const CONNECTOR = String.raw`\b(?:on|by|due)\s+`
 
-const WEEKDAYS: Record<string, number> = {
-  sunday: 0, sun: 0,
-  monday: 1, mon: 1,
-  tuesday: 2, tues: 2, tue: 2,
-  wednesday: 3, wed: 3,
-  thursday: 4, thurs: 4, thur: 4, thu: 4,
-  friday: 5, fri: 5,
-  saturday: 6, sat: 6,
+// Full weekday names are unambiguous and match anywhere.
+const WEEKDAYS_FULL: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+}
+
+// Abbreviations double as ordinary English words ("we sat with the
+// lender", "wed in june") — they only count as dates when preceded by
+// a connector (on/by/due) or standing at the very end of the input.
+const WEEKDAYS_ABBR: Record<string, number> = {
+  sun: 0, mon: 1, tues: 2, tue: 2, wed: 3,
+  thurs: 4, thur: 4, thu: 4, fri: 5, sat: 6,
 }
 
 const MONTHS: Record<string, number> = {
@@ -77,8 +83,16 @@ function buildMonthDay(month: number, day: number, yearRaw: string | undefined, 
 
 type Found = { value: string; match: RegExpExecArray }
 
+// Ambiguous tokens (weekday abbreviations, bare M/D) require a
+// connector, or the token standing at the very end of the input.
+function execGated(pattern: string, s: string, flags = ''): RegExpExecArray | null {
+  const led = new RegExp(CONNECTOR + pattern, flags).exec(s)
+  if (led) return led
+  return new RegExp(String.raw`\b` + pattern + String.raw`\s*$`, flags).exec(s)
+}
+
 function findDate(s: string, today: string): Found | null {
-  let re = new RegExp(PRE_DATE + String.raw`\b(?:today|tod)\b`, 'i')
+  let re = new RegExp(PRE_DATE + String.raw`\btoday\b`, 'i')
   let m = re.exec(s)
   if (m) return { value: today, match: m }
 
@@ -90,20 +104,34 @@ function findDate(s: string, today: string): Found | null {
   m = re.exec(s)
   if (m) return { value: nextMondayISO(today), match: m }
 
-  const weekdayAlt = Object.keys(WEEKDAYS).sort((a, b) => b.length - a.length).join('|')
-  re = new RegExp(PRE_DATE + String.raw`\b(` + weekdayAlt + String.raw`)\b`, 'i')
+  // Full weekday names — anywhere
+  const fullAlt = Object.keys(WEEKDAYS_FULL).join('|')
+  re = new RegExp(PRE_DATE + String.raw`\b(` + fullAlt + String.raw`)\b`, 'i')
   m = re.exec(s)
-  if (m) return { value: nextWeekdayISO(WEEKDAYS[m[1].toLowerCase()], today), match: m }
+  if (m) return { value: nextWeekdayISO(WEEKDAYS_FULL[m[1].toLowerCase()], today), match: m }
 
-  // M/D and M/D/YYYY
-  re = new RegExp(PRE_DATE + String.raw`\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b`)
+  // Weekday abbreviations — connector-led or terminal only
+  const abbrAlt = Object.keys(WEEKDAYS_ABBR).sort((a, b) => b.length - a.length).join('|')
+  m = execGated(String.raw`(` + abbrAlt + String.raw`)\b`, s, 'i')
+  if (m) return { value: nextWeekdayISO(WEEKDAYS_ABBR[m[1].toLowerCase()], today), match: m }
+
+  // M/D/YYYY — explicit year, anywhere
+  re = new RegExp(PRE_DATE + String.raw`\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b`)
   m = re.exec(s)
   if (m) {
     const date = buildMonthDay(parseInt(m[1], 10), parseInt(m[2], 10), m[3], today)
     if (date) return { value: date, match: m }
   }
 
-  // "aug 15" / "august 15th" style
+  // Bare M/D — reads as a fraction or unit mid-sentence ("split unit
+  // 3/4 inspection"), so connector-led or terminal only
+  m = execGated(String.raw`(\d{1,2})\/(\d{1,2})\b(?!\s*\/)`, s)
+  if (m) {
+    const date = buildMonthDay(parseInt(m[1], 10), parseInt(m[2], 10), undefined, today)
+    if (date) return { value: date, match: m }
+  }
+
+  // "aug 15" / "august 15th" style — anywhere
   const monthAlt = Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|')
   re = new RegExp(PRE_DATE + String.raw`\b(` + monthAlt + String.raw`)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b`, 'i')
   m = re.exec(s)
