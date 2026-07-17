@@ -55,7 +55,26 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
     const merged = [...(open ?? []), ...(recentDone ?? []), ...(doneSubs ?? [])] as unknown as TabTask[]
     // Recently-done subtasks appear in both done queries — dedupe by id.
     const seen = new Set<string>()
-    setTasks(merged.filter(t => !seen.has(t.id) && (seen.add(t.id), true)))
+    const rows = merged.filter(t => !seen.has(t.id) && (seen.add(t.id), true))
+    // Reachability: subtasks only render inside their parent's
+    // drill-down, so an OPEN subtask whose done parent fell outside the
+    // 14-day window above would be fetched but unrenderable. Fetch
+    // those parents by id; once in state they render in the
+    // Recently-completed section regardless of the cutoff — they carry
+    // open children, which makes them the rows that matter most here.
+    const haveIds = new Set(rows.map(t => t.id))
+    const missingParentIds = Array.from(new Set(
+      rows
+        .filter(t => t.parent_task_id != null && t.status !== 'done' && !haveIds.has(t.parent_task_id))
+        .map(t => t.parent_task_id as string)
+    ))
+    if (missingParentIds.length > 0) {
+      const { data: parents } = await supabase.from('tasks')
+        .select('*, task_contacts(contact_id)')
+        .in('id', missingParentIds)
+      rows.push(...((parents ?? []) as unknown as TabTask[]))
+    }
+    setTasks(rows)
     setLoading(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propertyId])

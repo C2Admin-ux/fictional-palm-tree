@@ -344,9 +344,24 @@ function TasksInner() {
     : groupBy === 'priority' ? PRIORITY_ORDER.map(p => ({
         key: p, label: p, tasks: visibleTasks.filter(t => t.priority === p),
       }))
-    : groupBy === 'due' ? groupByDue(visibleTasks).map(g => ({
-        key: g.key, label: g.label, tone: g.tone, tasks: g.tasks,
-      }))
+    : groupBy === 'due' ? (() => {
+        // Due buckets carry deadline semantics: a done task isn't
+        // "Overdue" and a snoozed task is deliberately parked, so both
+        // move to trailing sections instead of date buckets. Blocked
+        // tasks keep their real deadlines and stay bucketed.
+        const today = todayISO()
+        const doneTasks = visibleTasks.filter(t => t.status === 'done')
+        const snoozedTasks = visibleTasks.filter(t =>
+          t.status !== 'done' && t.snoozed_until != null && t.snoozed_until > today)
+        const parked = new Set([...doneTasks, ...snoozedTasks].map(t => t.id))
+        return [
+          ...groupByDue(visibleTasks.filter(t => !parked.has(t.id)), today).map(g => ({
+            key: g.key as string, label: g.label, tone: g.tone, tasks: g.tasks,
+          })),
+          { key: 'snoozed', label: 'Snoozed', tasks: snoozedTasks },
+          { key: 'done', label: 'Completed', tasks: doneTasks },
+        ]
+      })()
     : STATUS_ORDER.map(s => ({
         key: s, label: SECTION_LABELS[s], tasks: visibleTasks.filter(t => t.status === s),
       }))
@@ -503,6 +518,26 @@ function TasksInner() {
   // Agenda-based view switches over to Agenda.
   function applySavedView(v: TaskView) {
     const cfg = parseViewConfig(v.config)
+    // Stale referents (deleted/archived property, wrapped-up CapEx
+    // project, removed contact) would silently filter everything down
+    // to nothing — validate ids against the loaded option lists, clear
+    // the stale ones, and say so.
+    const stale: string[] = []
+    if (cfg.property && !properties.some(p => p.id === cfg.property)) {
+      cfg.property = ''
+      stale.push('property')
+    }
+    if (cfg.capex && !capexProjects.some(c => c.id === cfg.capex)) {
+      cfg.capex = ''
+      stale.push('CapEx project')
+    }
+    if (cfg.contact && !contacts.some(c => c.id === cfg.contact)) {
+      cfg.contact = ''
+      stale.push('contact')
+    }
+    if (stale.length > 0) {
+      toast(`Saved view referenced a removed ${stale.join(' and ')} — filter${stale.length > 1 ? 's' : ''} cleared`)
+    }
     setView(cfg.view)
     setActiveStatuses(new Set(cfg.statuses))
     setFilterProp(cfg.property)
@@ -1387,6 +1422,8 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
     (task?.contacts ?? []).map((c: Contact) => c.id)
   )
   const [saving, setSaving] = useState(false)
+  // Inline error under the Parent-task select (server-truth guard)
+  const [parentError, setParentError] = useState<string | null>(null)
 
   function toggleContact(id: string) {
     setSelectedContacts(prev =>
@@ -1396,6 +1433,7 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setParentError(null)
     setSaving(true)
 
     const payload = {
@@ -1422,6 +1460,26 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       recur_end_type:     form.recur_freq ? (form.recur_end_type as Task['recur_end_type']) : null,
       recur_end_date:     form.recur_end_type === 'on' ? form.recur_end_date || null : null,
       recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
+    }
+
+    // Server-truth guard when attaching a NEW parent: the local list
+    // can be stale (another tab may have subtasked or deleted the
+    // pick), and writing anyway would create a depth-2 chain or a
+    // dangling edge. One select against the real row before saving.
+    const newParentId = payload.parent_task_id
+    if (newParentId != null && newParentId !== (task?.parent_task_id ?? null)) {
+      const { data: parentRow } = await supabase.from('tasks')
+        .select('id, parent_task_id').eq('id', newParentId).maybeSingle()
+      if (!parentRow) {
+        setParentError('That parent task no longer exists — pick another, or None.')
+        setSaving(false)
+        return
+      }
+      if (parentRow.parent_task_id != null) {
+        setParentError('That task has become a subtask itself — only one level of nesting is allowed.')
+        setSaving(false)
+        return
+      }
     }
 
     // Status transitions across done are not plain field writes:
@@ -1487,8 +1545,13 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
   // and the auto-task dedupe keep seeing them.
   const hasChildren = task != null && allTasks.some(t => t.parent_task_id === task.id)
   const isAutoSource = task?.auto_source != null
+  // Done tasks aren't offered as new parents, but the CURRENT parent
+  // always appears (labelled "(completed)" when done) so the select
+  // shows the true state instead of silently blanking; "None" still
+  // clears it.
   const parentOptions = allTasks.filter(t =>
-    t.id !== task?.id && t.parent_task_id == null && t.status !== 'done'
+    t.id !== task?.id && t.parent_task_id == null &&
+    (t.status !== 'done' || t.id === task?.parent_task_id)
   )
 
   return (
@@ -1584,9 +1647,14 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
                 className="input">
                 <option value="">None — top-level task</option>
                 {parentOptions.map(t => (
-                  <option key={t.id} value={t.id}>{t.title.slice(0, 60)}</option>
+                  <option key={t.id} value={t.id}>
+                    {t.title.slice(0, 60)}{t.status === 'done' ? ' (completed)' : ''}
+                  </option>
                 ))}
               </select>
+              {parentError && (
+                <p className="text-xs text-red-600 mt-1">{parentError}</p>
+              )}
               <p className="text-xs text-slate-400 mt-1">Subtasks live inside their parent’s drill-down, not in the main lists</p>
             </div>
           )}
