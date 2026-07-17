@@ -58,6 +58,11 @@ export default function InspectionDetailPage() {
   const [userId, setUserId] = useState<string | null>(null)
   // Finding id with a task creation in flight (disables its button)
   const [creatingTaskFor, setCreatingTaskFor] = useState<string | null>(null)
+  // Findings left with an orphaned task: the link write failed AND the
+  // compensating delete failed, so a real (unlinked) task exists in
+  // Tasks. Retrying create would duplicate it — the button stays
+  // disabled for these items this session.
+  const [orphanedTaskItems, setOrphanedTaskItems] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
@@ -202,12 +207,21 @@ export default function InspectionDetailPage() {
   // task is created via the shared creation layer, then the finding is
   // linked through inspection_items.task_id. If the link write fails
   // the task is removed again — a spawned task the finding doesn't
-  // know about would allow silent duplicates. Undo deletes the task
-  // and clears the link. No report invalidation: task linkage isn't
-  // report content.
+  // know about would allow silent duplicates (and if even that delete
+  // fails, the item is flagged so retrying can't duplicate). Undo
+  // deletes the task and clears the link. No report invalidation:
+  // task linkage isn't report content.
   async function createTaskFromItem(item: InspectionItem) {
-    if (!inspection || item.task_id || creatingTaskFor) return
-    if (!userId) { setActionError('Sign in to create tasks from findings.'); return }
+    if (!inspection || item.task_id || creatingTaskFor || orphanedTaskItems.has(item.id)) return
+    // Failures surface as a toast (visible above the edit modal's
+    // overlay — this can be triggered from inside it) AND the page
+    // banner (persists after the toast fades).
+    const fail = (msg: string) => {
+      setCreatingTaskFor(null)
+      setActionError(msg)
+      toast(msg, { tone: 'error' })
+    }
+    if (!userId) { fail('Sign in to create tasks from findings.'); return }
     setActionError(null)
     setCreatingTaskFor(item.id)
     const section = instanceLabel({ name: item.section_name, unit: item.unit_number })
@@ -219,16 +233,23 @@ export default function InspectionDetailPage() {
       userId,
     }))
     if (!created) {
-      setCreatingTaskFor(null)
-      setActionError('Could not create the task — check connection and try again.')
+      fail('Could not create the task — check connection and try again.')
       return
     }
     const { error: linkError } = await supabase.from('inspection_items')
       .update({ task_id: created.id }).eq('id', item.id)
     if (linkError) {
-      await supabase.from('tasks').delete().eq('id', created.id)
-      setCreatingTaskFor(null)
-      setActionError(`Could not link the task to this finding: ${linkError.message}`)
+      // Compensate: remove the task the finding doesn't know about. If
+      // THAT also fails, an unlinked task really exists — saying
+      // "retry" would invite a duplicate, so flag the item and keep
+      // its button disabled for this session.
+      const { error: deleteError } = await supabase.from('tasks').delete().eq('id', created.id)
+      if (deleteError) {
+        setOrphanedTaskItems(prev => new Set(prev).add(item.id))
+        fail('Task created but couldn’t be linked to this finding — it exists in Tasks; delete it there, or link it by retrying after a reload.')
+        return
+      }
+      fail(`Could not link the task to this finding: ${linkError.message}`)
       return
     }
     setCreatingTaskFor(null)
@@ -441,6 +462,7 @@ export default function InspectionDetailPage() {
                     onPhotoError={invalidatePhoto}
                     onCreateTask={() => createTaskFromItem(item)}
                     creatingTask={creatingTaskFor === item.id}
+                    createDisabled={orphanedTaskItems.has(item.id)}
                   />
                 ))}
               </div>
@@ -483,6 +505,7 @@ export default function InspectionDetailPage() {
           }}
           onCreateTask={() => createTaskFromItem(editItem)}
           creatingTask={creatingTaskFor === editItem.id}
+          createDisabled={orphanedTaskItems.has(editItem.id)}
         />
       )}
     </div>
@@ -724,7 +747,7 @@ function SendReportModal({ inspection, onClose, onSent }: {
 
 // ── Finding card ─────────────────────────────────────────────
 
-function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask }: {
+function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask, createDisabled }: {
   item: InspectionItem
   photoUrls: Record<string, SignedPhotoUrl>
   onView: (path: string) => void
@@ -734,6 +757,7 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
   onPhotoError: (path: string) => void
   onCreateTask: () => void
   creatingTask: boolean
+  createDisabled: boolean  // orphaned unlinked task exists — retry would duplicate
 }) {
   const [uploading, setUploading] = useState(false)
 
@@ -772,9 +796,10 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
           {!item.task_id && (
             <button
               onClick={onCreateTask}
-              disabled={creatingTask}
-              title="Create task from finding"
-              className={cn('text-slate-300 hover:text-emerald-600 p-1.5', creatingTask && 'opacity-50 pointer-events-none')}>
+              disabled={creatingTask || createDisabled}
+              title={createDisabled ? 'Task exists in Tasks but is not linked to this finding' : 'Create task from finding'}
+              className={cn('text-slate-300 hover:text-emerald-600 p-1.5',
+                (creatingTask || createDisabled) && 'opacity-50 pointer-events-none')}>
               <ListTodo size={14} />
             </button>
           )}
@@ -1047,13 +1072,14 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
 
 // ── Edit finding modal ───────────────────────────────────────
 
-function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, creatingTask }: {
+function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, creatingTask, createDisabled }: {
   item: InspectionItem
   instances: SectionInstance[]
   onClose: () => void
   onSaved: (item: InspectionItem) => void
   onCreateTask: () => void
   creatingTask: boolean
+  createDisabled: boolean  // orphaned unlinked task exists — retry would duplicate
 }) {
   const supabase = createClient()
   const sectionNames = Array.from(new Set(instances.map(i => i.name)))
@@ -1139,7 +1165,8 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
           <button
             type="button"
             onClick={onCreateTask}
-            disabled={creatingTask}
+            disabled={creatingTask || createDisabled}
+            title={createDisabled ? 'Task exists in Tasks but is not linked to this finding' : undefined}
             className="btn-secondary text-xs py-1.5">
             <ListTodo size={13} />{creatingTask ? 'Creating…' : 'Create task from finding'}
           </button>
