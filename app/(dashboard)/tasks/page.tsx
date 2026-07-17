@@ -1193,7 +1193,12 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
     .filter(t => t.status === 'waiting')
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
 
-  const obligations = topLevel.filter(t =>
+  // Defense in depth: obligations sweep ALL tasks, not just top-level.
+  // Auto-generated deadline tasks are supposed to stay top-level (the
+  // modal enforces it), but if one somehow became a subtask it must
+  // still surface here — a missed renewal is worse than a duplicate
+  // row. Subtasked obligations render with their parent as context.
+  const obligations = tasks.filter(t =>
     t.auto_source != null && t.status !== 'done' &&
     t.due_date != null && (daysUntil(t.due_date) ?? 999) <= 90
   )
@@ -1257,7 +1262,16 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
                   <span className="text-xs font-semibold text-slate-500">{prop}</span>
                   <span className="text-xs text-slate-300">({propTasks.length})</span>
                 </div>
-                {propTasks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)}
+                {propTasks.map(t => {
+                  const parent = t.parent_task_id ? handlers.getTask(t.parent_task_id) : undefined
+                  return (
+                    <TaskRow key={t.id} {...rowProps(t)}
+                      meta={parent ? (
+                        <span className="text-xs text-slate-400">in “{parent.title.slice(0, 40)}”</span>
+                      ) : undefined}
+                    />
+                  )
+                })}
               </div>
             ))
           : <SectionEmpty label="No obligations due within 90 days." />}
@@ -1395,8 +1409,12 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       snoozed_until:      form.snoozed_until || null,
       blocked_by_task_id: form.blocked_by_task_id || null,
       // A task with children can never gain a parent (hasChildren hides
-      // the control) — this preserves whatever it already had (null).
-      parent_task_id:     hasChildren ? (task?.parent_task_id ?? null) : (form.parent_task_id || null),
+      // the control), and auto-generated deadline tasks stay top-level
+      // (isAutoSource hides it too) — both preserve whatever the task
+      // already had.
+      parent_task_id:     hasChildren || isAutoSource
+        ? (task?.parent_task_id ?? null)
+        : (form.parent_task_id || null),
       tags:               form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
       recur_freq:         (form.recur_freq || null) as Task['recur_freq'],
       recur_interval:     form.recur_freq === 'custom' ? parseInt(form.recur_interval) || null : null,
@@ -1464,8 +1482,11 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
   // Single-level nesting is an app rule: a task that already has
   // children can't itself become a subtask (that would make 2 levels),
   // and a subtask can't be picked as a parent. Tasks WITH children are
-  // valid parents.
+  // valid parents. Auto-generated deadline tasks (renewals,
+  // expirations) must stay top-level so the Review obligations horizon
+  // and the auto-task dedupe keep seeing them.
   const hasChildren = task != null && allTasks.some(t => t.parent_task_id === task.id)
+  const isAutoSource = task?.auto_source != null
   const parentOptions = allTasks.filter(t =>
     t.id !== task?.id && t.parent_task_id == null && t.status !== 'done'
   )
@@ -1546,11 +1567,13 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
           </div>
 
           {/* Parent task — makes this a subtask (single level) */}
-          {hasChildren ? (
+          {hasChildren || isAutoSource ? (
             <div>
               <label className="label">Parent task</label>
               <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                This task has subtasks, so it can’t become a subtask itself (one level only).
+                {isAutoSource
+                  ? 'Auto-generated deadline tasks stay top-level so they always surface in the obligations horizon.'
+                  : 'This task has subtasks, so it can’t become a subtask itself (one level only).'}
               </p>
             </div>
           ) : (

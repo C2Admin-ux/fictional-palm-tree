@@ -26,7 +26,12 @@ create index if not exists task_views_user_id_idx
   on task_views (user_id);
 
 alter table task_views enable row level security;
+-- task_views is the app's FIRST per-user table: saved views are
+-- personal preferences, unlike the shared portfolio tables where every
+-- authenticated teammate sees everything (the house `using (true)`
+-- pattern). The policy therefore scopes rows to their owner.
 do $$ begin
-  create policy "authenticated full access" on task_views
-    for all to authenticated using (true) with check (true);
+  create policy "owner full access" on task_views
+    for all to authenticated
+    using (user_id = auth.uid()) with check (user_id = auth.uid());
 exception when duplicate_object then null; end $$;

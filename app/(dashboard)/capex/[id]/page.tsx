@@ -32,7 +32,12 @@ export default function CapexDetailPage() {
     const [{ data: proj }, { data: lines }, { data: tasks }] = await Promise.all([
       supabase.from('capex_projects').select('*, properties(name)').eq('id', id).single(),
       supabase.from('capex_line_items').select('*').eq('project_id', id).order('created_at', { ascending: false }),
-      supabase.from('tasks').select('*').eq('capex_project_id', id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }),
+      // Top-level tasks only — subtasks never render outside their
+      // parent's drill-down, so the flat Open Linked Tasks list here
+      // shows parents only.
+      supabase.from('tasks').select('*').eq('capex_project_id', id).neq('status', 'done')
+        .is('parent_task_id', null)
+        .order('due_date', { ascending: true, nullsFirst: false }),
     ])
     setProject((proj as unknown) as ProjectWithProp)
     setForm((proj as any) ?? {})
