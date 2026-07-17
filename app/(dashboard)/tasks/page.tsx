@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
+import type { Json, Task, TaskView, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
   cn, formatDateShort, daysUntil,
   todayISO,
@@ -21,6 +21,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
@@ -30,6 +31,7 @@ import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
 } from '@/lib/tasks/mutations'
+import { toast } from '@/components/ui/toast'
 
 type TaskWithRelations = Task & {
   properties?: { name: string } | null
@@ -66,6 +68,53 @@ const GROUP_BY_OPTIONS: { value: GroupByMode; label: string }[] = [
   { value: 'priority', label: 'Group: Priority' },
   { value: 'due',      label: 'Group: Due' },
 ]
+
+// ── Saved views (task_views.config) ──────────────────────────
+// Everything a chip restores: tab, status pills, the four filters,
+// search, and group-by. (The lists have no user-facing sort control —
+// ordering is fixed — so there's nothing to capture there.)
+
+type ViewConfig = {
+  view: ViewMode
+  statuses: StatusFilter[]
+  property: string
+  capex: string
+  contact: string
+  priority: string
+  search: string
+  groupBy: GroupByMode
+}
+
+const DEFAULT_STATUSES: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked']
+
+// Defensive parse — config is opaque jsonb, so missing/foreign keys
+// fall back to the page defaults instead of crashing a chip.
+function parseViewConfig(raw: Json): ViewConfig {
+  const cfg = (raw ?? {}) as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  const statuses = Array.isArray(cfg.statuses)
+    ? STATUS_ORDER.filter(s => (cfg.statuses as unknown[]).includes(s))
+    : []
+  return {
+    view: cfg.view === 'agenda' || cfg.view === 'review' ? cfg.view : 'all',
+    statuses: statuses.length > 0 ? statuses : DEFAULT_STATUSES,
+    property: str(cfg.property),
+    capex:    str(cfg.capex),
+    contact:  str(cfg.contact),
+    priority: str(cfg.priority),
+    search:   str(cfg.search),
+    groupBy:  cfg.groupBy === 'property' || cfg.groupBy === 'priority' || cfg.groupBy === 'due'
+      ? cfg.groupBy : 'status',
+  }
+}
+
+function sameViewConfig(a: ViewConfig, b: ViewConfig): boolean {
+  return a.view === b.view &&
+    a.statuses.join(',') === b.statuses.join(',') &&
+    a.property === b.property && a.capex === b.capex &&
+    a.contact === b.contact && a.priority === b.priority &&
+    a.search === b.search && a.groupBy === b.groupBy
+}
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
   { key: 'agenda', label: 'Agenda' },
@@ -178,6 +227,9 @@ function TasksInner() {
   // Expanded subtask drill-downs — per-session, not persisted
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
+  // Saved views (task_views, user-scoped)
+  const [savedViews, setSavedViews] = useState<TaskView[]>([])
+
   const fetchTasks = useCallback(async () => {
     const { data } = await supabase
       .from('tasks')
@@ -204,7 +256,17 @@ function TasksInner() {
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    supabase.auth.getUser().then(({ data }) => {
+      const uid = data.user?.id ?? null
+      setUserId(uid)
+      // Saved views ride along with the page load — user-scoped,
+      // ordered by sort_order then age.
+      if (uid) {
+        supabase.from('task_views').select('*').eq('user_id', uid)
+          .order('sort_order').order('created_at')
+          .then(({ data: viewRows }) => setSavedViews((viewRows as TaskView[]) ?? []))
+      }
+    })
     supabase.from('properties').select('*').eq('status', 'active').order('name')
       .then(({ data }) => setProperties(data ?? []))
     supabase.from('contacts').select('*').order('full_name')
@@ -385,6 +447,91 @@ function TasksInner() {
   const selectedCapex = filterCapex ? capexProjects.find(c => c.id === filterCapex) : null
   const hasActiveFilter = filterProp || filterCapex || filterContact || filterPriority || search
 
+  // ── Saved views ────────────────────────────────────────────
+  // A chip is "active" when its stored config matches the live state —
+  // touch any filter afterwards and the highlight drops off on its own.
+
+  const currentConfig: ViewConfig = {
+    view,
+    statuses: STATUS_ORDER.filter(s => activeStatuses.has(s)), // canonical order
+    property: filterProp,
+    capex:    filterCapex,
+    contact:  filterContact,
+    priority: filterPriority,
+    search,
+    groupBy,
+  }
+  const activeViewId = savedViews.find(v => sameViewConfig(currentConfig, parseViewConfig(v.config)))?.id ?? null
+
+  // Applying restores the whole state — including the tab, so an
+  // Agenda-based view switches over to Agenda.
+  function applySavedView(v: TaskView) {
+    const cfg = parseViewConfig(v.config)
+    setView(cfg.view)
+    setActiveStatuses(new Set(cfg.statuses))
+    setFilterProp(cfg.property)
+    setFilterCapex(cfg.capex)
+    setFilterContact(cfg.contact)
+    setFilterPriority(cfg.priority)
+    setSearch(cfg.search)
+    setGroupBy(cfg.groupBy)
+  }
+
+  async function saveCurrentView(name: string) {
+    if (!userId) return
+    const { data, error } = await supabase.from('task_views')
+      .insert({
+        user_id: userId, name,
+        config: currentConfig as unknown as Json,
+        sort_order: savedViews.length,
+      })
+      .select('*')
+      .single()
+    if (error || !data) {
+      toast('Could not save view', { tone: 'error' })
+      return
+    }
+    setSavedViews(prev => [...prev, data as TaskView])
+  }
+
+  function renameSavedView(v: TaskView, name: string) {
+    setSavedViews(prev => prev.map(x => x.id === v.id ? { ...x, name } : x))
+    void supabase.from('task_views').update({ name }).eq('id', v.id).then(({ error }) => {
+      if (error) {
+        setSavedViews(prev => prev.map(x => x.id === v.id ? { ...x, name: v.name } : x))
+        toast('Could not rename view', { tone: 'error' })
+      }
+    })
+  }
+
+  function deleteSavedView(v: TaskView) {
+    setSavedViews(prev => prev.filter(x => x.id !== v.id))
+    void supabase.from('task_views').delete().eq('id', v.id).then(({ error }) => {
+      if (error) {
+        setSavedViews(prev => [...prev, v])
+        toast('Could not delete view', { tone: 'error' })
+        return
+      }
+      toast(`Deleted view "${v.name}"`, {
+        action: {
+          label: 'Undo',
+          onClick: async () => {
+            // Same id — the delete committed, so it's free to re-insert.
+            setSavedViews(prev => [...prev, v])
+            const { error: restoreError } = await supabase.from('task_views').insert({
+              id: v.id, user_id: v.user_id, name: v.name,
+              config: v.config, sort_order: v.sort_order,
+            })
+            if (restoreError) {
+              setSavedViews(prev => prev.filter(x => x.id !== v.id))
+              toast('Could not restore view', { tone: 'error' })
+            }
+          },
+        },
+      })
+    })
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Top bar */}
@@ -404,6 +551,20 @@ function TasksInner() {
           <Plus size={13} />Add task
         </button>
       </div>
+
+      {/* Saved views — chips restore a whole page state (tab, pills,
+          filters, search, group-by); shown on every tab since applying
+          one can switch tabs anyway */}
+      {(savedViews.length > 0 || view === 'all') && (
+        <SavedViewsBar
+          views={savedViews}
+          activeId={activeViewId}
+          onApply={applySavedView}
+          onSaveNew={saveCurrentView}
+          onRename={renameSavedView}
+          onDelete={deleteSavedView}
+        />
+      )}
 
       {/* Filter bar — All tasks view only */}
       {view === 'all' && (
