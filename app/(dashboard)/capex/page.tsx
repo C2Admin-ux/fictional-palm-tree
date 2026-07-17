@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, Suspense } from 'react'
+import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
@@ -16,6 +16,7 @@ import Link from 'next/link'
 import { CapexBoard, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
+const ACTIVE_STATUSES: CapexProject['status'][] = ['planning', 'approved', 'in_progress']
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
 
 export default function CapexPage() {
@@ -35,12 +36,16 @@ function CapexInner() {
   const [projects, setProjects] = useState<CapexWithProp[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [filterProp, setFilterProp] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [filterCategory, setFilterCategory] = useState('')
   const [search, setSearch] = useState('')
   const [moveError, setMoveError] = useState<string | null>(null)
+  // Monotonic fetch sequence: responses that don't match the latest seq are
+  // stale (a newer fetch — or an optimistic mutation — superseded them).
+  const fetchSeq = useRef(0)
   const { sort, dir, toggle, sortFn } = useSort<string>('created_at', 'desc')
 
   function setView(v: 'list' | 'board') {
@@ -48,19 +53,20 @@ function CapexInner() {
   }
 
   const fetchProjects = useCallback(async () => {
+    // Always fetch every status so list and board share one dataset — the
+    // list's status filter is applied client-side in `displayed`. Only
+    // property/category narrow the query server-side.
+    const seq = ++fetchSeq.current
+    setRefreshing(true)
     let q = supabase.from('capex_projects').select('*, properties(name)')
     if (filterProp) q = q.eq('property_id', filterProp)
-    // The board always shows all five status columns — only the list
-    // narrows by status.
-    if (view === 'list') {
-      if (filterStatus === 'active') q = q.in('status', ['planning', 'approved', 'in_progress'])
-      else if (filterStatus !== 'all') q = q.eq('status', filterStatus as CapexProject['status'])
-    }
     if (filterCategory) q = q.eq('category', filterCategory)
     const { data } = await q
+    if (seq !== fetchSeq.current) return // stale — a newer fetch or mutation won
     setProjects(data ?? [])
     setLoading(false)
-  }, [filterProp, filterStatus, filterCategory, view])
+    setRefreshing(false)
+  }, [filterProp, filterCategory])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
   useEffect(() => {
@@ -69,6 +75,11 @@ function CapexInner() {
 
   const displayed = [...projects]
     .filter(p => {
+      // Status narrows the list only — the board always shows all columns.
+      if (view === 'list') {
+        if (filterStatus === 'active' && !ACTIVE_STATUSES.includes(p.status)) return false
+        if (filterStatus !== 'active' && filterStatus !== 'all' && p.status !== filterStatus) return false
+      }
       if (!search) return true
       const s = search.toLowerCase()
       return p.title.toLowerCase().includes(s) ||
@@ -102,7 +113,10 @@ function CapexInner() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="page-title">CapEx Projects</h1>
-          <p className="text-sm text-slate-500 mt-0.5">{displayed.length} projects</p>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {displayed.length} projects
+            {view === 'board' && <span className="text-slate-400"> (all statuses)</span>}
+          </p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-primary">
           <Plus size={14} />New Project
@@ -116,7 +130,8 @@ function CapexInner() {
           { label: 'Actual Spend', value: formatCurrency(totalSpend, true) },
           { label: '% Used', value: totalBudget > 0 ? `${Math.round(totalSpend / totalBudget * 100)}%` : '—' },
         ].map(({ label, value }) => (
-          <StatTile key={label} label={label} value={value} />
+          <StatTile key={label} label={label} value={value}
+            sub={view === 'board' ? '(all statuses)' : undefined} />
         ))}
       </div>
 
@@ -174,7 +189,11 @@ function CapexInner() {
 
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
-      ) : displayed.length === 0 ? (
+      ) : (
+      // Dim (but keep interactive) while a refetch is in flight so filter
+      // changes and edits don't render against silently-stale data.
+      <div className={cn('transition-opacity', refreshing && 'opacity-60')} aria-busy={refreshing || undefined}>
+      {displayed.length === 0 ? (
         <EmptyState icon={<HardHat size={32} />} title="No projects match your filters" />
       ) : view === 'board' ? (
         <CapexBoard projects={displayed} onMove={moveProject} />
@@ -319,6 +338,8 @@ function CapexInner() {
             </table>
           </div>
         </>
+      )}
+      </div>
       )}
 
       {showForm && (
