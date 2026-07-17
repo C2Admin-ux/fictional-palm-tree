@@ -41,9 +41,12 @@ export default async function PropertyPage({
     inspectionCountRes,
     { data: inspections },
   ] = await Promise.all([
-    // The tab label only needs a count — the interactive Tasks tab
-    // fetches its own rows client-side when active.
-    supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done'),
+    // Count feeds the Overview card only. The Tasks tab label carries
+    // no number: the interactive tab mutates its list client-side, so a
+    // server-snapshot count next to it would drift out of date.
+    tab === 'overview'
+      ? supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done')
+      : Promise.resolve({ count: null }),
     // Overview shows a 5-task preview; skip the fetch on other tabs.
     tab === 'overview'
       ? supabase.from('tasks').select('id, title, status, priority, due_date').eq('property_id', params.id).neq('status', 'done').order('due_date', { ascending: true, nullsFirst: false }).limit(5)
@@ -81,7 +84,7 @@ export default async function PropertyPage({
 
   const TABS = [
     { id: 'overview',  label: 'Overview' },
-    { id: 'tasks',     label: `Tasks (${openTaskCount})` },
+    { id: 'tasks',     label: 'Tasks' },
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
     { id: 'inspections', label: `Inspections (${inspectionCount})` },

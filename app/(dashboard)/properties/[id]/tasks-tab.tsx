@@ -9,20 +9,18 @@
 import { useCallback, useEffect, useMemo, useState, memo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Task } from '@/lib/supabase/types'
-import {
-  cn, formatDateShort, isOverdue, isSoon, todayISO,
-  PRIORITY_DOT, RECUR_LABELS,
-} from '@/lib/utils'
-import { InlineText, InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { cn, formatDateShort, todayISO } from '@/lib/utils'
+import { InlineText } from '@/components/ui/inline-edit'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { groupByDue } from '@/lib/tasks/dates'
-import { RefreshCw, Clock, Moon, ChevronDown, AlertTriangle, X } from 'lucide-react'
+import { Moon, ChevronDown, X } from 'lucide-react'
 
 // Row with the task_contacts junction ids joined in, so delete undo
 // can restore the links (same undo contract as the tasks page).
@@ -144,8 +142,6 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
 }) {
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
-  const overdue = !isDone && isOverdue(task.due_date)
-  const soon = !isDone && !overdue && isSoon(task.due_date, 7)
   const today = todayISO()
   const snoozed = !isDone && task.snoozed_until != null && task.snoozed_until > today
 
@@ -163,28 +159,12 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
       isDone && 'opacity-60'
     )}>
       {/* Priority pip */}
-      <InlineSelect
-        value={task.priority}
-        options={PRIORITY_OPTIONS}
-        onSave={v => patch({ priority: v as Task['priority'] })}
-        trigger={
-          <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
-            style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[task.priority] }} />
-        }
-      />
+      <PriorityPip priority={task.priority} isDone={isDone}
+        onSave={priority => patch({ priority })} />
 
       {/* Complete / un-complete circle */}
-      <button onClick={() => toggleDoneOptimistic(supabase, store, task)}
-        className={cn(
-          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
-          isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
-        )}>
-        {isDone && (
-          <svg width="8" height="6" viewBox="0 0 8 6" fill="none">
-            <path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </button>
+      <CompleteCircle isDone={isDone}
+        onToggle={() => toggleDoneOptimistic(supabase, store, task)} />
 
       {/* Title */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -194,18 +174,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
             onSave={v => patch({ title: v })}
             displayClassName="font-medium"
           />
-          <span className="inline-flex items-center gap-1.5 ml-1">
-            {task.recur_freq && (
-              <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-1.5 py-0.5">
-                <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
-              </span>
-            )}
-            {task.auto_source === 'expiration' && (
-              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                <Clock size={9} />Auto
-              </span>
-            )}
-          </span>
+          <TaskBadges task={task} />
         </div>
         {(snoozed || (isDone && task.completed_at)) && (
           <div className="flex items-center gap-2 mt-0.5">
@@ -222,16 +191,8 @@ const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }:
       </div>
 
       {/* Due date */}
-      <div className={cn('w-20 text-right flex-shrink-0',
-        overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
-        {overdue && <AlertTriangle size={10} className="inline mr-1" />}
-        <InlineDate
-          value={task.due_date}
-          onSave={v => patch({ due_date: v })}
-          className={cn('text-xs', overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}
-          emptyLabel="no date"
-        />
-      </div>
+      <DueDateCell dueDate={task.due_date} isDone={isDone}
+        onSave={v => patch({ due_date: v })} />
 
       {/* Snooze presets */}
       <div className="w-6 flex justify-center">

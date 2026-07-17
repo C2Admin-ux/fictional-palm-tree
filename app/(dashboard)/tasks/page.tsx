@@ -6,21 +6,22 @@ import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
-  cn, formatDateShort, isOverdue, isSoon, daysUntil,
+  cn, formatDateShort, daysUntil,
   todayISO,
-  PRIORITY_DOT, STATUS_STYLES, STATUS_LABELS,
-  RECUR_LABELS, propertyColor,
+  STATUS_STYLES, STATUS_LABELS,
+  propertyColor,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, AlertTriangle, Clock, Keyboard,
+  Link as LinkIcon, Keyboard,
 } from 'lucide-react'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
+import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
-import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -69,7 +70,6 @@ type RowHandlers = {
   onDelete: (task: TaskWithRelations) => void
   onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
   onSnooze: (task: TaskWithRelations, date: string) => void
-  onRefresh: () => void
   // Keyboard-driven row selection (j/k etc.)
   onSelect: (id: string) => void
   // Local lookup — lets rows check whether a blocker still exists
@@ -150,7 +150,7 @@ function TasksInner() {
 
     setTasks(withContacts)
     setLoading(false)
-  }, [])
+  }, [supabase])
 
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
@@ -164,7 +164,7 @@ function TasksInner() {
       .in('status', ['planning', 'approved', 'in_progress'])
       .order('title')
       .then(({ data }) => setCapexProjects((data as CapexProject[]) ?? []))
-  }, [])
+  }, [supabase])
 
   // All-view filtering (client side — the shared fetch feeds all three views)
   const visibleTasks = tasks.filter(t => {
@@ -258,10 +258,9 @@ function TasksInner() {
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
     onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
-    onRefresh: fetchTasks,
     onSelect: setSelectedId,
     getTask: taskById,
-  }), [supabase, store, markDone, deleteTask, fetchTasks, taskById])
+  }), [supabase, store, markDone, deleteTask, taskById])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -493,8 +492,6 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
-  const overdue = !isDone && isOverdue(task.due_date)
-  const soon = !isDone && !overdue && isSoon(task.due_date, 7)
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
@@ -526,28 +523,11 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
         selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
       )}>
       {/* Priority pip — click to change priority */}
-      <InlineSelect
-        value={task.priority}
-        options={PRIORITY_OPTIONS}
-        onSave={v => patch({ priority: v as Task['priority'] })}
-        trigger={
-          <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
-            style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[task.priority] }} />
-        }
-      />
+      <PriorityPip priority={task.priority} isDone={isDone}
+        onSave={priority => patch({ priority })} />
 
       {/* Checkbox */}
-      <button onClick={() => onDone(task)}
-        className={cn(
-          'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
-          isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
-        )}>
-        {isDone && (
-          <svg width="8" height="6" viewBox="0 0 8 6" fill="none">
-            <path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </button>
+      <CompleteCircle isDone={isDone} onToggle={() => onDone(task)} />
 
       {/* Title — inline editable */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -557,18 +537,7 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
             onSave={v => patch({ title: v })}
             displayClassName="font-medium"
           />
-          <span className="inline-flex items-center gap-1.5 ml-1">
-            {task.recur_freq && (
-              <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-1.5 py-0.5">
-                <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
-              </span>
-            )}
-            {task.auto_source === 'expiration' && (
-              <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                <Clock size={9} />Auto
-              </span>
-            )}
-          </span>
+          <TaskBadges task={task} />
         </div>
         {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -635,16 +604,8 @@ const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, 
 
       {/* Due date — inline date picker (data-due-edit lets the `d`
           shortcut open it via the same click path) */}
-      <div data-due-edit className={cn('w-20 text-right flex-shrink-0',
-        overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
-        {overdue && <AlertTriangle size={10} className="inline mr-1" />}
-        <InlineDate
-          value={task.due_date}
-          onSave={v => patch({ due_date: v })}
-          className={cn('text-xs', overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}
-          emptyLabel="no date"
-        />
-      </div>
+      <DueDateCell dueDate={task.due_date} isDone={isDone}
+        onSave={v => patch({ due_date: v })} />
 
       {/* Snooze presets — no modal needed. Always visible on mobile,
           hover-revealed on desktop; the `s` shortcut clicks this same
