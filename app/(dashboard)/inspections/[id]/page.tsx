@@ -27,10 +27,12 @@ import {
 } from '@/lib/inspections/sections'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
+import { toast } from '@/components/ui/toast'
+import { findingTaskInsertPayload, insertTask } from '@/lib/tasks/create'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
-  FileText, Send, ExternalLink,
+  FileText, Send, ExternalLink, ListTodo, CheckSquare,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
@@ -52,6 +54,15 @@ export default function InspectionDetailPage() {
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [editItem, setEditItem] = useState<InspectionItem | null>(null)
   const [signTick, setSignTick] = useState(0)
+  // Signed-in user — stamped onto tasks spawned from findings
+  const [userId, setUserId] = useState<string | null>(null)
+  // Finding id with a task creation in flight (disables its button)
+  const [creatingTaskFor, setCreatingTaskFor] = useState<string | null>(null)
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Latest items, readable from async closures that may have gone stale
   // while an upload was in flight.
@@ -185,6 +196,65 @@ export default function InspectionDetailPage() {
     await removeInspectionPhotos(supabase, item.photo_paths)
     setItems(prev => prev.filter(i => i.id !== item.id))
     invalidateReport()
+  }
+
+  // One-tap task from a finding (card icon button + edit modal). The
+  // task is created via the shared creation layer, then the finding is
+  // linked through inspection_items.task_id. If the link write fails
+  // the task is removed again — a spawned task the finding doesn't
+  // know about would allow silent duplicates. Undo deletes the task
+  // and clears the link. No report invalidation: task linkage isn't
+  // report content.
+  async function createTaskFromItem(item: InspectionItem) {
+    if (!inspection || item.task_id || creatingTaskFor) return
+    if (!userId) { setActionError('Sign in to create tasks from findings.'); return }
+    setActionError(null)
+    setCreatingTaskFor(item.id)
+    const section = instanceLabel({ name: item.section_name, unit: item.unit_number })
+    const created = await insertTask(supabase, findingTaskInsertPayload({
+      title: item.item_label.trim() || `Inspection finding — ${section}`,
+      propertyId: inspection.property_id,
+      actionPriority: item.action_priority,
+      sourceNote: `From inspection finding — ${section} · ${formatDate(inspection.inspection_date)}`,
+      userId,
+    }))
+    if (!created) {
+      setCreatingTaskFor(null)
+      setActionError('Could not create the task — check connection and try again.')
+      return
+    }
+    const { error: linkError } = await supabase.from('inspection_items')
+      .update({ task_id: created.id }).eq('id', item.id)
+    if (linkError) {
+      await supabase.from('tasks').delete().eq('id', created.id)
+      setCreatingTaskFor(null)
+      setActionError(`Could not link the task to this finding: ${linkError.message}`)
+      return
+    }
+    setCreatingTaskFor(null)
+    const setLink = (taskId: string | null) => {
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, task_id: taskId } : i))
+      setEditItem(prev => prev && prev.id === item.id ? { ...prev, task_id: taskId } : prev)
+    }
+    setLink(created.id)
+    toast('Task created', {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          // Link first (a finding pointing at a deleted task is worse
+          // than an unlinked task), then the task row.
+          const { error: unlinkError } = await supabase.from('inspection_items')
+            .update({ task_id: null }).eq('id', item.id)
+          if (unlinkError) {
+            toast('Could not undo task creation', { tone: 'error' })
+            return
+          }
+          setLink(null)
+          const { error: deleteError } = await supabase.from('tasks').delete().eq('id', created.id)
+          if (deleteError) toast('Task unlinked, but could not be deleted — remove it from Tasks', { tone: 'error' })
+        },
+      },
+    })
   }
 
   async function appendPhotos(item: InspectionItem, files: File[]) {
@@ -369,6 +439,8 @@ export default function InspectionDetailPage() {
                     onDelete={() => deleteItem(item)}
                     onAppendPhotos={files => appendPhotos(item, files)}
                     onPhotoError={invalidatePhoto}
+                    onCreateTask={() => createTaskFromItem(item)}
+                    creatingTask={creatingTaskFor === item.id}
                   />
                 ))}
               </div>
@@ -404,9 +476,13 @@ export default function InspectionDetailPage() {
           onClose={() => setEditItem(null)}
           onSaved={updated => {
             setEditItem(null)
+            // Keep the task link — the finding update payload doesn't
+            // carry task_id, so the fresh row does (unchanged).
             setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
             invalidateReport()
           }}
+          onCreateTask={() => createTaskFromItem(editItem)}
+          creatingTask={creatingTaskFor === editItem.id}
         />
       )}
     </div>
@@ -648,7 +724,7 @@ function SendReportModal({ inspection, onClose, onSent }: {
 
 // ── Finding card ─────────────────────────────────────────────
 
-function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError }: {
+function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask }: {
   item: InspectionItem
   photoUrls: Record<string, SignedPhotoUrl>
   onView: (path: string) => void
@@ -656,6 +732,8 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
   onDelete: () => void
   onAppendPhotos: (files: File[]) => Promise<void>
   onPhotoError: (path: string) => void
+  onCreateTask: () => void
+  creatingTask: boolean
 }) {
   const [uploading, setUploading] = useState(false)
 
@@ -675,14 +753,31 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
           <p className={cn('text-sm', item.item_label ? 'text-slate-800' : 'text-slate-300 italic')}>
             {item.item_label || 'No description'}
           </p>
-          {item.requires_action && (
-            <span className={cn('badge mt-1.5', PRIORITY_STYLES[item.action_priority ?? 'medium'] ?? 'text-slate-600 bg-slate-100 border-slate-200')}>
-              <Flag size={9} className="mr-1" />
-              Follow up{item.action_priority ? ` · ${PRIORITY_LABELS[item.action_priority as ActionPriority] ?? item.action_priority}` : ''}
-            </span>
-          )}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {item.requires_action && (
+              <span className={cn('badge mt-1.5', PRIORITY_STYLES[item.action_priority ?? 'medium'] ?? 'text-slate-600 bg-slate-100 border-slate-200')}>
+                <Flag size={9} className="mr-1" />
+                Follow up{item.action_priority ? ` · ${PRIORITY_LABELS[item.action_priority as ActionPriority] ?? item.action_priority}` : ''}
+              </span>
+            )}
+            {item.task_id && (
+              <Link href="/tasks"
+                className="badge mt-1.5 text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100 transition-colors">
+                <CheckSquare size={9} className="mr-1" />Task
+              </Link>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0">
+          {!item.task_id && (
+            <button
+              onClick={onCreateTask}
+              disabled={creatingTask}
+              title="Create task from finding"
+              className={cn('text-slate-300 hover:text-emerald-600 p-1.5', creatingTask && 'opacity-50 pointer-events-none')}>
+              <ListTodo size={14} />
+            </button>
+          )}
           <button onClick={onEdit} title="Edit finding" className="text-slate-300 hover:text-blue-500 p-1.5">
             <Pencil size={14} />
           </button>
@@ -952,11 +1047,13 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
 
 // ── Edit finding modal ───────────────────────────────────────
 
-function EditFindingModal({ item, instances, onClose, onSaved }: {
+function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, creatingTask }: {
   item: InspectionItem
   instances: SectionInstance[]
   onClose: () => void
   onSaved: (item: InspectionItem) => void
+  onCreateTask: () => void
+  creatingTask: boolean
 }) {
   const supabase = createClient()
   const sectionNames = Array.from(new Set(instances.map(i => i.name)))
@@ -1031,6 +1128,22 @@ function EditFindingModal({ item, instances, onClose, onSaved }: {
             </select>
           )}
         </div>
+        {/* Spawn a follow-up task (shared creation layer, undo on the
+            toast); once linked, the chip points at the Tasks page */}
+        {item.task_id ? (
+          <Link href="/tasks"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1 hover:bg-emerald-100 transition-colors">
+            <CheckSquare size={11} />Task created — view in Tasks
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={onCreateTask}
+            disabled={creatingTask}
+            className="btn-secondary text-xs py-1.5">
+            <ListTodo size={13} />{creatingTask ? 'Creating…' : 'Create task from finding'}
+          </button>
+        )}
         {error && <p className="text-xs text-red-600">{error}</p>}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

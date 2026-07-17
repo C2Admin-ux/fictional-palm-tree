@@ -28,6 +28,31 @@ export function quickAddInsertPayload(
   }
 }
 
+// One-tap task from an inspection finding: immediately actionable
+// (next_action — the finding IS the processing), property from the
+// inspection, priority straight from action_priority (same vocabulary
+// as tasks.priority), description pointing back at the source finding.
+// No due date by default.
+export function findingTaskInsertPayload(opts: {
+  title: string
+  propertyId: string
+  actionPriority: string | null
+  sourceNote: string
+  userId: string
+}): TaskInsert {
+  const p = opts.actionPriority
+  return {
+    title:       opts.title,
+    status:      'next_action',
+    priority:    p === 'low' || p === 'medium' || p === 'high' || p === 'urgent' ? p : 'medium',
+    due_date:    null,
+    description: opts.sourceNote,
+    property_id: opts.propertyId,
+    created_by:  opts.userId,
+    assigned_to: opts.userId,
+  }
+}
+
 // Insert + return the full row (null on failure — the caller decides
 // how to surface it; some surfaces restore the typed text, others
 // keep the palette open).
