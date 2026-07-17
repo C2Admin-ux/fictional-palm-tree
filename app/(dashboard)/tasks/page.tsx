@@ -22,6 +22,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell, DeleteX } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { ContactActionMenu } from '@/components/tasks/contact-popover'
 import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
@@ -988,14 +989,16 @@ const TaskRow = memo(function TaskRow({
         />
       </div>
 
-      {/* People avatars */}
+      {/* People avatars — tap for call/text/email actions */}
       <div className="w-24 hidden lg:flex justify-center items-center gap-1">
         {taskContacts.slice(0, 3).map((c: Contact) => (
-          <span key={c.id} title={c.full_name}
-            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0"
-            style={{ background: c.color_hex ?? '#64748b' }}>
-            {c.initials ?? c.full_name.slice(0, 2).toUpperCase()}
-          </span>
+          <ContactActionMenu key={c.id} contact={c} align="right">
+            <span
+              className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0"
+              style={{ background: c.color_hex ?? '#64748b' }}>
+              {c.initials ?? c.full_name.slice(0, 2).toUpperCase()}
+            </span>
+          </ContactActionMenu>
         ))}
         {taskContacts.length > 3 && (
           <span className="text-xs text-slate-400">+{taskContacts.length - 3}</span>
@@ -1686,28 +1689,39 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
             </div>
           )}
 
-          {/* People */}
+          {/* People — tap a chip for its action menu: add/remove on this
+              task plus one-tap call/text/email */}
           <div>
             <label className="label">People</label>
             <div className="flex flex-wrap gap-2">
-              {contacts.map(c => (
-                <button key={c.id} type="button"
-                  onClick={() => toggleContact(c.id)}
-                  className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all',
-                    selectedContacts.includes(c.id)
-                      ? 'text-white border-transparent'
-                      : 'text-slate-600 border-slate-200 hover:border-slate-300'
-                  )}
-                  style={selectedContacts.includes(c.id)
-                    ? { background: c.color_hex ?? '#64748b' }
-                    : {}}>
-                  <span className="w-4 h-4 rounded-full flex items-center justify-center text-white flex-shrink-0"
-                    style={{ background: c.color_hex ?? '#64748b', fontSize: 9 }}>
-                    {(c.initials ?? c.full_name.slice(0, 2)).toUpperCase()}
-                  </span>
-                  {c.full_name.split(' ')[0]}
-                </button>
-              ))}
+              {contacts.map(c => {
+                const isSelected = selectedContacts.includes(c.id)
+                return (
+                  <ContactActionMenu
+                    key={c.id}
+                    contact={c}
+                    action={{
+                      label: isSelected ? 'Remove from this task' : 'Add to this task',
+                      onClick: () => toggleContact(c.id),
+                    }}>
+                    <span
+                      className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all',
+                        isSelected
+                          ? 'text-white border-transparent'
+                          : 'text-slate-600 border-slate-200 hover:border-slate-300'
+                      )}
+                      style={isSelected
+                        ? { background: c.color_hex ?? '#64748b' }
+                        : {}}>
+                      <span className="w-4 h-4 rounded-full flex items-center justify-center text-white flex-shrink-0"
+                        style={{ background: c.color_hex ?? '#64748b', fontSize: 9 }}>
+                        {(c.initials ?? c.full_name.slice(0, 2)).toUpperCase()}
+                      </span>
+                      {c.full_name.split(' ')[0]}
+                    </span>
+                  </ContactActionMenu>
+                )
+              })}
             </div>
           </div>
 
