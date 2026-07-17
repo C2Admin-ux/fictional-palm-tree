@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import type { Property } from '@/lib/supabase/types'
 import { cn, propertyColor } from '@/lib/utils'
 import { isOverlayOpen } from '@/lib/ui/overlay'
 import { Toaster } from '@/components/ui/toast'
@@ -33,7 +34,7 @@ const NAV_SOON = [
   { href: '/pipeline',     label: 'Pipeline' },
 ]
 
-type SidebarProperty = { id: string; name: string }
+type SidebarProperty = { id: string; name: string; status: Property['status'] }
 
 function propertyAbbr(name: string): string {
   return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
@@ -49,10 +50,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [userId, setUserId] = useState<string | null>(null)
 
   useEffect(() => {
-    supabase.from('properties').select('id, name').order('name')
+    supabase.from('properties').select('id, name, status').order('name')
       .then(({ data }) => setProperties(data ?? []))
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
   }, [])
+
+  // The sidebar navigates EVERY property, but capture (sheet + palette
+  // matching pool) only offers active ones — mirroring the /tasks
+  // quick-add, so the same text can't land a task on a disposition or
+  // watchlist property here and an active one there.
+  const captureProperties = useMemo(
+    () => properties.filter(p => p.status === 'active'),
+    [properties]
+  )
 
   // Close the mobile drawer whenever navigation happens
   useEffect(() => {
@@ -224,10 +234,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         open={quickAddOpen}
         onClose={() => setQuickAddOpen(false)}
         userId={userId}
-        properties={properties}
+        properties={captureProperties}
       />
 
-      <CommandPalette properties={properties} userId={userId} />
+      <CommandPalette properties={captureProperties} userId={userId} />
 
       <Toaster />
     </div>
