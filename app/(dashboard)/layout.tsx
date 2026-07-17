@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, propertyColor } from '@/lib/utils'
 import { Toaster } from '@/components/ui/toast'
 import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
+import { CommandPalette } from '@/components/ui/command-palette'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck,
@@ -215,6 +216,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         userId={userId}
         properties={properties}
       />
+
+      <CommandPalette properties={properties} userId={userId} />
 
       <Toaster />
     </div>
