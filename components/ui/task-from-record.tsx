@@ -1,8 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Task } from '@/lib/supabase/types'
+import { recordTaskInsertPayload, insertTask, notifyTaskCreated } from '@/lib/tasks/create'
+import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
 import { Plus } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
@@ -10,8 +13,9 @@ import { Modal } from '@/components/ui/modal'
 // ── TaskFromRecord ───────────────────────────────────────────
 // Small "+ Task" button that opens a compact modal to create a
 // follow-up task pre-filled from the record it sits on (insurance
-// policy, contract, PCA item, …). The task is created as a
-// next_action owned by the signed-in user.
+// policy, contract, PCA item, …). Rides the shared creation path
+// (lib/tasks/create.ts), so open task lists pick the new row up via
+// the c2:task-created broadcast.
 
 export function TaskFromRecord({
   title, propertyId = null, tags = [], className = '',
@@ -22,6 +26,7 @@ export function TaskFromRecord({
   className?: string
 }) {
   const supabase = createClient()
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [draftTitle, setDraftTitle] = useState(title)
   const [dueDate, setDueDate] = useState('')
@@ -38,20 +43,23 @@ export function TaskFromRecord({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
-    const { data: auth } = await supabase.auth.getUser()
-    const uid = auth.user?.id ?? null
-    await supabase.from('tasks').insert({
-      title:       draftTitle.trim(),
-      property_id: propertyId,
+    // getSession reads the local session — no network round-trip.
+    const { data: { session } } = await supabase.auth.getSession()
+    const created = await insertTask(supabase, recordTaskInsertPayload({
+      title:      draftTitle.trim(),
+      propertyId,
       tags,
-      status:      'next_action',
       priority,
-      due_date:    dueDate || null,
-      created_by:  uid,
-      assigned_to: uid,
-    })
+      dueDate:    dueDate || null,
+      userId:     session?.user.id ?? null,
+    }))
     setSaving(false)
+    if (!created) {
+      toast('Could not create task', { tone: 'error' })
+      return // keep the modal (and the typed draft) for a retry
+    }
     setOpen(false)
+    notifyTaskCreated(router)
   }
 
   // stopPropagation wrapper: these buttons live inside clickable

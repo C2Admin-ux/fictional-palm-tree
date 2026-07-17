@@ -16,15 +16,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { parseQuickAdd } from '@/lib/tasks/quick-add'
-import { quickAddInsertPayload, insertTask } from '@/lib/tasks/create'
+import { quickAddInsertPayload, insertTask, notifyTaskCreated } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
 import { useOverlayOpen } from '@/lib/ui/overlay'
-import {
-  Search, CornerDownLeft, Plus, LayoutDashboard, CheckSquare, Wrench,
-  TrendingUp, FileSignature, Shield, FileBarChart, ClipboardCheck,
-  Settings, Building2,
-} from 'lucide-react'
+import { Overlay } from '@/components/ui/overlay'
+import { NAV_ITEMS } from '@/lib/nav'
+import { Search, CornerDownLeft, Plus, Building2 } from 'lucide-react'
 
 type PaletteProperty = { id: string; name: string }
 
@@ -38,17 +36,10 @@ type Item = {
   icon?: React.ComponentType<{ size?: number | string; className?: string }>
 }
 
-const NAV_ITEMS: Item[] = [
-  { key: 'nav:/dashboard',          kind: 'page', label: 'Dashboard',      href: '/dashboard',          icon: LayoutDashboard },
-  { key: 'nav:/tasks',              kind: 'page', label: 'Tasks',          href: '/tasks',              icon: CheckSquare },
-  { key: 'nav:/capex',              kind: 'page', label: 'CapEx',          href: '/capex',              icon: Wrench },
-  { key: 'nav:/insurance/policies', kind: 'page', label: 'Insurance',      href: '/insurance/policies', icon: Shield },
-  { key: 'nav:/documents',          kind: 'page', label: 'Contracts',      href: '/documents',          icon: FileSignature },
-  { key: 'nav:/inspections',        kind: 'page', label: 'Inspections',    href: '/inspections',        icon: ClipboardCheck },
-  { key: 'nav:/performance',        kind: 'page', label: 'PM Performance', href: '/performance',        icon: TrendingUp },
-  { key: 'nav:/reports',            kind: 'page', label: 'Reports',        href: '/reports',            icon: FileBarChart },
-  { key: 'nav:/settings',           kind: 'page', label: 'Settings',       href: '/settings',           icon: Settings },
-]
+// Page rows derive from the shared nav list (lib/nav.ts).
+const NAV_ROWS: Item[] = NAV_ITEMS.map(n => ({
+  key: `nav:${n.href}`, kind: 'page', label: n.label, href: n.href, icon: n.icon,
+}))
 
 const KIND_LABELS: Record<Kind, string> = {
   page: 'Page', property: 'Property', task: 'Task', capex: 'CapEx',
@@ -137,7 +128,7 @@ export function CommandPalette({ properties, userId }: {
 
   const results = useMemo(() => {
     const pool: Item[] = [
-      ...NAV_ITEMS,
+      ...NAV_ROWS,
       ...properties.map(p => ({
         key: `prop:${p.id}`, kind: 'property' as const, label: p.name,
         href: `/properties/${p.id}`, icon: Building2,
@@ -180,9 +171,7 @@ export function CommandPalette({ properties, userId }: {
       tasks: [{ key: `task:${created.id}`, kind: 'task' as const, label: created.title, href: '/tasks' }, ...prev.tasks],
     })
     close()
-    toast('Added to Tasks', {
-      action: { label: 'View', onClick: () => router.push('/tasks') },
-    })
+    notifyTaskCreated(router)
   }, [userId, creating, trimmed, properties, supabase, close, router])
 
   const activate = useCallback((index: number) => {
@@ -220,12 +209,11 @@ export function CommandPalette({ properties, userId }: {
   if (!open) return null
 
   return (
-    <div
-      className="fixed inset-0 z-[60] bg-black/40 flex items-start justify-center px-4 pt-[12vh]"
-      onClick={close}>
-      <div
-        className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden"
-        onClick={e => e.stopPropagation()}>
+    <Overlay
+      onClose={close}
+      align="top"
+      backdropClassName="bg-black/40"
+      panelClassName="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden">
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-100">
           <Search size={15} className="text-slate-400 flex-shrink-0" />
           <input
@@ -292,7 +280,6 @@ export function CommandPalette({ properties, userId }: {
           </span>
           <span className="ml-auto">⌘K / Ctrl+K</span>
         </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }

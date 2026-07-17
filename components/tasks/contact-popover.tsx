@@ -24,7 +24,8 @@ export function ContactActionMenu({ contact, children, align = 'left', action }:
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const close = useCallback(() => setOpen(false), [])
-  useClickOutside(ref, close)
+  // Listener only while open — no idle document listener per avatar.
+  useClickOutside(ref, close, open)
 
   const phone = contact.phone?.trim() || null
   const email = contact.email?.trim() || null

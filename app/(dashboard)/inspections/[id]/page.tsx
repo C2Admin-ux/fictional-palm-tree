@@ -65,7 +65,8 @@ export default function InspectionDetailPage() {
   const [orphanedTaskItems, setOrphanedTaskItems] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    // getSession reads the local session — no network round-trip.
+    supabase.auth.getSession().then(({ data }) => setUserId(data.session?.user.id ?? null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

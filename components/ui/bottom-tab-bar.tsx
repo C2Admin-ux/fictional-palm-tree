@@ -12,13 +12,13 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { LayoutDashboard, CheckSquare, ClipboardCheck, Building2 } from 'lucide-react'
+import { NAV_ITEMS } from '@/lib/nav'
+import { Building2 } from 'lucide-react'
 
-const TABS = [
-  { href: '/dashboard',   label: 'Dashboard',   icon: LayoutDashboard },
-  { href: '/tasks',       label: 'Tasks',       icon: CheckSquare },
-  { href: '/inspections', label: 'Inspections', icon: ClipboardCheck },
-] as const
+// The three everyday destinations, picked from the shared nav list by
+// href (NAV_ITEMS order already matches: Dashboard, Tasks, Inspections).
+const TAB_HREFS = ['/dashboard', '/tasks', '/inspections']
+const TABS = NAV_ITEMS.filter(n => TAB_HREFS.includes(n.href))
 
 export function BottomTabBar({ onToggleProperties }: {
   onToggleProperties: () => void

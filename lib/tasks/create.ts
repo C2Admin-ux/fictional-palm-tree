@@ -9,6 +9,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Task } from '@/lib/supabase/types'
 import type { ParsedQuickAdd } from '@/lib/tasks/quick-add'
+import { toast } from '@/components/ui/toast'
 
 type Client = SupabaseClient<Database>
 type TaskInsert = Database['public']['Tables']['tasks']['Insert']
@@ -51,6 +52,38 @@ export function findingTaskInsertPayload(opts: {
     created_by:  opts.userId,
     assigned_to: opts.userId,
   }
+}
+
+// Follow-up task pre-filled from the record it sits on (insurance
+// policy, contract, PCA item, …): immediately actionable
+// (next_action), owned by the signed-in user.
+export function recordTaskInsertPayload(opts: {
+  title: string
+  propertyId: string | null
+  tags: string[]
+  priority: Task['priority']
+  dueDate: string | null
+  userId: string | null
+}): TaskInsert {
+  return {
+    title:       opts.title,
+    status:      'next_action',
+    priority:    opts.priority,
+    due_date:    opts.dueDate,
+    tags:        opts.tags,
+    property_id: opts.propertyId,
+    created_by:  opts.userId,
+    assigned_to: opts.userId,
+  }
+}
+
+// The shared "it worked" toast for surfaces that aren't a task list
+// themselves (capture sheet, palette, record buttons): confirmation
+// plus a one-tap route to the Tasks page.
+export function notifyTaskCreated(router: { push: (href: string) => void }) {
+  toast('Added to Tasks', {
+    action: { label: 'View', onClick: () => router.push('/tasks') },
+  })
 }
 
 // Broadcast: every successful insert through this path announces the

@@ -11,23 +11,8 @@ import { Toaster } from '@/components/ui/toast'
 import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
 import { CommandPalette } from '@/components/ui/command-palette'
 import { BottomTabBar } from '@/components/ui/bottom-tab-bar'
-import {
-  LayoutDashboard, CheckSquare, Wrench, TrendingUp,
-  FileSignature, Shield, FileBarChart, ClipboardCheck,
-  Settings, Building2, LogOut, ChevronRight, Menu, X, Plus,
-} from 'lucide-react'
-
-const NAV_PORTFOLIO = [
-  { href: '/dashboard',          label: 'Dashboard',       icon: LayoutDashboard },
-  { href: '/tasks',              label: 'Tasks',            icon: CheckSquare },
-  { href: '/capex',              label: 'CapEx',            icon: Wrench },
-  { href: '/performance',        label: 'PM Performance',   icon: TrendingUp },
-  { href: '/documents',          label: 'Contracts',        icon: FileSignature },
-  { href: '/insurance/policies', label: 'Insurance',        icon: Shield },
-  { href: '/reports',            label: 'Reports',          icon: FileBarChart },
-  { href: '/inspections',        label: 'Inspections',      icon: ClipboardCheck },
-  { href: '/settings',           label: 'Settings',         icon: Settings },
-]
+import { NAV_ITEMS } from '@/lib/nav'
+import { Building2, LogOut, ChevronRight, Menu, X, Plus } from 'lucide-react'
 
 const NAV_SOON = [
   { href: '/underwriting', label: 'Underwriting' },
@@ -144,7 +129,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="px-2 py-1">
             <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Portfolio</span>
           </div>
-          {NAV_PORTFOLIO.map(item => {
+          {NAV_ITEMS.map(item => {
             const Icon = item.icon
             const active = isActive(item.href)
             return (

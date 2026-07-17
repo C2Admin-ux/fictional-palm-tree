@@ -15,7 +15,8 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
-import { toast } from '@/components/ui/toast'
+import { notifyTaskCreated } from '@/lib/tasks/create'
+import { Overlay } from '@/components/ui/overlay'
 import { propertyColor } from '@/lib/utils'
 import { useOverlayOpen } from '@/lib/ui/overlay'
 import { X, Inbox as InboxIcon } from 'lucide-react'
@@ -85,29 +86,16 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
   const presetId = routePropertyId ?? inspectionLookup.propertyId
   const presetProperty = presetId ? properties.find(p => p.id === presetId) ?? null : null
 
-  // Escape closes (the input's own Escape blurs first — second press
-  // lands here once nothing is focused, matching the tasks page feel).
-  useEffect(() => {
-    if (!open) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      const el = document.activeElement as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { el.blur(); return }
-      onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
   if (!open) return null
 
+  // Shared chrome (backdrop, panel click-swallow, Escape-with-blur) —
+  // the sheet variant matches the tasks page feel: Escape in the input
+  // blurs first, second press closes.
   return (
-    <div
-      className="fixed inset-0 z-[60] bg-black/50 flex items-end md:items-center justify-center"
-      onClick={onClose}>
-      <div
-        className="bg-white w-full md:max-w-lg md:rounded-2xl rounded-t-2xl shadow-2xl overflow-hidden pb-[env(safe-area-inset-bottom)]"
-        onClick={e => e.stopPropagation()}>
+    <Overlay
+      onClose={onClose}
+      align="sheet"
+      panelClassName="bg-white w-full md:max-w-lg md:rounded-2xl rounded-t-2xl shadow-2xl overflow-hidden pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center gap-2 px-6 py-3 border-b border-slate-100">
           <InboxIcon size={14} className="text-slate-400 flex-shrink-0" />
           <span className="text-sm font-semibold text-slate-900 flex-1">Quick add task</span>
@@ -140,12 +128,9 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
             : 'Try "call plumber fox hill tomorrow !urgent"'}
           onCreated={() => {
             onClose()
-            toast('Added to Tasks', {
-              action: { label: 'View', onClick: () => router.push('/tasks') },
-            })
+            notifyTaskCreated(router)
           }}
         />
-      </div>
-    </div>
+    </Overlay>
   )
 }
