@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -71,10 +71,20 @@ type RowHandlers = {
   onSnooze: (task: TaskWithRelations, date: string) => void
   onRefresh: () => void
   // Keyboard-driven row selection (j/k etc.)
-  selectedId: string | null
   onSelect: (id: string) => void
   // Local lookup — lets rows check whether a blocker still exists
   getTask: (id: string) => TaskWithRelations | undefined
+}
+
+// Keep inserts in the same order the fetch would return them
+// (due_date asc nulls-last, then created_at desc).
+function sortTasks<T extends Task>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const ad = a.due_date ?? '9999-12-31'
+    const bd = b.due_date ?? '9999-12-31'
+    if (ad !== bd) return ad.localeCompare(bd)
+    return (b.created_at ?? '').localeCompare(a.created_at ?? '')
+  })
 }
 
 export default function TasksPage() {
@@ -86,7 +96,7 @@ export default function TasksPage() {
 }
 
 function TasksInner() {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const searchParams = useSearchParams()
 
   const [tasks, setTasks] = useState<TaskWithRelations[]>([])
@@ -197,64 +207,61 @@ function TasksInner() {
   // ── Optimistic mutation plumbing ───────────────────────────
   // Local state changes apply instantly; Supabase writes happen in the
   // background and roll back (with an error toast) on failure.
+  // Store + handlers are referentially stable (latest data via refs)
+  // so the memoized rows only re-render when their own task changes.
 
-  // Keep inserts in the same order the fetch would return them
-  // (due_date asc nulls-last, then created_at desc).
-  function sortTasks(list: TaskWithRelations[]): TaskWithRelations[] {
-    return [...list].sort((a, b) => {
-      const ad = a.due_date ?? '9999-12-31'
-      const bd = b.due_date ?? '9999-12-31'
-      if (ad !== bd) return ad.localeCompare(bd)
-      return (b.created_at ?? '').localeCompare(a.created_at ?? '')
-    })
-  }
+  const tasksRef = useRef(tasks); tasksRef.current = tasks
+  const propertiesRef = useRef(properties); propertiesRef.current = properties
+  const capexRef = useRef(capexProjects); capexRef.current = capexProjects
 
-  // Bare rows (recurrence instances, undo re-inserts) lack the joined
-  // display fields — derive them from the already-loaded lookups.
-  function enrich(task: Task): TaskWithRelations {
-    const partial = task as TaskWithRelations
-    const propName = properties.find(p => p.id === task.property_id)?.name
-    const capexTitle = capexProjects.find(c => c.id === task.capex_project_id)?.title
-    return {
-      ...task,
-      properties: partial.properties ?? (propName ? { name: propName } : null),
-      capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
-      contacts: partial.contacts ?? [],
+  const store: TaskStore = useMemo(() => {
+    // Bare rows (recurrence instances, undo re-inserts) lack the joined
+    // display fields — derive them from the already-loaded lookups.
+    const enrich = (task: Task): TaskWithRelations => {
+      const partial = task as TaskWithRelations
+      const propName = propertiesRef.current.find(p => p.id === task.property_id)?.name
+      const capexTitle = capexRef.current.find(c => c.id === task.capex_project_id)?.title
+      return {
+        ...task,
+        properties: partial.properties ?? (propName ? { name: propName } : null),
+        capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
+        contacts: partial.contacts ?? [],
+      }
     }
-  }
+    return {
+      // Always re-sort on update — a due_date edit must move the row, and
+      // the arrays are small enough that sorting every patch is cheap.
+      update: (id, fields) => setTasks(prev => sortTasks(prev.map(t => t.id === id ? { ...t, ...fields } : t))),
+      insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
+      remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
+    }
+  }, [])
 
-  const store: TaskStore = {
-    // Always re-sort on update — a due_date edit must move the row, and
-    // the arrays are small enough that sorting every patch is cheap.
-    update: (id, fields) => setTasks(prev => sortTasks(prev.map(t => t.id === id ? { ...t, ...fields } : t))),
-    insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
-    remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
-  }
+  const markDone = useCallback(
+    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task),
+    [supabase, store]
+  )
 
-  function markDone(task: TaskWithRelations) {
-    return toggleDoneOptimistic(supabase, store, task)
-  }
-
-  function deleteTask(task: TaskWithRelations) {
-    deleteTaskOptimistic(supabase, store, task, {
+  const deleteTask = useCallback(
+    (task: TaskWithRelations) => deleteTaskOptimistic(supabase, store, task, {
       // The junction rows died with the task — restored on undo.
       contactIds: (task.contacts ?? []).map(c => c.id),
-    })
-  }
+    }),
+    [supabase, store]
+  )
 
-  const taskById = (id: string) => tasks.find(t => t.id === id)
+  const taskById = useCallback((id: string) => tasksRef.current.find(t => t.id === id), [])
 
-  const handlers: RowHandlers = {
+  const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: markDone,
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
     onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
     onRefresh: fetchTasks,
-    selectedId,
     onSelect: setSelectedId,
     getTask: taskById,
-  }
+  }), [supabase, store, markDone, deleteTask, fetchTasks, taskById])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -374,9 +381,9 @@ function TasksInner() {
           <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading…</div>
         ) : view === 'agenda' ? (
           <AgendaView tasks={tasks} userId={userId} handlers={handlers}
-            properties={properties} onQuickAdd={store.insert} />
+            selectedId={selectedId} properties={properties} onQuickAdd={store.insert} />
         ) : view === 'review' ? (
-          <ReviewView tasks={tasks} userId={userId} handlers={handlers} />
+          <ReviewView tasks={tasks} userId={userId} handlers={handlers} selectedId={selectedId} />
         ) : (
           <div className="pb-8">
             {STATUS_ORDER.map(status => {
@@ -413,7 +420,8 @@ function TasksInner() {
                       </div>
 
                       {sectionTasks.map(task => (
-                        <TaskRow key={task.id} task={task} handlers={handlers} />
+                        <TaskRow key={task.id} task={task} handlers={handlers}
+                          selected={selectedId === task.id} />
                       ))}
 
                       <div
@@ -472,16 +480,18 @@ function TasksInner() {
 }
 
 // ── Task Row ─────────────────────────────────────────────────
+// Memoized: handlers/store are referentially stable, so a row only
+// re-renders when its own task object (or selection) changes.
 
-function TaskRow({ task, handlers, meta, swipeable = false }: {
+const TaskRow = memo(function TaskRow({ task, handlers, selected = false, meta, swipeable = false }: {
   task: TaskWithRelations
   handlers: RowHandlers
+  selected?: boolean      // keyboard-selected (j/k)
   meta?: React.ReactNode  // extra info rendered on the second line (review views)
   swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
 }) {
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
-  const selected = handlers.selectedId === task.id
   const isDone = task.status === 'done'
   const overdue = !isDone && isOverdue(task.due_date)
   const soon = !isDone && !overdue && isSoon(task.due_date, 7)
@@ -666,16 +676,17 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
       {row}
     </SwipeRow>
   )
-}
+})
 
 // ── Agenda View ──────────────────────────────────────────────
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
+  selectedId: string | null
   properties: Property[]
   onQuickAdd: (task: Task) => void
 }) {
@@ -683,35 +694,40 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
   const [snoozedOpen, setSnoozedOpen] = useState(false)
 
   const today = todayISO()
-  const taskById = new Map(tasks.map(t => [t.id, t]))
 
-  // Actionable-now semantics
-  const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
-  const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
-  const isUnblocked = (t: TaskWithRelations) => {
-    if (!t.blocked_by_task_id) return true
-    const blocker = taskById.get(t.blocked_by_task_id)
-    return !blocker || blocker.status === 'done'
-  }
+  const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
+    const taskById = new Map(tasks.map(t => [t.id, t]))
 
-  // Personal inbox: things I captured that still need processing
-  const myInbox = tasks.filter(t =>
-    t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
-  )
-  const inboxIds = new Set(myInbox.map(t => t.id))
+    // Actionable-now semantics
+    const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
+    const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
+    const isUnblocked = (t: TaskWithRelations) => {
+      if (!t.blocked_by_task_id) return true
+      const blocker = taskById.get(t.blocked_by_task_id)
+      return !blocker || blocker.status === 'done'
+    }
 
-  const actionable = tasks.filter(t =>
-    t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
-  )
+    // Personal inbox: things I captured that still need processing
+    const myInbox = tasks.filter(t =>
+      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+    )
+    const inboxIds = new Set(myInbox.map(t => t.id))
 
-  // Shared bucketing (same as the property Tasks tab) — 'Later' is
-  // unbounded, so a capture dated months out still shows up.
-  const groups = groupByDue(actionable, today, { nodate: 'No due date' })
-  const hasDated = groups.some(g => g.tasks.length > 0)
+    const actionable = tasks.filter(t =>
+      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+    )
 
-  const snoozed = tasks.filter(t =>
-    t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
-  ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+    // Shared bucketing (same as the property Tasks tab) — 'Later' is
+    // unbounded, so a capture dated months out still shows up.
+    const groups = groupByDue(actionable, today, { nodate: 'No due date' })
+    const hasDated = groups.some(g => g.tasks.length > 0)
+
+    const snoozed = tasks.filter(t =>
+      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+    ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+
+    return { myInbox, groups, hasDated, snoozed }
+  }, [tasks, userId, today])
 
   return (
     <div className="pb-8">
@@ -734,7 +750,9 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
             </span>
             <span className="text-xs text-indigo-400">to process</span>
           </button>
-          {inboxOpen && myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} swipeable />)}
+          {inboxOpen && myInbox.map(t => (
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+          ))}
         </div>
       )}
 
@@ -754,7 +772,9 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
                 {g.tasks.length}
               </span>
             </div>
-            {g.tasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} swipeable />)}
+            {g.tasks.map(t => (
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable />
+            ))}
           </div>
         )
       })}
@@ -807,11 +827,14 @@ function AgendaView({ tasks, userId, handlers, properties, onQuickAdd }: {
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers }: {
+function ReviewView({ tasks, userId, handlers, selectedId }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
+  selectedId: string | null
 }) {
+  const rowProps = (t: TaskWithRelations) =>
+    ({ task: t, handlers, selected: selectedId === t.id })
   const myInbox = tasks.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
   const waiting = [...tasks]
@@ -842,7 +865,7 @@ function ReviewView({ tasks, userId, handlers }: {
         count={myInbox.length}
         hint="Date it, assign it, promote it to a next action — or delete it.">
         {myInbox.length
-          ? myInbox.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          ? myInbox.map(t => <TaskRow key={t.id} {...rowProps(t)} />)
           : <SectionEmpty label="Inbox zero. Nothing to process." />}
       </ReviewSection>
 
@@ -856,7 +879,7 @@ function ReviewView({ tasks, userId, handlers }: {
               const waitDays = Math.max(0, -(daysUntil(t.updated_at) ?? 0))
               const names = (t.contacts ?? []).map(c => c.full_name).join(', ')
               return (
-                <TaskRow key={t.id} task={t} handlers={handlers}
+                <TaskRow key={t.id} {...rowProps(t)}
                   meta={
                     <span className="text-xs text-purple-600">
                       waiting {waitDays}d{names ? ` · ${names}` : ''}
@@ -882,7 +905,7 @@ function ReviewView({ tasks, userId, handlers }: {
                   <span className="text-xs font-semibold text-slate-500">{prop}</span>
                   <span className="text-xs text-slate-300">({propTasks.length})</span>
                 </div>
-                {propTasks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)}
+                {propTasks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)}
               </div>
             ))
           : <SectionEmpty label="No obligations due within 90 days." />}
@@ -899,7 +922,7 @@ function ReviewView({ tasks, userId, handlers }: {
           <p className="text-xs text-amber-600 mt-0.5">The big things this quarter — are they moving?</p>
         </div>
         {rocks.length
-          ? rocks.map(t => <TaskRow key={t.id} task={t} handlers={handlers} />)
+          ? rocks.map(t => <TaskRow key={t.id} {...rowProps(t)} />)
           : <SectionEmpty label="No rocks tagged. Use the mountain toggle on a task to mark one." />}
       </div>
 
@@ -910,7 +933,7 @@ function ReviewView({ tasks, userId, handlers }: {
         hint="Done and dusted — momentum check.">
         {shipped.length
           ? shipped.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers}
+              <TaskRow key={t.id} {...rowProps(t)}
                 meta={
                   <span className="text-xs text-emerald-600">
                     done {formatDateShort(t.completed_at)}

@@ -6,13 +6,26 @@
 // Vertical scrolling is preserved: we only capture the gesture once
 // horizontal intent is clear (|dx| > |dy| and |dx| > 12px), and
 // touch-action: pan-y leaves vertical pans to the browser.
+//
+// Perf: the per-move travel lives in a ref and is written straight to
+// style.transform (rAF-throttled) — React state only changes on the
+// discrete transitions (drag start/end, direction, threshold crossing),
+// so dragging doesn't re-render the row on every pointer event.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Moon } from 'lucide-react'
 
 const INTENT_PX = 12    // movement before we decide the gesture is horizontal
 const TRIGGER_PX = 72   // travel needed to fire the action on release
 const MAX_PX = 120      // soft cap on row travel
+
+type DragUi = {
+  active: boolean            // mid-gesture (controls overflow clipping + underlay)
+  dir: 'right' | 'left' | null
+  armed: boolean             // past the trigger threshold
+}
+
+const IDLE: DragUi = { active: false, dir: null, armed: false }
 
 export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children }: {
   onSwipeRight: () => void
@@ -20,22 +33,40 @@ export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children
   disabled?: boolean
   children: React.ReactNode
 }) {
-  const [dx, setDx] = useState(0)
-  const [dragging, setDragging] = useState(false)
+  const [ui, setUi] = useState<DragUi>(IDLE)
+  const rowRef = useRef<HTMLDivElement>(null)
   const start = useRef<{ x: number; y: number } | null>(null)
   const intent = useRef<'none' | 'horizontal' | 'vertical'>('none')
-  const dxRef = useRef(0) // mirror of dx — pointerup must not read a stale render
+  const dxRef = useRef(0)
+  const rafRef = useRef<number | null>(null)
 
-  function move(value: number) {
-    dxRef.current = value
-    setDx(value)
+  useEffect(() => () => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+  }, [])
+
+  function scheduleTransform() {
+    if (rafRef.current != null) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      const el = rowRef.current
+      if (el) el.style.transform = `translateX(${dxRef.current}px)`
+    })
   }
 
   function reset() {
     start.current = null
     intent.current = 'none'
-    setDragging(false)
-    move(0)
+    dxRef.current = 0
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    const el = rowRef.current
+    if (el) {
+      el.style.transition = 'transform 150ms ease-out'
+      el.style.transform = 'translateX(0px)'
+    }
+    setUi(IDLE)
   }
 
   function onPointerDown(e: React.PointerEvent) {
@@ -53,8 +84,8 @@ export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children
     if (intent.current === 'none') {
       if (Math.abs(deltaX) > INTENT_PX && Math.abs(deltaX) > Math.abs(deltaY)) {
         intent.current = 'horizontal'
-        setDragging(true)
         e.currentTarget.setPointerCapture?.(e.pointerId)
+        if (rowRef.current) rowRef.current.style.transition = 'none'
       } else if (Math.abs(deltaY) > INTENT_PX) {
         intent.current = 'vertical' // it's a scroll — leave it alone
         return
@@ -64,7 +95,17 @@ export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children
     }
 
     // Cap travel so the row feels anchored
-    move(Math.sign(deltaX) * Math.min(Math.abs(deltaX), MAX_PX))
+    const dx = Math.sign(deltaX) * Math.min(Math.abs(deltaX), MAX_PX)
+    dxRef.current = dx
+    scheduleTransform()
+
+    const dir = dx > 0 ? 'right' as const : dx < 0 ? 'left' as const : null
+    const armed = Math.abs(dx) >= TRIGGER_PX
+    setUi(prev =>
+      prev.active && prev.dir === dir && prev.armed === armed
+        ? prev
+        : { active: true, dir, armed }
+    )
   }
 
   function onPointerUp() {
@@ -76,42 +117,34 @@ export function SwipeRow({ onSwipeRight, onSwipeLeft, disabled = false, children
     reset()
   }
 
-  const rightActive = dx >= TRIGGER_PX
-  const leftActive = dx <= -TRIGGER_PX
-
   return (
     <div
       // overflow-hidden only mid-gesture — at rest it would clip the
       // row's own dropdowns (snooze presets, priority pip).
-      className={dx !== 0 ? 'relative overflow-hidden' : 'relative'}
+      className={ui.active ? 'relative overflow-hidden' : 'relative'}
       style={{ touchAction: 'pan-y' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={reset}>
       {/* Reveal underlay */}
-      {dx !== 0 && (
+      {ui.active && ui.dir && (
         <div className="absolute inset-0 flex" aria-hidden="true">
           <div className={`flex-1 flex items-center pl-5 transition-colors ${
-            dx > 0 ? (rightActive ? 'bg-emerald-500' : 'bg-emerald-300') : 'bg-transparent'
+            ui.dir === 'right' ? (ui.armed ? 'bg-emerald-500' : 'bg-emerald-300') : 'bg-transparent'
           }`}>
-            {dx > 0 && <Check size={18} className="text-white" />}
+            {ui.dir === 'right' && <Check size={18} className="text-white" />}
           </div>
           <div className={`flex-1 flex items-center justify-end pr-5 transition-colors ${
-            dx < 0 ? (leftActive ? 'bg-amber-400' : 'bg-amber-200') : 'bg-transparent'
+            ui.dir === 'left' ? (ui.armed ? 'bg-amber-400' : 'bg-amber-200') : 'bg-transparent'
           }`}>
-            {dx < 0 && <Moon size={18} className="text-white" />}
+            {ui.dir === 'left' && <Moon size={18} className="text-white" />}
           </div>
         </div>
       )}
 
       {/* The row itself, sliding over the underlay */}
-      <div
-        className="relative bg-white"
-        style={{
-          transform: dx !== 0 ? `translateX(${dx}px)` : undefined,
-          transition: dragging ? 'none' : 'transform 150ms ease-out',
-        }}>
+      <div ref={rowRef} className="relative bg-white">
         {children}
       </div>
     </div>

@@ -6,7 +6,7 @@
 // property. Open tasks grouped by due date; recently completed
 // collapsed at the bottom with un-complete toggles.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, memo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Task } from '@/lib/supabase/types'
 import {
@@ -29,7 +29,7 @@ import { RefreshCw, Clock, Moon, ChevronDown, AlertTriangle, X } from 'lucide-re
 type TabTask = Task & { task_contacts?: { contact_id: string }[] | null }
 
 export default function TasksTab({ propertyId }: { propertyId: string }) {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const [tasks, setTasks] = useState<TabTask[]>([])
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,11 +58,13 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const store: TaskStore = {
+  // Referentially stable so the memoized rows only re-render when
+  // their own task changes.
+  const store: TaskStore = useMemo(() => ({
     update: (id, fields) => setTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
     insert: task => setTasks(prev => [...prev, task]),
     remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
-  }
+  }), [])
 
   const openTasks = tasks.filter(t => t.status !== 'done')
   const completed = tasks
@@ -135,7 +137,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
 // ── Row ──────────────────────────────────────────────────────
 
-function PropertyTaskRow({ task, supabase, store }: {
+const PropertyTaskRow = memo(function PropertyTaskRow({ task, supabase, store }: {
   task: TabTask
   supabase: ReturnType<typeof createClient>
   store: TaskStore
@@ -261,4 +263,4 @@ function PropertyTaskRow({ task, supabase, store }: {
       {row}
     </SwipeRow>
   )
-}
+})
