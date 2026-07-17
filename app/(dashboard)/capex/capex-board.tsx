@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   DndContext, DragOverlay, MouseSensor, TouchSensor,
@@ -44,8 +44,12 @@ export function CapexBoard({ projects, onMove }: {
   const router = useRouter()
   const [activeId, setActiveId] = useState<string | null>(null)
   // A click event still fires after a drag's pointerup — swallow exactly
-  // that one so dropping a card doesn't also navigate to its detail page.
+  // that one (consume-once in onOpen) so dropping a card doesn't also
+  // navigate to its detail page. Some touch browsers never deliver that
+  // click, so a short fallback timer clears the flag if nothing consumed it.
   const suppressClick = useRef(false)
+  const suppressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (suppressTimer.current) clearTimeout(suppressTimer.current) }, [])
 
   const sensors = useSensors(
     // Small distance so plain taps/clicks still open the card.
@@ -61,7 +65,8 @@ export function CapexBoard({ projects, onMove }: {
   function handleDragEnd(e: DragEndEvent) {
     setActiveId(null)
     suppressClick.current = true
-    setTimeout(() => { suppressClick.current = false }, 0)
+    if (suppressTimer.current) clearTimeout(suppressTimer.current)
+    suppressTimer.current = setTimeout(() => { suppressClick.current = false }, 400)
     if (e.over) onMove(String(e.active.id), e.over.id as CapexStatus)
   }
 
@@ -74,7 +79,10 @@ export function CapexBoard({ projects, onMove }: {
         {COLUMNS.map(col => (
           <BoardColumn key={col.status} status={col.status} label={col.label}
             projects={projects.filter(p => p.status === col.status)}
-            onOpen={id => { if (!suppressClick.current) router.push(`/capex/${id}`) }} />
+            onOpen={id => {
+              if (suppressClick.current) { suppressClick.current = false; return }
+              router.push(`/capex/${id}`)
+            }} />
         ))}
       </div>
       <DragOverlay dropAnimation={{ duration: 180, easing: 'ease' }}>
