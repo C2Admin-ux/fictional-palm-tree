@@ -88,10 +88,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      {/* Mobile drawer backdrop */}
+      {/* Mobile drawer backdrop — above the bottom tab bar (z-40) so
+          the bar is dimmed and a tap in that strip closes the drawer;
+          the drawer itself stays above the backdrop at z-50 */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className="fixed inset-0 z-[45] bg-black/50 md:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
         />
@@ -213,7 +215,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
 
-      <BottomTabBar onOpenProperties={() => setSidebarOpen(true)} />
+      <BottomTabBar onToggleProperties={() => setSidebarOpen(o => !o)} />
 
       <GlobalQuickAdd
         open={quickAddOpen}

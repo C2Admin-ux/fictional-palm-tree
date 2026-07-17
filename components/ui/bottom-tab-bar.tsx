@@ -2,9 +2,10 @@
 
 // Mobile bottom tab bar (below md): the four everyday destinations one
 // thumb-tap away — Dashboard, Tasks, Inspections, and Properties.
-// "Properties" is a list, not a single page, so its tab opens the
-// existing drawer (scrolling the sidebar reveals the property links);
-// the hamburger stays for the long tail (CapEx, Insurance, …).
+// "Properties" is a list, not a single page, so its tab TOGGLES the
+// existing drawer (scrolling the sidebar reveals the property links;
+// a second tap closes it); the hamburger stays for the long tail
+// (CapEx, Insurance, …).
 // Fixed to the viewport bottom with safe-area padding; the shell gives
 // <main> matching bottom padding so content never hides behind it.
 
@@ -19,8 +20,8 @@ const TABS = [
   { href: '/inspections', label: 'Inspections', icon: ClipboardCheck },
 ] as const
 
-export function BottomTabBar({ onOpenProperties }: {
-  onOpenProperties: () => void
+export function BottomTabBar({ onToggleProperties }: {
+  onToggleProperties: () => void
 }) {
   const pathname = usePathname()
 
@@ -46,7 +47,7 @@ export function BottomTabBar({ onOpenProperties }: {
           )
         })}
         <button
-          onClick={onOpenProperties}
+          onClick={onToggleProperties}
           className={cn(
             'flex flex-col items-center gap-0.5 py-2 text-[10px] font-medium transition-colors',
             pathname.startsWith('/properties') ? 'text-blue-400' : 'text-slate-400 hover:text-slate-200'
