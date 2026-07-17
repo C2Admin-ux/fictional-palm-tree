@@ -21,6 +21,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
 import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
 import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
@@ -790,6 +791,11 @@ const TaskRow = memo(function TaskRow({
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
+  // RTM completion feel: check pop, then the row collapses out before
+  // the store removes it. Every completion surface on this row (circle,
+  // swipe, status dropdown, keyboard 'c' via data-complete-toggle)
+  // routes through `trigger`. Un-completing skips the animation.
+  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, () => onDone(task))
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
@@ -825,7 +831,7 @@ const TaskRow = memo(function TaskRow({
         onSave={priority => patch({ priority })} />
 
       {/* Checkbox */}
-      <CompleteCircle isDone={isDone} onToggle={() => onDone(task)} />
+      <CompleteCircle isDone={isDone || checked} onToggle={trigger} />
 
       {/* Title — inline editable */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -884,7 +890,7 @@ const TaskRow = memo(function TaskRow({
           value={task.status}
           options={STATUS_OPTIONS}
           onSave={v => {
-            if (v === 'done') onDone(task)
+            if (v === 'done') trigger()
             else patch({ status: v as Task['status'], completed_at: null })
           }}
         />
@@ -937,24 +943,27 @@ const TaskRow = memo(function TaskRow({
 
   const body = swipeable ? (
     <SwipeRow
-      onSwipeRight={() => onDone(task)}
+      onSwipeRight={trigger}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
   ) : row
 
-  if (subtasks == null || subtasks.length === 0 || !expanded) return body
+  // The collapse wraps the row AND its expanded drill-down: completing
+  // a parent takes the whole block out in one motion.
   return (
-    <>
+    <CollapseOnComplete collapsing={collapsing}>
       {body}
-      <SubtaskList
-        subtasks={subtasks}
-        onToggleDone={onDone}
-        onPatch={onPatch}
-        onDelete={onDelete}
-        onAdd={title => handlers.onAddSubtask(task, title)}
-      />
-    </>
+      {subtasks != null && subtasks.length > 0 && expanded && (
+        <SubtaskList
+          subtasks={subtasks}
+          onToggleDone={onDone}
+          onPatch={onPatch}
+          onDelete={onDelete}
+          onAdd={title => handlers.onAddSubtask(task, title)}
+        />
+      )}
+    </CollapseOnComplete>
   )
 })
 

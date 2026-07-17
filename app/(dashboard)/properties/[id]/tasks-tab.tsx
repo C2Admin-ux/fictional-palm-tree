@@ -16,6 +16,7 @@ import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell } from '@/components/tasks/row-cells'
 import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
+import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
   snoozeTaskOptimistic, addSubtaskOptimistic,
@@ -203,6 +204,10 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
   const isDone = task.status === 'done'
   const today = todayISO()
   const snoozed = !isDone && task.snoozed_until != null && task.snoozed_until > today
+  // RTM completion feel — same wrapper as the tasks page rows: check
+  // pop, collapse, then the mutation. Un-completing (from Recently
+  // completed) passes straight through with no animation.
+  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, () => onDone(task))
 
   function patch(fields: Partial<Task>) {
     patchTaskOptimistic(supabase, store, task, fields)
@@ -222,8 +227,8 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
         onSave={priority => patch({ priority })} />
 
       {/* Complete / un-complete circle */}
-      <CompleteCircle isDone={isDone}
-        onToggle={() => onDone(task)} />
+      <CompleteCircle isDone={isDone || checked}
+        onToggle={trigger} />
 
       {/* Title */}
       <div className="flex-1 min-w-0 py-2.5">
@@ -285,25 +290,28 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
 
   const body = isDone ? row : (
     <SwipeRow
-      onSwipeRight={() => onDone(task)}
+      onSwipeRight={trigger}
       onSwipeLeft={() => setSnoozeOpen(true)}>
       {row}
     </SwipeRow>
   )
 
-  if (subtasks == null || subtasks.length === 0 || !expanded) return body
+  // The collapse wraps the row AND its expanded drill-down: completing
+  // a parent takes the whole block out in one motion.
   return (
-    <>
+    <CollapseOnComplete collapsing={collapsing}>
       {body}
-      <SubtaskList
-        subtasks={subtasks}
-        onToggleDone={onDone}
-        onPatch={(t, fields) => patchTaskOptimistic(supabase, store, t, fields)}
-        onDelete={t => deleteTaskOptimistic(supabase, store, t, {
-          contactIds: (t.task_contacts ?? []).map(tc => tc.contact_id),
-        })}
-        onAdd={title => addSubtaskOptimistic(supabase, store, task, title, userId)}
-      />
-    </>
+      {subtasks != null && subtasks.length > 0 && expanded && (
+        <SubtaskList
+          subtasks={subtasks}
+          onToggleDone={onDone}
+          onPatch={(t, fields) => patchTaskOptimistic(supabase, store, t, fields)}
+          onDelete={t => deleteTaskOptimistic(supabase, store, t, {
+            contactIds: (t.task_contacts ?? []).map(tc => tc.contact_id),
+          })}
+          onAdd={title => addSubtaskOptimistic(supabase, store, task, title, userId)}
+        />
+      )}
+    </CollapseOnComplete>
   )
 })

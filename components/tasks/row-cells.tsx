@@ -28,19 +28,22 @@ export function PriorityPip({ priority, isDone, onSave }: {
   )
 }
 
-// Complete / un-complete circle.
+// Complete / un-complete circle. data-complete-toggle lets the `c`
+// shortcut click this exact button, so the keyboard rides the same
+// check-pop + collapse path as the mouse (see complete-collapse.tsx —
+// callers pass isDone || checked while the exit animation runs).
 export function CompleteCircle({ isDone, onToggle }: {
   isDone: boolean
   onToggle: () => void
 }) {
   return (
-    <button onClick={onToggle}
+    <button onClick={onToggle} data-complete-toggle
       className={cn(
         'w-4 h-4 rounded-full border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-all',
         isDone ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-blue-400'
       )}>
       {isDone && (
-        <svg width="8" height="6" viewBox="0 0 8 6" fill="none">
+        <svg width="8" height="6" viewBox="0 0 8 6" fill="none" className="check-pop">
           <path d="M1 3l2.5 2.5L7 1" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}

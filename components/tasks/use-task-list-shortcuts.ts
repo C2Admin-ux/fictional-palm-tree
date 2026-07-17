@@ -118,10 +118,15 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
       }
 
       switch (e.key) {
-        case 'c':
+        case 'c': {
           e.preventDefault()
-          a.onComplete(a.selectedId)
+          // Click the row's real complete circle so the keyboard gets
+          // the same check-pop + collapse animation as the mouse.
+          const circle = row.querySelector<HTMLElement>('[data-complete-toggle]')
+          if (circle) circle.click()
+          else a.onComplete(a.selectedId)
           return
+        }
         case 'e':
           e.preventDefault()
           a.onEdit(a.selectedId)

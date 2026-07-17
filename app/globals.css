@@ -27,4 +27,13 @@
   .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
   .sidebar-item { @apply flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer; }
   .sidebar-item-active { @apply bg-blue-600 text-white; }
+  /* Complete-circle check pop (RTM completion feel) — plain CSS, no
+     animation library. Duration matches CHECK_MS in complete-collapse. */
+  .check-pop { animation: check-pop 150ms ease-out; }
+}
+
+@keyframes check-pop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }

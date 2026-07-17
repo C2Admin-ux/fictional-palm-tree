@@ -14,6 +14,7 @@ import type { Task } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
 import { InlineText } from '@/components/ui/inline-edit'
 import { CompleteCircle, DueDateCell } from '@/components/tasks/row-cells'
+import { CollapseOnComplete, useCompleteCollapse } from '@/components/tasks/complete-collapse'
 import { ChevronDown, CornerDownRight, Plus, X } from 'lucide-react'
 
 export function SubtaskChip({ done, total, expanded, onToggle }: {
@@ -72,29 +73,35 @@ function SubtaskRow<T extends Task>({ task, onToggleDone, onPatch, onDelete }: {
   onDelete: () => void
 }) {
   const isDone = task.status === 'done'
+  // Same RTM completion feel as full rows: check pop, collapse out,
+  // then the mutation lands (the row reappears in the muted done tail
+  // of this list, where un-completing is instant and unanimated).
+  const { checked, collapsing, trigger } = useCompleteCollapse(isDone, onToggleDone)
   return (
-    <div
-      data-task-id={task.id}
-      className={cn(
-        'flex items-center pl-14 pr-6 py-0 min-h-[32px] border-b border-slate-100 last:border-b-0 group hover:bg-slate-100/60 transition-colors',
-        isDone && 'opacity-60'
-      )}>
-      <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
-      <CompleteCircle isDone={isDone} onToggle={onToggleDone} />
-      <div className="flex-1 min-w-0 py-1.5">
-        <div className={cn('text-sm text-slate-800', isDone && 'line-through text-slate-400')}>
-          <InlineText value={task.title} onSave={v => onPatch({ title: v })} />
+    <CollapseOnComplete collapsing={collapsing}>
+      <div
+        data-task-id={task.id}
+        className={cn(
+          'flex items-center pl-14 pr-6 py-0 min-h-[32px] border-b border-slate-100 last:border-b-0 group hover:bg-slate-100/60 transition-colors',
+          isDone && 'opacity-60'
+        )}>
+        <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
+        <CompleteCircle isDone={isDone || checked} onToggle={trigger} />
+        <div className="flex-1 min-w-0 py-1.5">
+          <div className={cn('text-sm text-slate-800', isDone && 'line-through text-slate-400')}>
+            <InlineText value={task.title} onSave={v => onPatch({ title: v })} />
+          </div>
+        </div>
+        <DueDateCell dueDate={task.due_date} isDone={isDone}
+          onSave={v => onPatch({ due_date: v })} />
+        <div className="w-6 flex justify-center ml-1">
+          <button onClick={onDelete}
+            className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
+            <X size={13} />
+          </button>
         </div>
       </div>
-      <DueDateCell dueDate={task.due_date} isDone={isDone}
-        onSave={v => onPatch({ due_date: v })} />
-      <div className="w-6 flex justify-center ml-1">
-        <button onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
-          <X size={13} />
-        </button>
-      </div>
-    </div>
+    </CollapseOnComplete>
   )
 }
 
