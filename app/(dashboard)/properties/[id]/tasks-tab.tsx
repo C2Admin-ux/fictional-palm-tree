@@ -17,16 +17,20 @@ import { InlineText, InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/compon
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
-import { toast } from '@/components/ui/toast'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
+  snoozeTaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { groupByDue } from '@/lib/tasks/dates'
 import { RefreshCw, Clock, Moon, ChevronDown, AlertTriangle, X } from 'lucide-react'
 
+// Row with the task_contacts junction ids joined in, so delete undo
+// can restore the links (same undo contract as the tasks page).
+type TabTask = Task & { task_contacts?: { contact_id: string }[] | null }
+
 export default function TasksTab({ propertyId }: { propertyId: string }) {
   const supabase = createClient()
-  const [tasks, setTasks] = useState<Task[]>([])
+  const [tasks, setTasks] = useState<TabTask[]>([])
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [completedOpen, setCompletedOpen] = useState(false)
@@ -34,16 +38,16 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
   const fetchTasks = useCallback(async () => {
     const completedCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
     const [{ data: open }, { data: recentDone }] = await Promise.all([
-      supabase.from('tasks').select('*')
+      supabase.from('tasks').select('*, task_contacts(contact_id)')
         .eq('property_id', propertyId).neq('status', 'done')
         .order('due_date', { ascending: true, nullsFirst: false })
         .order('created_at', { ascending: false }),
-      supabase.from('tasks').select('*')
+      supabase.from('tasks').select('*, task_contacts(contact_id)')
         .eq('property_id', propertyId).eq('status', 'done')
         .gte('completed_at', completedCutoff)
         .order('completed_at', { ascending: false }),
     ])
-    setTasks([...(open ?? []), ...(recentDone ?? [])] as Task[])
+    setTasks([...(open ?? []), ...(recentDone ?? [])] as unknown as TabTask[])
     setLoading(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propertyId])
@@ -132,7 +136,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 // ── Row ──────────────────────────────────────────────────────
 
 function PropertyTaskRow({ task, supabase, store }: {
-  task: Task
+  task: TabTask
   supabase: ReturnType<typeof createClient>
   store: TaskStore
 }) {
@@ -148,8 +152,7 @@ function PropertyTaskRow({ task, supabase, store }: {
   }
 
   function snooze(date: string) {
-    patch({ snoozed_until: date })
-    toast(`Snoozed until ${formatDateShort(date)}`)
+    snoozeTaskOptimistic(supabase, store, task, date)
   }
 
   const row = (
@@ -240,7 +243,9 @@ function PropertyTaskRow({ task, supabase, store }: {
 
       {/* Delete — instant, with an Undo toast */}
       <div className="w-6 flex justify-center ml-1">
-        <button onClick={() => deleteTaskOptimistic(supabase, store, task)}
+        <button onClick={() => deleteTaskOptimistic(supabase, store, task, {
+          contactIds: (task.task_contacts ?? []).map(tc => tc.contact_id),
+        })}
           className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-all">
           <X size={13} />
         </button>

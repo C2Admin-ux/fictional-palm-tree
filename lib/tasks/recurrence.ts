@@ -7,6 +7,7 @@
 import { addDays, addMonths, format, parseISO } from 'date-fns'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Task } from '@/lib/supabase/types'
+import { nextOccurrenceBasePayload } from '@/lib/tasks/payload'
 import { todayISO } from '@/lib/utils'
 
 type Client = SupabaseClient<Database>
@@ -83,27 +84,16 @@ export async function createNextOccurrence(supabase: Client, task: Task): Promis
     .limit(1)
   if (lookupError || (existing && existing.length > 0)) return null
 
+  // Everything that isn't per-instance state carries forward (derived
+  // in lib/tasks/payload.ts — one source of truth, keeps future columns).
   const { data: created, error } = await supabase
     .from('tasks')
     .insert({
-      title:            task.title,
-      description:      task.description,
-      property_id:      task.property_id,
-      capex_project_id: task.capex_project_id,
-      priority:         task.priority,
-      tags:             task.tags ?? [],
-      assigned_to:      task.assigned_to,
-      created_by:       task.created_by,
-      status:           'next_action',
-      due_date:         next.due_date,
-      recur_freq:       task.recur_freq,
-      recur_interval:   task.recur_interval,
-      recur_unit:       task.recur_unit,
-      recur_end_type:   task.recur_end_type,
-      recur_end_date:   task.recur_end_date,
-      recur_end_count:  task.recur_end_count,
-      recur_parent_id:  parentId,
-      recur_count:      (task.recur_count ?? 0) + 1,
+      ...nextOccurrenceBasePayload(task),
+      status:          'next_action',
+      due_date:        next.due_date,
+      recur_parent_id: parentId,
+      recur_count:     (task.recur_count ?? 0) + 1,
     })
     .select('*')
     .single()

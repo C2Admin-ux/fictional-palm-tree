@@ -19,13 +19,13 @@ import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
 import { SwipeRow } from '@/components/tasks/swipe-row'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
-import { toast } from '@/components/ui/toast'
 import { InlineText, InlineSelect, InlineDate, STATUS_OPTIONS, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
+  snoozeTaskOptimistic,
 } from '@/lib/tasks/mutations'
 
 type TaskWithRelations = Task & {
@@ -72,6 +72,8 @@ type RowHandlers = {
   // Keyboard-driven row selection (j/k etc.)
   selectedId: string | null
   onSelect: (id: string) => void
+  // Local lookup — lets rows check whether a blocker still exists
+  getTask: (id: string) => TaskWithRelations | undefined
 }
 
 export default function TasksPage() {
@@ -221,47 +223,41 @@ function TasksInner() {
   }
 
   const store: TaskStore = {
-    update: (id, fields) => setTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
+    // Always re-sort on update — a due_date edit must move the row, and
+    // the arrays are small enough that sorting every patch is cheap.
+    update: (id, fields) => setTasks(prev => sortTasks(prev.map(t => t.id === id ? { ...t, ...fields } : t))),
     insert: task => setTasks(prev => sortTasks([...prev, enrich(task)])),
     remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
   }
 
   function markDone(task: TaskWithRelations) {
-    toggleDoneOptimistic(supabase, store, task)
+    return toggleDoneOptimistic(supabase, store, task)
   }
 
   function deleteTask(task: TaskWithRelations) {
     deleteTaskOptimistic(supabase, store, task, {
-      // The junction rows died with the task — bring them back on undo.
-      onRestored: async () => {
-        const contactIds = (task.contacts ?? []).map(c => c.id)
-        if (contactIds.length > 0) {
-          await supabase.from('task_contacts').insert(
-            contactIds.map(cid => ({ task_id: task.id, contact_id: cid }))
-          )
-        }
-      },
+      // The junction rows died with the task — restored on undo.
+      contactIds: (task.contacts ?? []).map(c => c.id),
     })
   }
+
+  const taskById = (id: string) => tasks.find(t => t.id === id)
 
   const handlers: RowHandlers = {
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: markDone,
     onDelete: deleteTask,
     onPatch: (task, fields) => { patchTaskOptimistic(supabase, store, task, fields) },
-    onSnooze: (task, date) => {
-      patchTaskOptimistic(supabase, store, task, { snoozed_until: date })
-      toast(`Snoozed until ${formatDateShort(date)}`)
-    },
+    onSnooze: (task, date) => { snoozeTaskOptimistic(supabase, store, task, date) },
     onRefresh: fetchTasks,
     selectedId,
     onSelect: setSelectedId,
+    getTask: taskById,
   }
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
   // buttons. Inert while the modal or any input has focus.
-  const taskById = (id: string) => tasks.find(t => t.id === id)
   useTaskListShortcuts({
     enabled: !showForm && !loading,
     selectedId,
@@ -465,6 +461,7 @@ function TasksInner() {
           contacts={contacts}
           capexProjects={capexProjects}
           allTasks={tasks}
+          onComplete={markDone}
           onClose={() => { setShowForm(false); setEditTask(null) }}
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
@@ -490,6 +487,10 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
   const taskContacts = task.contacts ?? []
   const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
   const isRock = (task.tags ?? []).includes('rock')
+  // Same semantics as the agenda's isUnblocked: only a blocker that
+  // still exists locally and isn't done counts (no chip on dangling ids).
+  const blocker = task.blocked_by_task_id ? handlers.getTask(task.blocked_by_task_id) : undefined
+  const isBlocked = blocker != null && blocker.status !== 'done'
 
   // Fire-and-forget: the optimistic store already applied the change,
   // so the inline-edit primitives never sit in a saving state.
@@ -558,7 +559,7 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
             )}
           </span>
         </div>
-        {(task.properties?.name || task.capex_projects?.title || task.blocked_by_task_id || meta) && (
+        {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {task.properties?.name && (
               <span className="text-xs font-medium px-1.5 py-0.5 rounded"
@@ -571,7 +572,7 @@ function TaskRow({ task, handlers, meta, swipeable = false }: {
                 <LinkIcon size={9} />{task.capex_projects.title.slice(0, 24)}
               </span>
             )}
-            {task.blocked_by_task_id && (
+            {isBlocked && (
               <span className="text-xs text-amber-600">⛓ blocked</span>
             )}
             {meta}
@@ -954,12 +955,15 @@ function SectionEmpty({ label }: { label: string }) {
 
 // ── Task Form Modal ──────────────────────────────────────────
 
-function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onClose, onSave }: {
+function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onComplete, onClose, onSave }: {
   task: TaskWithRelations | null
   properties: Property[]
   contacts: Contact[]
   capexProjects: CapexProject[]
   allTasks: TaskWithRelations[]
+  // Shared completion path (recurrence + completed_at + undo toast) —
+  // saving an existing task with status flipped to done routes here.
+  onComplete: (task: TaskWithRelations) => void | Promise<void>
   onClose: () => void
   onSave: () => void
 }) {
@@ -1027,16 +1031,34 @@ function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, on
       recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
     }
 
+    // Status transitions across done are not plain field writes:
+    // completing routes through the shared completion path (recurrence,
+    // completed_at, undo toast) and un-completing clears the stamp.
+    const goingDone = task != null && task.status !== 'done' && payload.status === 'done'
+    const leavingDone = task != null && task.status === 'done' && payload.status !== 'done'
+
     let taskId: string | undefined
     if (task) {
-      await supabase.from('tasks').update(payload).eq('id', task.id)
+      const update = {
+        ...payload,
+        // Keep the previous status here — onComplete below performs
+        // the actual completion so it behaves like every other path.
+        ...(goingDone ? { status: task.status } : {}),
+        ...(leavingDone ? { completed_at: null } : {}),
+      }
+      await supabase.from('tasks').update(update).eq('id', task.id)
       taskId = task.id
+      if (goingDone) await onComplete({ ...task, ...update })
     } else {
       // Stamp ownership on create so the personal inbox / agenda can
       // tell whose task this is.
       const { data: auth } = await supabase.auth.getUser()
       const { data: inserted } = await supabase.from('tasks')
-        .insert({ ...payload, created_by: auth.user?.id ?? null })
+        .insert({
+          ...payload,
+          completed_at: payload.status === 'done' ? new Date().toISOString() : null,
+          created_by: auth.user?.id ?? null,
+        })
         .select('id')
         .single()
       taskId = inserted?.id
