@@ -8,9 +8,9 @@ import {
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import type { CapexProject } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT } from '@/lib/utils'
-import { CAPEX_PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
-import { CalendarDays } from 'lucide-react'
+import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT, CAPEX_STATUS_STYLES } from '@/lib/utils'
+import { CAPEX_PRIORITY_OPTIONS, CAPEX_STATUS_OPTIONS } from '@/components/ui/inline-edit'
+import { CalendarDays, ChevronRight } from 'lucide-react'
 
 export type CapexWithProp = CapexProject & { properties?: { name: string } | null }
 export type CapexStatus = CapexProject['status']
@@ -24,13 +24,14 @@ export function budgetUsage(p: CapexProject): { pct: number; over: boolean } {
   return { pct, over }
 }
 
-const COLUMNS: { status: CapexStatus; label: string }[] = [
-  { status: 'planning',    label: 'Planning' },
-  { status: 'approved',    label: 'Approved' },
-  { status: 'in_progress', label: 'In Progress' },
-  { status: 'on_hold',     label: 'On Hold' },
-  { status: 'complete',    label: 'Complete' },
-]
+// Labels come from CAPEX_STATUS_OPTIONS — the same source the list's
+// inline status select uses — so the board can't drift from it. Only the
+// column ORDER is a board-layout concern (terminal column last).
+const COLUMN_ORDER: CapexStatus[] = ['planning', 'approved', 'in_progress', 'on_hold', 'complete']
+const COLUMNS: { status: CapexStatus; label: string }[] = COLUMN_ORDER.map(status => ({
+  status,
+  label: CAPEX_STATUS_OPTIONS.find(o => o.value === status)?.label ?? status,
+}))
 
 // ── Board ────────────────────────────────────────────────────
 // 5 status columns. Dragging a card to another column persists the
@@ -86,7 +87,7 @@ export function CapexBoard({ projects, onMove }: {
         ))}
       </div>
       <DragOverlay dropAnimation={{ duration: 180, easing: 'ease' }}>
-        {activeProject ? <BoardCard project={activeProject} className="shadow-lg rotate-2" /> : null}
+        {activeProject ? <ProjectCard project={activeProject} className="shadow-lg rotate-2" /> : null}
       </DragOverlay>
     </DndContext>
   )
@@ -137,12 +138,20 @@ function DraggableCard({ project, onOpen }: {
         'cursor-grab active:cursor-grabbing touch-manipulation select-none',
         isDragging && 'opacity-40',
       )}>
-      <BoardCard project={project} className="hover:shadow-md transition-shadow" />
+      <ProjectCard project={project} className="hover:shadow-md transition-shadow" />
     </div>
   )
 }
 
-function BoardCard({ project: p, className }: { project: CapexWithProp; className?: string }) {
+// Shared between the board columns/drag overlay and the list's mobile
+// cards — one place for the title row, property dot, budget bar and
+// overdue-date logic (incl. the status !== 'complete' guard).
+export function ProjectCard({ project: p, showStatus = false, showChevron = false, className }: {
+  project: CapexWithProp
+  showStatus?: boolean   // list context: column doesn't imply the status
+  showChevron?: boolean  // list context: card is a link to the detail page
+  className?: string
+}) {
   const { pct, over } = budgetUsage(p)
   const overdue = !!p.target_completion && isOverdue(p.target_completion) && p.status !== 'complete'
   const pip = CAPEX_PRIORITY_OPTIONS.find(o => o.value === p.priority)?.dot
@@ -151,16 +160,21 @@ function BoardCard({ project: p, className }: { project: CapexWithProp; classNam
     <div className={cn('card p-3 space-y-2', className)}>
       <div className="flex items-start gap-1.5">
         <span className="text-sm font-medium text-slate-900 leading-snug flex-1">{p.title}</span>
-        {pip && (
+        {showStatus ? (
+          <span className={cn('badge capitalize flex-shrink-0', CAPEX_STATUS_STYLES[p.status])}>
+            {p.status.replace('_', ' ')}
+          </span>
+        ) : pip ? (
           <span title={`${p.priority} priority`}
             className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
             style={{ background: pip }} />
-        )}
+        ) : null}
       </div>
       <div className="flex items-center gap-1.5 text-xs text-slate-500">
         <span className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ background: propertyColor(p.properties?.name) }} />
         <span className="truncate">{p.properties?.name ?? '—'}</span>
+        {showChevron && <ChevronRight size={14} className="text-slate-300 ml-auto flex-shrink-0" />}
       </div>
       {(p.budget != null || p.actual_spend != null) && (
         <div>

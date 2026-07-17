@@ -181,12 +181,14 @@ export const CAPEX_STATUS_STYLES: Record<string, string> = {
   on_hold:     'text-orange-700 bg-orange-50 border-orange-200',
 }
 
+// Keep in sync with CAPEX_STATUS_OPTIONS dots (components/ui/inline-edit) —
+// same colors the list badges use.
 export const CAPEX_STATUS_DOT: Record<string, string> = {
   planning:    '#94a3b8',
   approved:    '#3b82f6',
-  in_progress: '#f97316',
+  in_progress: '#f59e0b',
   complete:    '#16a34a',
-  on_hold:     '#ef4444',
+  on_hold:     '#ea580c',
 }
 
 export const INSPECTION_STATUS_STYLES: Record<string, string> = {
