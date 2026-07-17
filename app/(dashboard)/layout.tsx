@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn, propertyColor } from '@/lib/utils'
+import { isOverlayOpen } from '@/lib/ui/overlay'
 import { Toaster } from '@/components/ui/toast'
 import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
 import { CommandPalette } from '@/components/ui/command-palette'
@@ -67,6 +68,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
       if (pathnameRef.current.startsWith('/tasks')) return
       if (window.matchMedia('(pointer: coarse)').matches) return
+      // Never stack the sheet on an open modal / palette / sheet.
+      if (isOverlayOpen()) return
       const el = document.activeElement as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
       e.preventDefault()

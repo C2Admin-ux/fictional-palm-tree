@@ -2,6 +2,7 @@
 
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useOverlayOpen } from '@/lib/ui/overlay'
 
 // ── Modal ────────────────────────────────────────────────────
 // Overlay + centered panel with a sticky header (title + X close).
@@ -26,6 +27,9 @@ export function Modal({
   maxWidth?: keyof typeof MAX_WIDTH
   headerRight?: React.ReactNode
 }) {
+  // Mounted only while visible — register for the whole lifetime, so
+  // global shortcuts (the layout's `n`) stay inert underneath.
+  useOverlayOpen(true)
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className={cn('bg-white rounded-2xl w-full shadow-2xl max-h-[90vh] overflow-y-auto', MAX_WIDTH[maxWidth])}>

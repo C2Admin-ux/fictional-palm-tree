@@ -19,6 +19,7 @@ import { parseQuickAdd } from '@/lib/tasks/quick-add'
 import { quickAddInsertPayload, insertTask } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
+import { useOverlayOpen } from '@/lib/ui/overlay'
 import {
   Search, CornerDownLeft, Plus, LayoutDashboard, CheckSquare, Wrench,
   TrendingUp, FileSignature, Shield, FileBarChart, ClipboardCheck,
@@ -76,6 +77,9 @@ export function CommandPalette({ properties, userId }: {
   const [selected, setSelected] = useState(0)
   const [creating, setCreating] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // While open, global shortcuts (the layout's `n`) must stay inert.
+  useOverlayOpen(open)
 
   // Session cache for the lazy lists — stale-while-revalidate: every
   // open shows the cached lists instantly and refetches; the fresh

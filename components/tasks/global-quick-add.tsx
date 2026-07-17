@@ -17,6 +17,7 @@ import { createClient } from '@/lib/supabase/client'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { toast } from '@/components/ui/toast'
 import { propertyColor } from '@/lib/utils'
+import { useOverlayOpen } from '@/lib/ui/overlay'
 import { X, Inbox as InboxIcon } from 'lucide-react'
 
 type QuickAddProperty = { id: string; name: string }
@@ -41,6 +42,9 @@ export function GlobalQuickAdd({ open, onClose, userId, properties }: {
   const pathname = usePathname()
   const router = useRouter()
   const supabase = createClient()
+
+  // While open, global shortcuts (the layout's `n`) must stay inert.
+  useOverlayOpen(open)
 
   // Property preset resolved from the current route. Property pages
   // resolve synchronously; inspection pages resolve via one cheap
