@@ -1,15 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cn, propertyColor } from '@/lib/utils'
 import { Toaster } from '@/components/ui/toast'
+import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck,
-  Settings, Building2, LogOut, ChevronRight, Menu, X,
+  Settings, Building2, LogOut, ChevronRight, Menu, X, Plus,
 } from 'lucide-react'
 
 const NAV_PORTFOLIO = [
@@ -41,16 +42,37 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const supabase = createClient()
   const [properties, setProperties] = useState<SidebarProperty[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
+  const [userId, setUserId] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.from('properties').select('id, name').order('name')
       .then(({ data }) => setProperties(data ?? []))
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
   }, [])
 
   // Close the mobile drawer whenever navigation happens
   useEffect(() => {
     setSidebarOpen(false)
   }, [pathname])
+
+  // Global `n` → open the capture sheet from any page (desktop). The
+  // tasks page owns its own `n` (focuses its inline quick-add bar), so
+  // it wins there; everywhere else this light listener takes it.
+  const pathnameRef = useRef(pathname); pathnameRef.current = pathname
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
+      if (pathnameRef.current.startsWith('/tasks')) return
+      if (window.matchMedia('(pointer: coarse)').matches) return
+      const el = document.activeElement as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
+      e.preventDefault()
+      setQuickAddOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -172,13 +194,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="w-6 h-6 rounded-md bg-blue-500 flex items-center justify-center flex-shrink-0">
             <Building2 size={12} className="text-white" />
           </div>
-          <span className="text-white font-semibold text-sm">C2 Capital</span>
+          <span className="text-white font-semibold text-sm flex-1">C2 Capital</span>
+          <button
+            onClick={() => setQuickAddOpen(true)}
+            className="p-1.5 -mr-1.5 text-white/90 hover:text-white"
+            aria-label="Quick add task"
+          >
+            <Plus size={20} />
+          </button>
         </header>
 
         <main className="flex-1 overflow-y-auto">
           {children}
         </main>
       </div>
+
+      <GlobalQuickAdd
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        userId={userId}
+        properties={properties}
+      />
 
       <Toaster />
     </div>
