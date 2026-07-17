@@ -64,7 +64,9 @@ export function Toaster() {
   if (stack.length === 0) return null
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-2 w-full max-w-sm px-4 pointer-events-none">
+    // Below md the stack sits above the fixed bottom tab bar (3.5rem +
+    // safe area); on md+ it returns to the plain bottom-4 offset.
+    <div className="fixed bottom-[calc(4.5rem_+_env(safe-area-inset-bottom))] md:bottom-4 left-1/2 -translate-x-1/2 z-[100] flex flex-col items-center gap-2 w-full max-w-sm px-4 pointer-events-none">
       {stack.map(t => (
         <div
           key={t.id}

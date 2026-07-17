@@ -1,35 +1,25 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import type { Property } from '@/lib/supabase/types'
 import { cn, propertyColor } from '@/lib/utils'
+import { isOverlayOpen } from '@/lib/ui/overlay'
 import { Toaster } from '@/components/ui/toast'
-import {
-  LayoutDashboard, CheckSquare, Wrench, TrendingUp,
-  FileSignature, Shield, FileBarChart, ClipboardCheck,
-  Settings, Building2, LogOut, ChevronRight, Menu, X,
-} from 'lucide-react'
-
-const NAV_PORTFOLIO = [
-  { href: '/dashboard',          label: 'Dashboard',       icon: LayoutDashboard },
-  { href: '/tasks',              label: 'Tasks',            icon: CheckSquare },
-  { href: '/capex',              label: 'CapEx',            icon: Wrench },
-  { href: '/performance',        label: 'PM Performance',   icon: TrendingUp },
-  { href: '/documents',          label: 'Contracts',        icon: FileSignature },
-  { href: '/insurance/policies', label: 'Insurance',        icon: Shield },
-  { href: '/reports',            label: 'Reports',          icon: FileBarChart },
-  { href: '/inspections',        label: 'Inspections',      icon: ClipboardCheck },
-  { href: '/settings',           label: 'Settings',         icon: Settings },
-]
+import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
+import { CommandPalette } from '@/components/ui/command-palette'
+import { BottomTabBar } from '@/components/ui/bottom-tab-bar'
+import { NAV_ITEMS } from '@/lib/nav'
+import { Building2, LogOut, ChevronRight, Menu, X, Plus } from 'lucide-react'
 
 const NAV_SOON = [
   { href: '/underwriting', label: 'Underwriting' },
   { href: '/pipeline',     label: 'Pipeline' },
 ]
 
-type SidebarProperty = { id: string; name: string }
+type SidebarProperty = { id: string; name: string; status: Property['status'] }
 
 function propertyAbbr(name: string): string {
   return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
@@ -41,16 +31,48 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const supabase = createClient()
   const [properties, setProperties] = useState<SidebarProperty[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
+  const [userId, setUserId] = useState<string | null>(null)
 
   useEffect(() => {
-    supabase.from('properties').select('id, name').order('name')
+    supabase.from('properties').select('id, name, status').order('name')
       .then(({ data }) => setProperties(data ?? []))
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
   }, [])
+
+  // The sidebar navigates EVERY property, but capture (sheet + palette
+  // matching pool) only offers active ones — mirroring the /tasks
+  // quick-add, so the same text can't land a task on a disposition or
+  // watchlist property here and an active one there.
+  const captureProperties = useMemo(
+    () => properties.filter(p => p.status === 'active'),
+    [properties]
+  )
 
   // Close the mobile drawer whenever navigation happens
   useEffect(() => {
     setSidebarOpen(false)
   }, [pathname])
+
+  // Global `n` → open the capture sheet from any page (desktop). The
+  // tasks page owns its own `n` (focuses its inline quick-add bar), so
+  // it wins there; everywhere else this light listener takes it.
+  const pathnameRef = useRef(pathname); pathnameRef.current = pathname
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
+      if (pathnameRef.current.startsWith('/tasks')) return
+      if (window.matchMedia('(pointer: coarse)').matches) return
+      // Never stack the sheet on an open modal / palette / sheet.
+      if (isOverlayOpen()) return
+      const el = document.activeElement as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
+      e.preventDefault()
+      setQuickAddOpen(true)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   async function signOut() {
     await supabase.auth.signOut()
@@ -64,10 +86,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      {/* Mobile drawer backdrop */}
+      {/* Mobile drawer backdrop — above the bottom tab bar (z-40) so
+          the bar is dimmed and a tap in that strip closes the drawer;
+          the drawer itself stays above the backdrop at z-50 */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className="fixed inset-0 z-[45] bg-black/50 md:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-hidden="true"
         />
@@ -105,7 +129,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="px-2 py-1">
             <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Portfolio</span>
           </div>
-          {NAV_PORTFOLIO.map(item => {
+          {NAV_ITEMS.map(item => {
             const Icon = item.icon
             const active = isActive(item.href)
             return (
@@ -172,13 +196,33 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="w-6 h-6 rounded-md bg-blue-500 flex items-center justify-center flex-shrink-0">
             <Building2 size={12} className="text-white" />
           </div>
-          <span className="text-white font-semibold text-sm">C2 Capital</span>
+          <span className="text-white font-semibold text-sm flex-1">C2 Capital</span>
+          <button
+            onClick={() => setQuickAddOpen(true)}
+            className="p-1.5 -mr-1.5 text-white/90 hover:text-white"
+            aria-label="Quick add task"
+          >
+            <Plus size={20} />
+          </button>
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        {/* Bottom padding below md reserves room for the fixed tab bar,
+            so page footers/sticky bars land above it, not behind it */}
+        <main className="flex-1 overflow-y-auto pb-[calc(3.5rem_+_env(safe-area-inset-bottom))] md:pb-0">
           {children}
         </main>
       </div>
+
+      <BottomTabBar onToggleProperties={() => setSidebarOpen(o => !o)} />
+
+      <GlobalQuickAdd
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        userId={userId}
+        properties={captureProperties}
+      />
+
+      <CommandPalette properties={captureProperties} userId={userId} />
 
       <Toaster />
     </div>

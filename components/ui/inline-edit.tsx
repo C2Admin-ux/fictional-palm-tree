@@ -6,15 +6,19 @@ import { Check } from 'lucide-react'
 
 // ── useClickOutside ──────────────────────────────────────────
 
-export function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () => void) {
+// `enabled` lets callers attach the document listener only while their
+// popover is actually open (e.g. one avatar menu among dozens of idle
+// rows) instead of one listener per mounted instance.
+export function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () => void, enabled = true) {
   useEffect(() => {
+    if (!enabled) return
     function listener(e: MouseEvent) {
       if (!ref.current || ref.current.contains(e.target as Node)) return
       handler()
     }
     document.addEventListener('mousedown', listener)
     return () => document.removeEventListener('mousedown', listener)
-  }, [ref, handler])
+  }, [ref, handler, enabled])
 }
 
 // ── InlineText ───────────────────────────────────────────────

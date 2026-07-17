@@ -9,12 +9,14 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Task } from '@/lib/supabase/types'
 import { parseQuickAdd, type QuickAddProperty } from '@/lib/tasks/quick-add'
+import { quickAddInsertPayload, insertTask } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
 import { cn, formatDateShort, propertyColor, PRIORITY_DOT } from '@/lib/utils'
 import { Plus, Inbox as InboxIcon, CalendarDays, Sparkles } from 'lucide-react'
 
 export function TaskQuickAdd({
-  userId, properties = [], presetPropertyId = null, onCreated, placeholder,
+  userId, properties = [], presetPropertyId = null, onCreated, placeholder, autoFocus = false,
+  disabled = false,
 }: {
   userId: string | null
   // Property names for NL matching — pass [] to disable (preset context)
@@ -22,6 +24,8 @@ export function TaskQuickAdd({
   presetPropertyId?: string | null
   onCreated: (task: Task) => void
   placeholder?: string
+  autoFocus?: boolean  // capture sheet: keyboard up the moment it opens
+  disabled?: boolean   // hold submit (e.g. a context preset still resolving)
 }) {
   const supabase = createClient()
   const [value, setValue] = useState('')
@@ -35,33 +39,20 @@ export function TaskQuickAdd({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!parsed.title || !userId || adding) return
+    if (!parsed.title || !userId || adding || disabled) return
     const snapshot = value
     setValue('') // optimistic: clear the bar immediately
     setAdding(true)
-    const { data, error } = await supabase
-      .from('tasks')
-      .insert({
-        title:       parsed.title,
-        // An inbox item with a date is contradictory — dated captures
-        // land straight in the agenda as next actions.
-        status:      parsed.due_date ? 'next_action' : 'inbox',
-        priority:    parsed.priority ?? 'medium',
-        due_date:    parsed.due_date ?? null,
-        tags:        parsed.tags ?? [],
-        property_id: presetPropertyId ?? parsed.property_id ?? null,
-        created_by:  userId,
-        assigned_to: userId,
-      })
-      .select('*')
-      .single()
+    // Capture rules (dated → next_action, undated → inbox, ownership
+    // stamps) live in the shared creation path — lib/tasks/create.ts.
+    const created = await insertTask(supabase, quickAddInsertPayload(parsed, userId, presetPropertyId))
     setAdding(false)
-    if (error || !data) {
+    if (!created) {
       setValue(snapshot)
       toast('Could not add task', { tone: 'error' })
       return
     }
-    onCreated(data as Task)
+    onCreated(created)
   }
 
   const hasChips = value.trim().length > 0 &&
@@ -73,6 +64,7 @@ export function TaskQuickAdd({
         <InboxIcon size={15} className="text-slate-400 flex-shrink-0" />
         <input
           data-quick-add-input
+          autoFocus={autoFocus}
           value={value}
           onChange={e => setValue(e.target.value)}
           disabled={!userId}
@@ -83,7 +75,7 @@ export function TaskQuickAdd({
         />
         <button
           type="submit"
-          disabled={adding || !parsed.title || !userId}
+          disabled={adding || disabled || !parsed.title || !userId}
           className="btn-primary text-xs py-1.5">
           <Plus size={13} />Add
         </button>
