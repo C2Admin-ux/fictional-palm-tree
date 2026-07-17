@@ -98,10 +98,16 @@ function CapexInner() {
     if (!project || project.status === status) return
     const prevStatus = project.status
     setMoveError(null)
+    // Invalidate any in-flight fetch: a response issued before this move
+    // would clobber the optimistic status with pre-move data.
+    fetchSeq.current++
+    setRefreshing(false)
     setProjects(ps => ps.map(p => p.id === id ? { ...p, status } : p))
     const { error } = await supabase.from('capex_projects').update({ status }).eq('id', id)
     if (error) {
-      setProjects(ps => ps.map(p => p.id === id ? { ...p, status: prevStatus } : p))
+      // Compare-and-swap rollback: only revert if the card still holds the
+      // status THIS call set — a later move (or edit) may have won since.
+      setProjects(ps => ps.map(p => p.id === id && p.status === status ? { ...p, status: prevStatus } : p))
       setMoveError(`Couldn't move “${project.title}” — ${error.message}`)
     }
   }
