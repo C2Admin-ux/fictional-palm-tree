@@ -148,6 +148,14 @@ type SubtaskUi = {
   expandedIds: Set<string>
 }
 
+// Keyboard selection can land on a subtask row (j/k walks the DOM in
+// visual order). Resolve it to a prop only for the parent that owns
+// it, so the other memoized rows don't re-render on selection moves.
+function subtaskSelection(ui: SubtaskUi, selectedId: string | null, parentId: string): string | null {
+  if (!selectedId) return null
+  return (ui.subtasksOf(parentId) ?? []).some(s => s.id === selectedId) ? selectedId : null
+}
+
 // Property grouping for the All view: sections in property-name order,
 // portfolio-wide ("No property") last.
 function groupByPropertySections<T extends Task & { properties?: { name: string } | null }>(
@@ -714,7 +722,8 @@ function TasksInner() {
                         <TaskRow key={task.id} task={task} handlers={handlers}
                           selected={selectedId === task.id}
                           subtasks={subtaskUi.subtasksOf(task.id)}
-                          expanded={subtaskUi.expandedIds.has(task.id)} />
+                          expanded={subtaskUi.expandedIds.has(task.id)}
+                          subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, task.id)} />
                       ))}
 
                       <div
@@ -779,6 +788,7 @@ function TasksInner() {
 
 const TaskRow = memo(function TaskRow({
   task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
+  subtaskSelectedId = null,
 }: {
   task: TaskWithRelations
   handlers: RowHandlers
@@ -787,6 +797,7 @@ const TaskRow = memo(function TaskRow({
   swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
   subtasks?: TaskWithRelations[]  // children of this row (parents only)
   expanded?: boolean              // drill-down open (page-level session state)
+  subtaskSelectedId?: string | null  // keyboard selection inside the drill-down
 }) {
   const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
@@ -957,6 +968,8 @@ const TaskRow = memo(function TaskRow({
       {subtasks != null && subtasks.length > 0 && expanded && (
         <SubtaskList
           subtasks={subtasks}
+          selectedId={subtaskSelectedId}
+          onSelect={onSelect}
           onToggleDone={onDone}
           onPatch={onPatch}
           onDelete={onDelete}
@@ -1044,7 +1057,8 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
           </button>
           {inboxOpen && myInbox.map(t => (
             <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
-              subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)} />
+              subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
+              subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
           ))}
         </div>
       )}
@@ -1067,7 +1081,8 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             </div>
             {g.tasks.map(t => (
               <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
-                subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)} />
+                subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
+                subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
             ))}
           </div>
         )
@@ -1132,6 +1147,7 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
     ({
       task: t, handlers, selected: selectedId === t.id,
       subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
+      subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),
     })
   // Subtasks stay inside their parent's drill-down — every review
   // section sweeps top-level tasks only.

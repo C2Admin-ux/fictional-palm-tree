@@ -42,12 +42,19 @@ export function SubtaskChip({ done, total, expanded, onToggle }: {
 
 // Handlers mirror the parent row's — subtask rows reuse the exact same
 // optimistic mutation paths (complete → undo toast, delete → undo).
-export function SubtaskList<T extends Task>({ subtasks, onToggleDone, onPatch, onDelete, onAdd }: {
+// selectedId/onSelect are optional (the property tab has no keyboard
+// layer): rows carry data-task-id, so j/k walks into the drill-down
+// and c/d/e/⌫ act on the selected subtask.
+export function SubtaskList<T extends Task>({
+  subtasks, onToggleDone, onPatch, onDelete, onAdd, selectedId = null, onSelect,
+}: {
   subtasks: T[]
   onToggleDone: (task: T) => void
   onPatch: (task: T, fields: Partial<Task>) => void
   onDelete: (task: T) => void
   onAdd: (title: string) => void | Promise<void>
+  selectedId?: string | null
+  onSelect?: (id: string) => void
 }) {
   // Open first, completed (muted, un-completable) after.
   const open = subtasks.filter(t => t.status !== 'done')
@@ -57,6 +64,8 @@ export function SubtaskList<T extends Task>({ subtasks, onToggleDone, onPatch, o
     <div className="bg-slate-50/50 border-b border-slate-100">
       {[...open, ...done].map(t => (
         <SubtaskRow key={t.id} task={t}
+          selected={t.id === selectedId}
+          onSelect={onSelect}
           onToggleDone={() => onToggleDone(t)}
           onPatch={fields => onPatch(t, fields)}
           onDelete={() => onDelete(t)} />
@@ -66,8 +75,10 @@ export function SubtaskList<T extends Task>({ subtasks, onToggleDone, onPatch, o
   )
 }
 
-function SubtaskRow<T extends Task>({ task, onToggleDone, onPatch, onDelete }: {
+function SubtaskRow<T extends Task>({ task, selected, onSelect, onToggleDone, onPatch, onDelete }: {
   task: T
+  selected: boolean
+  onSelect?: (id: string) => void
   onToggleDone: () => void
   onPatch: (fields: Partial<Task>) => void
   onDelete: () => void
@@ -81,9 +92,11 @@ function SubtaskRow<T extends Task>({ task, onToggleDone, onPatch, onDelete }: {
     <CollapseOnComplete collapsing={collapsing}>
       <div
         data-task-id={task.id}
+        onClick={() => onSelect?.(task.id)}
         className={cn(
           'flex items-center pl-14 pr-6 py-0 min-h-[32px] border-b border-slate-100 last:border-b-0 group hover:bg-slate-100/60 transition-colors',
-          isDone && 'opacity-60'
+          isDone && 'opacity-60',
+          selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
         )}>
         <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
         <CompleteCircle isDone={isDone || checked} onToggle={trigger} />
