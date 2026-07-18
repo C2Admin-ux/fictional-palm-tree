@@ -5,6 +5,8 @@
 // 'expiration' badge check) renders never; keeping the vocabulary here
 // makes that class of drift impossible.
 
+import type { Task } from '@/lib/supabase/types'
+
 // The obligations engine's two sources (app/api/tasks/expiration).
 export const INSURANCE_SOURCE = 'insurance_expiry'
 export const CONTRACT_SOURCE = 'contract_deadline'
@@ -12,3 +14,7 @@ export const OBLIGATION_SOURCES: string[] = [INSURANCE_SOURCE, CONTRACT_SOURCE]
 
 // Tasks created from a confirmed call item (calls/[id] Confirm & process).
 export const CALL_AUTO_SOURCE = 'call'
+
+// The statuses that count as "open" work — everything but done. Shared
+// by the extraction context and the agenda queries.
+export const OPEN_STATUSES: Task['status'][] = ['inbox', 'next_action', 'waiting', 'blocked']

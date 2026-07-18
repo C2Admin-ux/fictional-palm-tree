@@ -14,9 +14,10 @@ import { CALL_SOURCE_LABELS, CALL_STATUS_LABELS, CALL_STATUS_STYLES } from '@/li
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import { ActionError, ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Phone, Plus, Trash2, AlertTriangle, ChevronRight, RotateCcw, X, CalendarClock } from 'lucide-react'
+import { Phone, Plus, Trash2, ChevronRight, X, CalendarClock } from 'lucide-react'
 
 type PmcOption = { id: string; name: string }
 
@@ -30,7 +31,7 @@ type CallRow = {
   status: 'draft' | 'processed'
   created_at: string
   pmcs: { name: string } | null
-  call_items: { kind: string; task_id: string | null; resolved: boolean }[]
+  call_items: { kind: string; resolved: boolean }[]
 }
 
 export default function CallsPage() {
@@ -49,7 +50,7 @@ export default function CallsPage() {
 
   const fetchCalls = useCallback(async () => {
     let q = supabase.from('calls')
-      .select('id, pmc_id, title, call_date, source, summary, status, created_at, pmcs(name), call_items(kind, task_id, resolved)')
+      .select('id, pmc_id, title, call_date, source, summary, status, created_at, pmcs(name), call_items(kind, resolved)')
     if (filterPmc) q = q.eq('pmc_id', filterPmc)
     if (filterStatus) q = q.eq('status', filterStatus as CallRow['status'])
     const { data, error } = await q
@@ -130,31 +131,14 @@ export default function CallsPage() {
       </div>
 
       {/* Mutation errors surface inline — never silently pretend success */}
-      {actionError && (
-        <p className="text-xs text-red-600 flex items-center gap-1.5">
-          <AlertTriangle size={12} className="flex-shrink-0" />
-          <span className="flex-1">{actionError}</span>
-          <button onClick={() => setActionError(null)} aria-label="Dismiss error"
-            className="text-red-400 hover:text-red-600 flex-shrink-0">
-            <X size={12} />
-          </button>
-        </p>
-      )}
+      {actionError && <ActionError message={actionError} onDismiss={() => setActionError(null)} />}
 
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : fetchError ? (
-        <div className="card py-10 text-center space-y-3">
-          <p className="text-sm text-red-600 flex items-center justify-center gap-1.5">
-            <AlertTriangle size={14} className="flex-shrink-0" />
-            Could not load calls — {fetchError}
-          </p>
-          <button
-            onClick={() => { setLoading(true); setFetchError(null); fetchCalls() }}
-            className="btn-secondary">
-            <RotateCcw size={14} />Retry
-          </button>
-        </div>
+        <ErrorState className="card py-10"
+          message={`Could not load calls — ${fetchError}`}
+          onRetry={() => { setLoading(true); setFetchError(null); fetchCalls() }} />
       ) : displayed.length === 0 ? (
         <EmptyState
           icon={<Phone size={32} />}

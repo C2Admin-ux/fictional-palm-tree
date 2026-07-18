@@ -18,11 +18,12 @@ import {
   CALL_OWNER_LABELS, CALL_SOURCE_LABELS, CALL_STATUS_LABELS, CALL_STATUS_STYLES,
 } from '@/lib/calls/ui'
 import { InlineText, InlineDate, InlineSelect } from '@/components/ui/inline-edit'
+import { ActionError, ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
 import { insertTask } from '@/lib/tasks/create'
 import { CALL_AUTO_SOURCE } from '@/lib/tasks/vocab'
 import {
-  ArrowLeft, AlertTriangle, RotateCcw, Sparkles, Plus, Phone,
+  ArrowLeft, Sparkles, Plus, Phone,
   CheckCircle2, Circle, X, Link2, ExternalLink, ChevronDown, ChevronRight,
 } from 'lucide-react'
 
@@ -318,12 +319,9 @@ export default function CallDetailPage() {
     </div>
   )
   if (fetchError || !call) return (
-    <div className="p-6 max-w-3xl mx-auto text-center space-y-3 py-16">
-      <p className="text-sm text-red-600 flex items-center justify-center gap-1.5">
-        <AlertTriangle size={14} />Could not load call — {fetchError}
-      </p>
-      <button onClick={() => { setLoading(true); setFetchError(null); fetchCall(); fetchItems() }}
-        className="btn-secondary"><RotateCcw size={14} />Retry</button>
+    <div className="p-6 max-w-3xl mx-auto py-16">
+      <ErrorState message={`Could not load call — ${fetchError}`}
+        onRetry={() => { setLoading(true); setFetchError(null); fetchCall(); fetchItems() }} />
     </div>
   )
 
@@ -382,14 +380,7 @@ export default function CallDetailPage() {
         </div>
       </div>
 
-      {actionError && (
-        <p className="text-xs text-red-600 flex items-center gap-1.5">
-          <AlertTriangle size={12} className="flex-shrink-0" />
-          <span className="flex-1">{actionError}</span>
-          <button onClick={() => setActionError(null)} aria-label="Dismiss error"
-            className="text-red-400 hover:text-red-600 flex-shrink-0"><X size={12} /></button>
-        </p>
-      )}
+      {actionError && <ActionError message={actionError} onDismiss={() => setActionError(null)} />}
 
       {/* Summary */}
       <SummaryCard summary={call.summary} onSave={v => patchCall({ summary: v || null })} />

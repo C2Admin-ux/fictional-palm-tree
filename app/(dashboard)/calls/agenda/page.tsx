@@ -14,13 +14,12 @@ import { createClient } from '@/lib/supabase/client'
 import type { CallItem, Task } from '@/lib/supabase/types'
 import { cn, formatDate, formatDateShort, todayISO } from '@/lib/utils'
 import { CALL_ITEM_KIND_LABELS, CALL_ITEM_KIND_STYLES } from '@/lib/calls/ui'
-import { OBLIGATION_SOURCES } from '@/lib/tasks/vocab'
+import { OBLIGATION_SOURCES, OPEN_STATUSES } from '@/lib/tasks/vocab'
+import { ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
 import {
-  ArrowLeft, AlertTriangle, RotateCcw, Copy, Sparkles, Printer, CalendarClock,
+  ArrowLeft, RotateCcw, Copy, Sparkles, Printer, CalendarClock,
 } from 'lucide-react'
-
-const OPEN_STATUSES: Task['status'][] = ['inbox', 'next_action', 'waiting', 'blocked']
 
 type PropertyRef = { id: string; name: string }
 type FindingRef = { id: string; item_label: string; section_name: string; property_id: string; inspection_date: string }
@@ -113,7 +112,7 @@ function AgendaContent() {
               .lt('due_date', today)
               .order('due_date', { ascending: true }),
             supabase.from('inspection_items')
-              .select('id, item_label, section_name, task_id, inspections!inner(property_id, inspection_date)')
+              .select('id, item_label, section_name, task_id, tasks(status), inspections!inner(property_id, inspection_date)')
               .eq('requires_action', true)
               .in('inspections.property_id', propertyIds),
           ])
@@ -127,19 +126,14 @@ function AgendaContent() {
 
           // A finding stays on the agenda while it's not yet tasked OR its
           // task is still open — resolved (done-task) findings drop off.
+          // The task status rides along in the embed (one round-trip).
           const rawFindings = (findingsRes.data ?? []) as unknown as {
             id: string; item_label: string; section_name: string; task_id: string | null
+            tasks: { status: string } | null
             inspections: { property_id: string; inspection_date: string }
           }[]
-          const taskIds = rawFindings.map(f => f.task_id).filter((v): v is string => !!v)
-          const doneTaskIds = new Set<string>()
-          if (taskIds.length > 0) {
-            const { data: taskRows } = await supabase.from('tasks')
-              .select('id, status').in('id', taskIds)
-            for (const t of taskRows ?? []) if (t.status === 'done') doneTaskIds.add(t.id)
-          }
           findings = rawFindings
-            .filter(f => !f.task_id || !doneTaskIds.has(f.task_id))
+            .filter(f => !f.task_id || f.tasks?.status !== 'done')
             .map(f => ({
               id: f.id, item_label: f.item_label, section_name: f.section_name,
               property_id: f.inspections.property_id,
@@ -284,12 +278,9 @@ function AgendaContent() {
   )
   if (loading) return <div className="p-6 text-center text-sm text-slate-400">Loading…</div>
   if (fetchError || !data) return (
-    <div className="p-6 max-w-3xl mx-auto text-center space-y-3 py-16">
-      <p className="text-sm text-red-600 flex items-center justify-center gap-1.5">
-        <AlertTriangle size={14} />Could not load agenda — {fetchError}
-      </p>
-      <button onClick={() => { setLoading(true); setFetchError(null); setReloadTick(t => t + 1) }}
-        className="btn-secondary"><RotateCcw size={14} />Retry</button>
+    <div className="p-6 max-w-3xl mx-auto py-16">
+      <ErrorState message={`Could not load agenda — ${fetchError}`}
+        onRetry={() => { setLoading(true); setFetchError(null); setReloadTick(t => t + 1) }} />
     </div>
   )
 

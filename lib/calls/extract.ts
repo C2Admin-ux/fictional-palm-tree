@@ -12,12 +12,11 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { anthropicJson, callAnthropic } from '@/lib/anthropic'
+import { CALL_ITEM_KINDS } from '@/lib/calls/ui'
+import { OPEN_STATUSES } from '@/lib/tasks/vocab'
 import type { Call, CallItem, Database } from '@/lib/supabase/types'
 
 type Client = SupabaseClient<Database>
-
-const OPEN_STATUSES = ['inbox', 'next_action', 'waiting', 'blocked'] as const
-const KINDS = ['action', 'update', 'issue', 'decision'] as const
 
 type PropertyRef = { id: string; name: string }
 type OpenTaskRef = {
@@ -127,11 +126,15 @@ async function loadContext(supabase: Client, call: Call): Promise<CallExtraction
 
   let openTasks: OpenTaskRef[] = []
   if (propertyIds.length > 0) {
+    // Capped: the inbound path (pmc null) spans every active property —
+    // the 200 soonest-due open tasks are plenty of matching context
+    // without embedding the whole portfolio's backlog in the prompt.
     const { data, error } = await supabase.from('tasks')
       .select('id, title, status, priority, due_date, property_id')
       .in('property_id', propertyIds)
-      .in('status', [...OPEN_STATUSES])
+      .in('status', OPEN_STATUSES)
       .order('due_date', { ascending: true, nullsFirst: false })
+      .limit(200)
     if (error) throw error
     openTasks = data ?? []
   }
@@ -211,7 +214,7 @@ export async function extractCall(supabase: Client, call: Call): Promise<Extract
   const items = parsed.items
     .filter(i => typeof i.description === 'string' && (i.description as string).trim().length > 0)
     .map(i => ({
-      kind: KINDS.includes(i.kind as typeof KINDS[number]) ? i.kind as CallItem['kind'] : 'update',
+      kind: CALL_ITEM_KINDS.includes(i.kind as typeof CALL_ITEM_KINDS[number]) ? i.kind as CallItem['kind'] : 'update',
       property_id: typeof i.property_id === 'string' && propertyIds.has(i.property_id) ? i.property_id : null,
       description: (i.description as string).trim(),
       owner: i.owner === 'pm' || i.owner === 'owner' ? i.owner : null,
