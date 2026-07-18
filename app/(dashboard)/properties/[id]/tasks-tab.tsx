@@ -174,7 +174,10 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
   return (
     <div className="max-w-3xl">
-      <div className="card overflow-hidden">
+      {/* -mb-px on the last child clips the final row's border-b under
+          the card's own bottom border (rows can't drop it via last:
+          through the CollapseOnComplete wrapper). */}
+      <div className="card overflow-hidden [&>div:last-child]:-mb-px">
         <TaskQuickAdd
           userId={userId}
           presetPropertyId={propertyId}
@@ -277,7 +280,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
 
   const row = (
     <div className={cn(
-      'flex items-center px-4 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
+      'flex items-center px-6 py-0 min-h-[32px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
       isDone && 'opacity-60'
     )}>
       {/* Priority pip */}
@@ -289,7 +292,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
         onToggle={() => onDone(task)} />
 
       {/* Title */}
-      <div className="flex-1 min-w-0 py-2.5">
+      <div className="flex-1 min-w-0 py-1.5">
         <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
           <InlineText
             value={task.title}

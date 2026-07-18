@@ -66,7 +66,7 @@ export function SubtaskList<T extends Task>({
   const done = subtasks.filter(t => t.status === 'done')
 
   return (
-    <div className="bg-slate-50/50 border-b border-slate-100">
+    <div className="bg-slate-50/50 border-b border-slate-200/70">
       {[...open, ...done].map(t => (
         <SubtaskRow key={t.id} task={t}
           selected={t.id === selectedId}
@@ -103,13 +103,17 @@ function SubtaskRow<T extends Task>({ task, selected, onSelect, exitPhase, onTog
         data-task-id={task.id}
         onClick={() => onSelect?.(task.id)}
         className={cn(
-          'flex items-center pl-14 pr-6 py-0 min-h-[32px] border-b border-slate-100 last:border-b-0 group hover:bg-slate-100/60 transition-colors',
+          // No last:border-b-0 — each row is the sole child of its
+          // CollapseOnComplete wrapper, so `last:` always matched and
+          // suppressed every border. The add-subtask row below the last
+          // row keeps its border from doubling the container's edge.
+          'flex items-center pl-14 pr-6 py-0 min-h-[28px] border-b border-slate-200/70 group hover:bg-slate-100/60 transition-colors',
           isDone && 'opacity-60',
           selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
         )}>
         <CornerDownRight size={11} className="text-slate-300 mr-2 flex-shrink-0" />
         <CompleteCircle isDone={isDone || leaving} onToggle={onToggleDone} />
-        <div className="flex-1 min-w-0 py-1.5">
+        <div className="flex-1 min-w-0 py-1">
           <div className={cn('text-sm text-slate-800', isDone && 'line-through text-slate-400')}>
             <InlineText value={task.title} onSave={v => onPatch({ title: v })} />
           </div>

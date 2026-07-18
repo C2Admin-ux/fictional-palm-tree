@@ -803,7 +803,7 @@ function TasksInner() {
                   {/* Column headers */}
                   {!isCollapsed && (
                     <>
-                      <div className="flex items-center px-6 py-1.5 border-b border-slate-100 bg-white">
+                      <div className="flex items-center px-6 py-1.5 border-b border-slate-200/70 bg-white">
                         <div className="w-3 mr-3" />
                         <div className="w-5 mr-2.5" />
                         <div className="flex-1 text-xs font-medium text-slate-400 uppercase tracking-wide">Task</div>
@@ -825,7 +825,7 @@ function TasksInner() {
 
                       <div
                         onClick={() => { setEditTask(null); setShowForm(true) }}
-                        className="flex items-center gap-2 px-6 py-2 text-xs text-slate-400 hover:text-slate-600 hover:bg-slate-50 cursor-pointer border-b border-slate-100 transition-colors">
+                        className="flex items-center gap-2 px-6 py-1.5 text-xs text-slate-400 hover:text-slate-600 hover:bg-slate-50 cursor-pointer border-b border-slate-200/70 transition-colors">
                         <Plus size={12} />Add task
                       </div>
                     </>
@@ -933,7 +933,7 @@ const TaskRow = memo(function TaskRow({
       data-task-id={task.id}
       onClick={() => onSelect(task.id)}
       className={cn(
-        'flex items-center px-6 py-0 min-h-[38px] border-b border-slate-100 group hover:bg-slate-50 transition-colors',
+        'flex items-center px-6 py-0 min-h-[32px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
         isDone && 'opacity-60',
         selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
       )}>
@@ -945,7 +945,7 @@ const TaskRow = memo(function TaskRow({
       <CompleteCircle isDone={isDone || leaving} onToggle={() => onDone(task)} />
 
       {/* Title — inline editable */}
-      <div className="flex-1 min-w-0 py-2.5">
+      <div className="flex-1 min-w-0 py-1.5">
         <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
           <InlineText
             value={task.title}
@@ -1209,7 +1209,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             </span>
           </button>
           {snoozedOpen && snoozed.map(t => (
-            <div key={t.id} className="flex items-center gap-3 px-6 py-2 border-b border-slate-100 hover:bg-slate-50 transition-colors">
+            <div key={t.id} className="flex items-center gap-3 px-6 py-1.5 border-b border-slate-200/70 hover:bg-slate-50 transition-colors">
               <Moon size={12} className="text-slate-300 flex-shrink-0" />
               <button onClick={() => handlers.onEdit(t)}
                 className="flex-1 min-w-0 text-left text-sm text-slate-500 hover:text-slate-800 truncate">
@@ -1323,7 +1323,7 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
         {obligations.length
           ? Object.entries(obligationsByProperty).map(([prop, propTasks]) => (
               <div key={prop}>
-                <div className="flex items-center gap-2 px-6 py-1.5 bg-white border-b border-slate-100">
+                <div className="flex items-center gap-2 px-6 py-1.5 bg-white border-b border-slate-200/70">
                   <span className="w-2 h-2 rounded-full flex-shrink-0"
                     style={{ background: propertyColor(prop === 'Portfolio-wide' ? null : prop) }} />
                   <span className="text-xs font-semibold text-slate-500">{prop}</span>
@@ -1345,7 +1345,10 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
       </ReviewSection>
 
       {/* (d) Rocks */}
-      <div className="border-b border-slate-200">
+      {/* No border-b on the section wrapper: the last row (or
+          SectionEmpty) already draws the closing line, and rows can't
+          drop theirs via last: through the CollapseOnComplete wrapper. */}
+      <div>
         <div className="px-6 py-3 bg-amber-50 border-b border-amber-100">
           <div className="flex items-center gap-2">
             <Mountain size={16} className="text-amber-500" />
@@ -1387,7 +1390,10 @@ function ReviewSection({ title, count, hint, children }: {
   children: React.ReactNode
 }) {
   return (
-    <div className="border-b border-slate-200">
+    // No border-b on the section wrapper: the last row (or SectionEmpty)
+    // already draws the closing line, and rows can't drop theirs via
+    // last: through the CollapseOnComplete wrapper.
+    <div>
       <div className="px-6 py-3 bg-slate-50 border-b border-slate-200">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-700 uppercase tracking-wide">{title}</span>
@@ -1401,7 +1407,7 @@ function ReviewSection({ title, count, hint, children }: {
 }
 
 function SectionEmpty({ label }: { label: string }) {
-  return <div className="px-6 py-4 text-sm text-slate-400">{label}</div>
+  return <div className="px-6 py-4 text-sm text-slate-400 border-b border-slate-200/70">{label}</div>
 }
 
 // ── Task Form Modal ──────────────────────────────────────────
