@@ -22,7 +22,9 @@ export function PriorityPip({ priority, isDone, onSave }: {
       options={PRIORITY_OPTIONS}
       onSave={v => onSave(v as Task['priority'])}
       trigger={
-        <div className="w-2 h-8 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
+        // h-6 keeps breathing room inside the min-h-[32px] rows —
+        // h-8 would touch the row demarcation lines.
+        <div className="w-2 h-6 mr-3 flex-shrink-0 rounded-sm cursor-pointer hover:opacity-70 transition-opacity"
           style={{ background: isDone ? '#e2e8f0' : PRIORITY_DOT[priority] }} />
       }
     />
