@@ -9,7 +9,7 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
-import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import { usePdfExtraction, isPdfTooLargeError, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { TaskFromRecord } from '@/components/ui/task-from-record'
 import type { UnitMix } from '@/lib/supabase/types'
 
@@ -89,7 +89,7 @@ export default function BuildingTab({ propertyId, propertyName, initialFacts }: 
     if (!extractError) return
     alert(extractError === 'not_a_pca'
       ? "That doesn't look like a property condition assessment."
-      : extractError === 'Please drop a PDF file'
+      : extractError === 'Please drop a PDF file' || isPdfTooLargeError(extractError)
         ? extractError
         : 'Extraction failed — ' + extractError)
     setExtractError(null)

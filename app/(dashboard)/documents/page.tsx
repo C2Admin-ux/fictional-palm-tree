@@ -17,7 +17,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { DaysLeftBadge } from '@/components/ui/days-left-badge'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
-import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import { usePdfExtraction, isPdfTooLargeError, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { TaskFromRecord } from '@/components/ui/task-from-record'
 
 const CONTRACT_TYPES = [
@@ -168,7 +168,7 @@ export default function ContractsPage() {
     if (!extractError) return
     alert(extractError === 'not_a_contract'
       ? "That doesn't look like a contract. Try a service agreement or vendor contract PDF."
-      : extractError === 'Please drop a PDF file'
+      : extractError === 'Please drop a PDF file' || isPdfTooLargeError(extractError)
         ? extractError
         : 'Extraction failed — ' + extractError)
     setExtractError(null)
