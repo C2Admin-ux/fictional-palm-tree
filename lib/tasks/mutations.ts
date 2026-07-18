@@ -194,9 +194,10 @@ export async function toggleDoneOptimistic(
 // is free again). Undo also restores what died with the row:
 // task_contacts junction rows (pass the ids), subtasks (removed by
 // parent_task_id's ON DELETE CASCADE, captured with their own contact
-// links before the delete commits), and the blocked_by_task_id links
+// links before the delete commits), the blocked_by_task_id links
 // of every dependent — of the task itself AND of its cascading
-// children (all nulled by the FK's ON DELETE SET NULL).
+// children (all nulled by the FK's ON DELETE SET NULL) — and the
+// call_items that pointed at the task (task_id also SET NULL).
 export async function deleteTaskOptimistic(
   supabase: Client, store: TaskStore, task: Task,
   opts?: { contactIds?: string[] }
@@ -220,6 +221,12 @@ export async function deleteTaskOptimistic(
   // children are re-inserted verbatim on undo (their blocked_by rides
   // along in taskInsertPayload).
   const dependents = (deps ?? []).filter(d => d.id !== task.id && !childIds.includes(d.id))
+
+  // Call items linked to this task lose their task_id (SET NULL per
+  // 0005) — ids are enough to point them back on undo.
+  const { data: callItemRows } = await supabase.from('call_items')
+    .select('id').eq('task_id', task.id)
+  const callItemIds = (callItemRows ?? []).map(r => r.id)
 
   const { error } = await supabase.from('tasks').delete().eq('id', task.id)
   if (error) {
@@ -249,6 +256,11 @@ export async function deleteTaskOptimistic(
           await supabase.from('task_contacts').insert(
             contactIds.map(cid => ({ task_id: task.id, contact_id: cid }))
           )
+        }
+        // Re-point the call items that referenced the task (same id).
+        if (callItemIds.length > 0) {
+          await supabase.from('call_items')
+            .update({ task_id: task.id }).in('id', callItemIds)
         }
         // Children after the parent (their FK needs the parent row) —
         // same ids, so expanded state and blockers pointing at them heal.

@@ -149,6 +149,18 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['property_pca_items']['Row']>
         Relationships: []
       }
+      calls: {
+        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['calls']['Row']>
+        Update: Partial<Database['public']['Tables']['calls']['Row']>
+        Relationships: [{ foreignKeyName: 'calls_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
+      }
+      call_items: {
+        Row: { id: string; call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; property_id: string | null; description: string; owner: string | null; task_id: string | null; matched_task_id: string | null; due_hint: string | null; resolved: boolean; sort_order: number; created_at: string }
+        Insert: Partial<Database['public']['Tables']['call_items']['Row']> & { call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; description: string }
+        Update: Partial<Database['public']['Tables']['call_items']['Row']>
+        Relationships: [{ foreignKeyName: 'call_items_call_id_fkey'; columns: ['call_id']; isOneToOne: false; referencedRelation: 'calls'; referencedColumns: ['id'] }]
+      }
       property_permits: {
         Row: { id: string; property_id: string; permit_no: string; permit_type: string | null; subtype: string | null; description: string | null; status: string | null; issued_date: string | null; expiration_date: string | null; address: string | null; source: string | null; notes: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['property_permits']['Row']> & { property_id: string; permit_no: string }
@@ -186,3 +198,5 @@ export type InspectionItem = Database['public']['Tables']['inspection_items']['R
 export type Contract = Database['public']['Tables']['contracts']['Row']
 export type PropertyPcaItem = Database['public']['Tables']['property_pca_items']['Row']
 export type PropertyPermit = Database['public']['Tables']['property_permits']['Row']
+export type Call = Database['public']['Tables']['calls']['Row']
+export type CallItem = Database['public']['Tables']['call_items']['Row']
