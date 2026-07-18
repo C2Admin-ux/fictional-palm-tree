@@ -95,7 +95,7 @@ export type Database = {
         Relationships: []
       }
       insurance_policies: {
-        Row: { id: string; property_id: string | null; policy_type: string; carrier: string; policy_number: string | null; agent_name: string | null; agent_phone: string | null; agent_email: string | null; broker_agency: string | null; per_occurrence: number | null; aggregate_limit: number | null; building_coverage: number | null; liability_coverage: number | null; loss_of_rents: number | null; deductible: number | null; additional_coverages: string | null; annual_premium: number | null; payment_freq: string | null; effective_date: string | null; expiry_date: string; renewal_notice_date: string | null; auto_renewal: boolean | null; coi_file_path: string | null; coi_file_name: string | null; certificate_holder: string | null; mortgagee: string | null; notes: string | null; status: 'active' | 'expired' | 'cancelled' | 'archived'; created_at: string; updated_at: string }
+        Row: { id: string; property_id: string | null; covered_property_ids: string[] | null; policy_type: string; carrier: string; policy_number: string | null; agent_name: string | null; agent_phone: string | null; agent_email: string | null; broker_agency: string | null; per_occurrence: number | null; aggregate_limit: number | null; building_coverage: number | null; liability_coverage: number | null; loss_of_rents: number | null; deductible: number | null; additional_coverages: string | null; annual_premium: number | null; payment_freq: string | null; effective_date: string | null; expiry_date: string; renewal_notice_date: string | null; auto_renewal: boolean | null; coi_file_path: string | null; coi_file_name: string | null; certificate_holder: string | null; mortgagee: string | null; notes: string | null; status: 'active' | 'expired' | 'cancelled' | 'archived'; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['insurance_policies']['Row']> & { carrier: string; policy_type: string; expiry_date: string }
         Update: Partial<Database['public']['Tables']['insurance_policies']['Row']>
         Relationships: [{ foreignKeyName: 'insurance_policies_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
@@ -123,7 +123,7 @@ export type Database = {
       }
       contracts: {
         Row: {
-          id: string; property_id: string | null; title: string; vendor_name: string; contract_type: string
+          id: string; property_id: string | null; covered_property_ids: string[] | null; title: string; vendor_name: string; contract_type: string
           vendor_contact_name: string | null; vendor_contact_email: string | null; vendor_contact_phone: string | null
           account_number: string | null; agreement_number: string | null
           execution_date: string | null; commencement_date: string | null; expiration_date: string | null

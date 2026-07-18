@@ -6,7 +6,8 @@ import {
   occupancyColor, delinquencyColor, noiVarianceColor,
   TRAFFIC_LIGHT, daysUntil, propertyColor, PRIORITY_DOT,
 } from '@/lib/utils'
-import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft } from 'lucide-react'
+import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert } from 'lucide-react'
+import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import BuildingTab from './building-tab'
 import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
 import TasksTab from './tasks-tab'
@@ -40,6 +41,7 @@ export default async function PropertyPage({
     { data: permits },
     inspectionCountRes,
     { data: inspections },
+    { data: trashContracts },
   ] = await Promise.all([
     // Count feeds the Overview card only. The Tasks tab label carries
     // no number: the interactive tab mutates its list client-side, so a
@@ -56,7 +58,10 @@ export default async function PropertyPage({
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
-    supabase.from('insurance_policies').select('*').eq('property_id', params.id).eq('status', 'active'),
+    // Only policies AFFIRMATIVELY covering this property: linked via
+    // property_id or listed in covered_property_ids (cs = array contains).
+    // Unassigned rows (property_id null, no covered ids) cover nothing.
+    supabase.from('insurance_policies').select('*').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`).eq('status', 'active'),
     supabase.from('property_permits').select('*').eq('property_id', params.id).order('issued_date', { ascending: false, nullsFirst: false }),
     // The tab label only needs a count — the items-embedded rows are
     // fetched only when the inspections tab is actually active.
@@ -66,6 +71,9 @@ export default async function PropertyPage({
           .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
           .eq('property_id', params.id).order('inspection_date', { ascending: false })
       : Promise.resolve({ data: null }),
+    // Trash-contract coverage check — only contracts affirmatively covering
+    // this property (property_id link or covered_property_ids contains it).
+    supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -73,7 +81,18 @@ export default async function PropertyPage({
   const propCapex = (capexProjects ?? []) as any[]
   const propMetrics = (metrics ?? []) as any[]
   const propDocs = (documents ?? []) as any[]
-  const propPolicies = (policies ?? []) as any[]
+  const allActivePolicies = (policies ?? []) as any[]
+  // Every fetched row affirmatively covers this property (see query above),
+  // so portfolio/multi-property policies belong on the Insurance card too.
+  const propPolicies = allActivePolicies
+  // Soft data-hygiene flags: shown for every property status — even a
+  // watchlist/disposition property should have its coverage recorded.
+  const insuranceGapLabel = describeGaps(coverageGaps([{ id: params.id }], allActivePolicies)[params.id])
+  const missingTrash = trashContractGaps([{ id: params.id }], (trashContracts ?? []) as any[])[params.id]
+  const gapLinks = [
+    ...(insuranceGapLabel ? [{ label: insuranceGapLabel, href: `/insurance/policies?property=${params.id}`, cta: 'Go to Insurance' }] : []),
+    ...(missingTrash ? [{ label: TRASH_GAP_LABEL, href: `/documents?property=${params.id}`, cta: 'Go to Contracts' }] : []),
+  ]
   const propPermits = permits ?? []
   const inspectionCount = inspectionCountRes.count ?? 0
   const propInspections = (inspections ?? []) as unknown as InspectionTabRow[]
@@ -268,6 +287,29 @@ export default async function PropertyPage({
                     ))}
                   </div>
                   <Link href={`/properties/${params.id}?tab=metrics`} className="text-xs text-blue-600 hover:underline mt-2 block">Full trend →</Link>
+                </div>
+              )}
+
+              {gapLinks.length > 0 && (
+                <div className="p-4 border border-amber-200 bg-amber-50 rounded-xl">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <ShieldAlert size={14} className="text-amber-600 flex-shrink-0" />
+                    <h3 className="text-sm font-semibold text-amber-800">Coverage gaps</h3>
+                  </div>
+                  <div className="space-y-1">
+                    {gapLinks.map(g => (
+                      <div key={g.href} className="flex items-center justify-between gap-2 text-xs text-amber-700">
+                        <span>{g.label} on file</span>
+                        <Link href={g.href}
+                          className="font-medium text-amber-800 hover:text-amber-900 hover:underline whitespace-nowrap flex-shrink-0">
+                          {g.cta} →
+                        </Link>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-amber-600 mt-2">
+                    If coverage exists, it likely just hasn&apos;t been added yet.
+                  </p>
                 </div>
               )}
 
