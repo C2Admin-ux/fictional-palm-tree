@@ -19,6 +19,24 @@ function isPdf(file: File): boolean {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
 }
 
+// ── Payload size guard ───────────────────────────────────────
+// Vercel caps request bodies at 4.5 MB, and base64 inflates the PDF
+// by ~33% (plus JSON envelope). Anything over ~3.2 MB raw would be
+// rejected server-side with an opaque FUNCTION_PAYLOAD_TOO_LARGE
+// error, so refuse it client-side with a helpful message instead.
+
+export const MAX_EXTRACTION_PDF_BYTES = 3.2 * 1024 * 1024
+
+export function pdfTooLargeMessage(bytes: number): string {
+  const mb = (bytes / (1024 * 1024)).toFixed(1)
+  return `This PDF is too large to process (${mb} MB — limit ~3 MB). Compress it or split it and try again.`
+}
+
+/** True when `message` is the size-limit error — pages that wrap errors in an "Extraction failed —" alert should show it verbatim. */
+export function isPdfTooLargeError(message: string): boolean {
+  return message.startsWith('This PDF is too large')
+}
+
 // ── usePdfExtraction ─────────────────────────────────────────
 // Encapsulates the drag/drop + fileToBase64 + POST /api/*/extract
 // flow used by the documents and PCA pages. On success it calls
@@ -58,6 +76,12 @@ export function usePdfExtraction<T extends ExtractResponse = ExtractResponse>({
   const [error, setError] = useState<string | null>(null)
 
   const extractFile = useCallback(async (file: File): Promise<T | null> => {
+    // Pre-check before reading/uploading: oversized PDFs can never make it
+    // through Vercel's body-size cap, so fail fast with a clear message.
+    if (file.size > MAX_EXTRACTION_PDF_BYTES) {
+      setError(pdfTooLargeMessage(file.size))
+      return null
+    }
     setError(null)
     setExtracting(true)
     setStatus(readingMessage)
@@ -77,7 +101,25 @@ export function usePdfExtraction<T extends ExtractResponse = ExtractResponse>({
         return null
       }
 
-      const data = (await res.json()) as T
+      // Defense in depth: if an oversized body slips past the pre-check,
+      // Vercel rejects it with a 413 whose body is plain text
+      // (FUNCTION_PAYLOAD_TOO_LARGE), not JSON — map it to the same
+      // friendly message instead of surfacing a raw JSON-parse error.
+      if (res.status === 413) {
+        setError(pdfTooLargeMessage(file.size))
+        return null
+      }
+
+      const raw = await res.text()
+      let data: T
+      try {
+        data = JSON.parse(raw) as T
+      } catch {
+        setError(raw.includes('FUNCTION_PAYLOAD_TOO_LARGE')
+          ? pdfTooLargeMessage(file.size)
+          : `Server error (${res.status}): ${raw.slice(0, 120)}`)
+        return null
+      }
 
       if (!data.success) {
         const reason = data.detail

@@ -14,7 +14,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { DragOverlay } from '@/components/ui/drag-overlay'
 import { TaskFromRecord } from '@/components/ui/task-from-record'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
-import { usePdfExtraction, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
+import { usePdfExtraction, isPdfTooLargeError, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
@@ -52,7 +52,7 @@ export default function InsurancePoliciesPage() {
     if (!extractError) return
     alert(extractError === 'not_an_insurance_document'
       ? "That doesn't look like an insurance document. Try a COI or policy declaration page."
-      : extractError === 'Please drop a PDF file'
+      : extractError === 'Please drop a PDF file' || isPdfTooLargeError(extractError)
         ? extractError
         : 'Extraction failed — ' + extractError)
     setExtractError(null)
