@@ -22,16 +22,17 @@ import { DragOverlay } from '@/components/ui/drag-overlay'
 import { ExtractingOverlay } from '@/components/ui/extracting-overlay'
 import { usePdfExtraction, isPdfTooLargeError, type ExtractResponse } from '@/lib/hooks/use-pdf-extraction'
 import { TaskFromRecord } from '@/components/ui/task-from-record'
+import { SEASONAL_CONTRACT_TYPES } from '@/lib/tasks/seasonal'
 
 const CONTRACT_TYPES = [
-  'laundry', 'trash', 'pest_control', 'landscaping', 'elevator',
+  'laundry', 'trash', 'pest_control', 'landscaping', 'snow_removal', 'elevator',
   'hvac', 'plumbing', 'electrical', 'security', 'internet',
   'cable', 'parking', 'management', 'insurance', 'utility', 'other',
 ] as const
 
 const TYPE_LABELS: Record<string, string> = {
   laundry: 'Laundry', trash: 'Trash / Waste', pest_control: 'Pest Control',
-  landscaping: 'Landscaping', elevator: 'Elevator', hvac: 'HVAC',
+  landscaping: 'Landscaping', snow_removal: 'Snow Removal', elevator: 'Elevator', hvac: 'HVAC',
   plumbing: 'Plumbing', electrical: 'Electrical', security: 'Security',
   internet: 'Internet / Telecom', cable: 'Cable', parking: 'Parking',
   management: 'Management', insurance: 'Insurance', utility: 'Utility', other: 'Other',
@@ -104,6 +105,14 @@ function deriveCancelDeadline(expiration: string | null, noticeDays: number | nu
 // When a newer contract is added for the same property + vendor + type,
 // archive any older ACTIVE contracts (status -> 'superseded') and link them
 // to the replacement. "Older" = earlier commencement/execution date.
+//
+// SEASONAL types (snow_removal, landscaping) skip the vendor match: these
+// are re-bid every year — snow bids gathered each fall, landscaping bids
+// each late winter (see lib/tasks/seasonal.ts / the nightly obligations
+// engine) — and the winning vendor often changes. The intended workflow is:
+// gather bids, sign, enter next season's contract here; entering it
+// archives last season's contract for that property automatically, whoever
+// the old vendor was. No separate "archive" step is ever needed.
 async function supersedeOlderContracts(
   supabase: ReturnType<typeof createClient>,
   newContract: { id: string; property_id: string | null; vendor_name: string; contract_type: string; commencement_date: string | null; execution_date: string | null }
@@ -111,14 +120,16 @@ async function supersedeOlderContracts(
   const newDate = newContract.commencement_date ?? newContract.execution_date
   if (!newDate) return  // can't determine ordering without a date
 
-  // Find candidate older contracts: same property, vendor, type, still active,
-  // and not the row we just inserted.
+  // Find candidate older contracts: same property, type, still active, not
+  // the row we just inserted — and same vendor, except for seasonal types.
   let q = supabase.from('contracts')
     .select('id, commencement_date, execution_date')
     .eq('contract_type', newContract.contract_type)
-    .ilike('vendor_name', newContract.vendor_name)
     .eq('status', 'active')
     .neq('id', newContract.id)
+  if (!SEASONAL_CONTRACT_TYPES.includes(newContract.contract_type)) {
+    q = q.ilike('vendor_name', newContract.vendor_name)
+  }
   q = newContract.property_id
     ? q.eq('property_id', newContract.property_id)
     : q.is('property_id', null)
