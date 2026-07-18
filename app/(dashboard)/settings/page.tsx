@@ -2,15 +2,19 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Property, Pmc, Contact } from '@/lib/supabase/types'
+import type { AlertSetting, Json, Property, Pmc, Contact } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
-import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail } from 'lucide-react'
+import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail, Bell } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
+import {
+  OBLIGATION_LEAD_DAYS_KEY, SEASONS, formatMonthDay, parseMonthDay,
+  resolveSeasonConfig, type SeasonSpec,
+} from '@/lib/tasks/seasonal'
 
 const PMS_PLATFORMS = ['Entrata', 'Yardi', 'ResMan', 'AIM', 'Other']
 const PROPERTY_STATUSES = ['active', 'disposition', 'watchlist']
 
-type Tab = 'properties' | 'pmcs' | 'contacts' | 'digest'
+type Tab = 'properties' | 'pmcs' | 'contacts' | 'alerts' | 'digest'
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('properties')
@@ -19,6 +23,7 @@ export default function SettingsPage() {
     { id: 'properties', label: 'Properties', icon: <Building2 size={14} /> },
     { id: 'pmcs',       label: 'PMCs',        icon: <Users size={14} /> },
     { id: 'contacts',   label: 'Contacts',    icon: <UserCircle size={14} /> },
+    { id: 'alerts',     label: 'Alerts',      icon: <Bell size={14} /> },
     { id: 'digest',     label: 'Digest',      icon: <Mail size={14} /> },
   ]
 
@@ -45,6 +50,7 @@ export default function SettingsPage() {
       {tab === 'properties' && <PropertiesTab />}
       {tab === 'pmcs' && <PmcsTab />}
       {tab === 'contacts' && <ContactsTab />}
+      {tab === 'alerts' && <AlertsTab />}
       {tab === 'digest' && <DigestTab />}
     </div>
   )
@@ -503,6 +509,395 @@ function ContactFormModal({ contact, pmcs, onClose, onSave }: {
           </div>
         </form>
     </Modal>
+  )
+}
+
+// ── Alerts Tab ───────────────────────────────────────────────
+// alert_settings (migration 0007) editor for the obligations engine:
+// global obligation lead time, global seasonal bid windows, and
+// per-property window overrides (thin markets like Casper start the
+// snow bid cycle earlier; in-house crews disable a property's cycle).
+// Blank date fields inherit the next layer (global → code defaults) —
+// the engine parses every value defensively, so nothing here can break
+// the nightly cron.
+
+const DEFAULT_LEAD_DAYS = 120
+type CycleDraft = { enabled: boolean; start: string; due: string; end: string }
+
+function cycleDraftFrom(value: unknown): CycleDraft {
+  const v = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
+  return {
+    enabled: v.enabled !== false,
+    start: typeof v.start === 'string' ? v.start : '',
+    due: typeof v.due === 'string' ? v.due : '',
+    end: typeof v.end === 'string' ? v.end : '',
+  }
+}
+
+/** Draft → jsonb value; blank dates are omitted so the engine inherits. */
+function cycleValueFrom(d: CycleDraft): Json {
+  const value: { [key: string]: Json } = { enabled: d.enabled }
+  if (d.start.trim()) value.start = d.start.trim()
+  if (d.due.trim()) value.due = d.due.trim()
+  if (d.end.trim()) value.end = d.end.trim()
+  return value
+}
+
+/** Validate a draft against the window it inherits from. Null = OK. */
+function cycleDraftError(d: CycleDraft, inherited: { start: string; due: string; end: string }): string | null {
+  for (const field of ['start', 'due', 'end'] as const) {
+    const v = d[field].trim()
+    if (v && !parseMonthDay(v)) return `"${v}" isn't a valid MM-DD date (e.g. 09-01)`
+  }
+  const eff = (field: 'start' | 'due' | 'end') => d[field].trim() || inherited[field]
+  if (!(eff('start') <= eff('due') && eff('due') <= eff('end')))
+    return 'Dates must be in calendar order: start ≤ due ≤ season end (within one calendar year)'
+  return null
+}
+
+function rowFor(rows: AlertSetting[], key: string, propertyId: string | null) {
+  return rows.find(s => s.setting_key === key && s.property_id === propertyId)
+}
+
+function AlertsTab() {
+  const supabase = createClient()
+  const [settings, setSettings] = useState<AlertSetting[]>([])
+  const [properties, setProperties] = useState<Property[]>([])
+  const [loading, setLoading] = useState(true)
+  const [leadDraft, setLeadDraft] = useState('')
+  const [cycleDrafts, setCycleDrafts] = useState<Record<string, CycleDraft>>({})
+  const [saving, setSaving] = useState<string | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [showAdd, setShowAdd] = useState(false)
+  const [editOverride, setEditOverride] = useState<AlertSetting | null>(null)
+
+  const fetch = useCallback(async () => {
+    const [{ data: rows }, { data: props }] = await Promise.all([
+      supabase.from('alert_settings').select('*').order('setting_key'),
+      supabase.from('properties').select('*').order('name'),
+    ])
+    const all = rows ?? []
+    setSettings(all)
+    setProperties(props ?? [])
+    const lead = rowFor(all, OBLIGATION_LEAD_DAYS_KEY, null)?.value as { days?: number } | undefined
+    setLeadDraft(lead?.days != null ? String(lead.days) : '')
+    setCycleDrafts(Object.fromEntries(
+      SEASONS.map(s => [s.setting_key, cycleDraftFrom(rowFor(all, s.setting_key, null)?.value)])
+    ))
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetch() }, [fetch])
+
+  function flash(key: string) {
+    setSaved(key)
+    setTimeout(() => setSaved(s => (s === key ? null : s)), 2000)
+  }
+
+  function clearError(key: string) {
+    setErrors(e => {
+      if (!(key in e)) return e
+      const next = { ...e }
+      delete next[key]
+      return next
+    })
+  }
+
+  /** Insert-or-update one (setting_key, property) row — no ON CONFLICT
+   * because the uniqueness lives in partial indexes. Low-traffic surface;
+   * a race just surfaces the unique-violation error. */
+  async function writeSetting(key: string, propertyId: string | null, value: Json) {
+    const existing = rowFor(settings, key, propertyId)
+    const res = existing
+      ? await supabase.from('alert_settings').update({ value, updated_at: new Date().toISOString() }).eq('id', existing.id)
+      : await supabase.from('alert_settings').insert({ setting_key: key, property_id: propertyId, value })
+    if (res.error) throw new Error(res.error.message)
+  }
+
+  async function saveLeadDays() {
+    const raw = leadDraft.trim()
+    const days = Number(raw)
+    if (raw && (!Number.isInteger(days) || days < 1 || days > 365)) {
+      setErrors(e => ({ ...e, lead: 'Enter a whole number of days between 1 and 365' }))
+      return
+    }
+    clearError('lead')
+    setSaving('lead')
+    try {
+      const existing = rowFor(settings, OBLIGATION_LEAD_DAYS_KEY, null)
+      if (!raw) {
+        // Blank = back to the code default; drop the row entirely.
+        if (existing) {
+          const { error } = await supabase.from('alert_settings').delete().eq('id', existing.id)
+          if (error) throw new Error(error.message)
+        }
+      } else {
+        await writeSetting(OBLIGATION_LEAD_DAYS_KEY, null, { days })
+      }
+      await fetch()
+      flash('lead')
+    } catch (err: any) {
+      setErrors(e => ({ ...e, lead: err.message }))
+    }
+    setSaving(null)
+  }
+
+  async function saveGlobalCycle(spec: SeasonSpec) {
+    const draft = cycleDrafts[spec.setting_key]
+    if (!draft) return
+    const defaults = { start: formatMonthDay(spec.start), due: formatMonthDay(spec.due), end: formatMonthDay(spec.seasonEnd) }
+    const problem = cycleDraftError(draft, defaults)
+    if (problem) {
+      setErrors(e => ({ ...e, [spec.setting_key]: problem }))
+      return
+    }
+    clearError(spec.setting_key)
+    setSaving(spec.setting_key)
+    try {
+      await writeSetting(spec.setting_key, null, cycleValueFrom(draft))
+      await fetch()
+      flash(spec.setting_key)
+    } catch (err: any) {
+      setErrors(e => ({ ...e, [spec.setting_key]: err.message }))
+    }
+    setSaving(null)
+  }
+
+  async function deleteOverride(row: AlertSetting) {
+    if (!confirm('Remove this override? The property goes back to the global window.')) return
+    await supabase.from('alert_settings').delete().eq('id', row.id)
+    fetch()
+  }
+
+  /** Effective window a property override inherits: global row → defaults. */
+  function inheritedWindow(spec: SeasonSpec) {
+    const cfg = resolveSeasonConfig(spec, rowFor(settings, spec.setting_key, null)?.value, undefined)
+    return { start: formatMonthDay(cfg.start), due: formatMonthDay(cfg.due), end: formatMonthDay(cfg.seasonEnd) }
+  }
+
+  const overrides = settings
+    .filter(s => s.property_id != null && SEASONS.some(sp => sp.setting_key === s.setting_key))
+    .sort((a, b) => (propName(a.property_id) + a.setting_key).localeCompare(propName(b.property_id) + b.setting_key))
+
+  function propName(id: string | null) {
+    return properties.find(p => p.id === id)?.name ?? '(unknown property)'
+  }
+  function specFor(key: string) {
+    return SEASONS.find(s => s.setting_key === key)
+  }
+
+  if (loading) return <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
+
+  return (
+    <div className="space-y-5">
+      {/* Global: obligation lead time */}
+      <div className="card p-5 space-y-3 max-w-2xl">
+        <h3 className="text-sm font-semibold text-slate-700">Obligation lead time</h3>
+        <p className="text-sm text-slate-500">How far ahead insurance/contract deadline tasks are created. Leave blank for the default ({DEFAULT_LEAD_DAYS} days).</p>
+        <div className="flex items-center gap-2">
+          <input type="number" min={1} max={365} value={leadDraft}
+            onChange={e => setLeadDraft(e.target.value)}
+            className="input w-28" placeholder={String(DEFAULT_LEAD_DAYS)} />
+          <span className="text-sm text-slate-500">days</span>
+          <button onClick={saveLeadDays} disabled={saving === 'lead'} className="btn-primary text-xs py-1.5 ml-2">
+            {saving === 'lead' ? '…' : <><Save size={12} />Save</>}
+          </button>
+          {saved === 'lead' && <span className="flex items-center gap-1 text-xs text-emerald-600"><Check size={11} />Saved</span>}
+        </div>
+        {errors.lead && <p className="text-xs text-red-600">{errors.lead}</p>}
+      </div>
+
+      {/* Global: seasonal bid windows */}
+      <div className="card p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700">Seasonal bid cycles — global defaults</h3>
+          <p className="text-sm text-slate-500 mt-0.5">When &quot;gather bids&quot; tasks appear (start), are due, and stop being created (season end). Dates are MM-DD; blank fields keep the built-in default shown in the box.</p>
+        </div>
+        <div className="space-y-3">
+          {SEASONS.map(spec => {
+            const d = cycleDrafts[spec.setting_key] ?? cycleDraftFrom(undefined)
+            const set = (patch: Partial<CycleDraft>) =>
+              setCycleDrafts(c => ({ ...c, [spec.setting_key]: { ...d, ...patch } }))
+            return (
+              <div key={spec.setting_key} className="flex flex-wrap items-end gap-3 p-3 bg-slate-50 rounded-lg">
+                <div className="w-32 pb-2">
+                  <div className="text-sm font-medium text-slate-700 capitalize">{spec.label}</div>
+                  <label className="flex items-center gap-1.5 mt-1 text-xs text-slate-500 cursor-pointer">
+                    <input type="checkbox" checked={d.enabled} onChange={e => set({ enabled: e.target.checked })} className="w-3.5 h-3.5" />
+                    Enabled
+                  </label>
+                </div>
+                <div><label className="label">Start</label>
+                  <input value={d.start} onChange={e => set({ start: e.target.value })} disabled={!d.enabled}
+                    className="input-sm w-20 disabled:opacity-50" placeholder={formatMonthDay(spec.start)} maxLength={5} /></div>
+                <div><label className="label">Due</label>
+                  <input value={d.due} onChange={e => set({ due: e.target.value })} disabled={!d.enabled}
+                    className="input-sm w-20 disabled:opacity-50" placeholder={formatMonthDay(spec.due)} maxLength={5} /></div>
+                <div><label className="label">Season end</label>
+                  <input value={d.end} onChange={e => set({ end: e.target.value })} disabled={!d.enabled}
+                    className="input-sm w-20 disabled:opacity-50" placeholder={formatMonthDay(spec.seasonEnd)} maxLength={5} /></div>
+                <div className="flex items-center gap-2 pb-0.5">
+                  <button onClick={() => saveGlobalCycle(spec)} disabled={saving === spec.setting_key} className="btn-primary text-xs py-1.5">
+                    {saving === spec.setting_key ? '…' : <><Save size={12} />Save</>}
+                  </button>
+                  {saved === spec.setting_key && <span className="flex items-center gap-1 text-xs text-emerald-600"><Check size={11} />Saved</span>}
+                </div>
+                {errors[spec.setting_key] && <p className="w-full text-xs text-red-600">{errors[spec.setting_key]}</p>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Per-property overrides */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700">Per-property overrides</h3>
+            <p className="text-sm text-slate-500 mt-0.5">Thin vendor markets (e.g. Casper) can start a bid cycle earlier; properties handling work in-house can turn a cycle off.</p>
+          </div>
+          <button onClick={() => { setEditOverride(null); setShowAdd(true) }} className="btn-primary flex-shrink-0"><Plus size={14} />Add override</button>
+        </div>
+
+        {(showAdd || editOverride) && (
+          <OverrideForm
+            key={editOverride?.id ?? 'new'}
+            existing={editOverride}
+            properties={properties}
+            takenKeys={overrides.map(o => `${o.setting_key}:${o.property_id}`)}
+            inheritedWindow={inheritedWindow}
+            onCancel={() => { setShowAdd(false); setEditOverride(null) }}
+            onSave={async (key, propertyId, value) => {
+              await writeSetting(key, propertyId, value)
+              setShowAdd(false); setEditOverride(null)
+              await fetch()
+            }}
+          />
+        )}
+
+        {overrides.length === 0 && !showAdd
+          ? <p className="text-sm text-slate-400 py-2">No overrides yet — every property uses the global windows above.</p>
+          : (
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 border-b border-slate-100">
+                <tr>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Property</th>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Cycle</th>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Enabled</th>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Start</th>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Due</th>
+                  <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Season end</th>
+                  <th className="w-24" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {overrides.map(row => {
+                  const d = cycleDraftFrom(row.value)
+                  const spec = specFor(row.setting_key)
+                  return (
+                    <tr key={row.id} className="hover:bg-slate-50 group">
+                      <td className="px-3 py-2 font-medium text-slate-900">{propName(row.property_id)}</td>
+                      <td className="px-3 py-2 text-slate-600 capitalize">{spec?.label ?? row.setting_key}</td>
+                      <td className="px-3 py-2">
+                        {d.enabled
+                          ? <span className="badge text-xs text-emerald-700 bg-emerald-50 border-emerald-200">on</span>
+                          : <span className="badge text-xs text-slate-500 bg-slate-50 border-slate-200">off</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-600 font-mono">{d.start || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600 font-mono">{d.due || '—'}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600 font-mono">{d.end || '—'}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-1.5 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => { setShowAdd(false); setEditOverride(row) }} className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50">Edit</button>
+                          <button onClick={() => deleteOverride(row)} className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+      </div>
+    </div>
+  )
+}
+
+function OverrideForm({ existing, properties, takenKeys, inheritedWindow, onCancel, onSave }: {
+  existing: AlertSetting | null
+  properties: Property[]
+  takenKeys: string[]
+  inheritedWindow: (spec: SeasonSpec) => { start: string; due: string; end: string }
+  onCancel: () => void
+  onSave: (key: string, propertyId: string, value: Json) => Promise<void>
+}) {
+  const [propertyId, setPropertyId] = useState(existing?.property_id ?? '')
+  const [settingKey, setSettingKey] = useState(existing?.setting_key ?? SEASONS[0].setting_key)
+  const [draft, setDraft] = useState<CycleDraft>(cycleDraftFrom(existing?.value))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const spec = SEASONS.find(s => s.setting_key === settingKey) ?? SEASONS[0]
+  const inherited = inheritedWindow(spec)
+
+  async function save() {
+    if (!propertyId) { setError('Pick a property'); return }
+    if (!existing && takenKeys.includes(`${settingKey}:${propertyId}`)) {
+      setError('That property already has an override for this cycle — edit it instead')
+      return
+    }
+    const problem = cycleDraftError(draft, inherited)
+    if (problem) { setError(problem); return }
+    setError(null)
+    setSaving(true)
+    try {
+      await onSave(settingKey, propertyId, cycleValueFrom(draft))
+    } catch (err: any) {
+      setError(err.message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card p-4 border-blue-200 bg-blue-50/30 space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-slate-700">{existing ? 'Edit override' : 'New override'}</h4>
+        <button onClick={onCancel}><X size={16} className="text-slate-400" /></button>
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <div><label className="label">Property *</label>
+          <select value={propertyId} onChange={e => setPropertyId(e.target.value)} disabled={!!existing} className="input-sm w-44 disabled:opacity-60">
+            <option value="">Select…</option>
+            {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select></div>
+        <div><label className="label">Cycle</label>
+          <select value={settingKey} onChange={e => setSettingKey(e.target.value)} disabled={!!existing} className="input-sm w-36 capitalize disabled:opacity-60">
+            {SEASONS.map(s => <option key={s.setting_key} value={s.setting_key}>{s.label}</option>)}
+          </select></div>
+        <div className="pb-1.5">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={draft.enabled} onChange={e => setDraft(d => ({ ...d, enabled: e.target.checked }))} className="w-3.5 h-3.5" />
+            Enabled
+          </label>
+        </div>
+        <div><label className="label">Start</label>
+          <input value={draft.start} onChange={e => setDraft(d => ({ ...d, start: e.target.value }))} disabled={!draft.enabled}
+            className="input-sm w-20 disabled:opacity-50" placeholder={inherited.start} maxLength={5} /></div>
+        <div><label className="label">Due</label>
+          <input value={draft.due} onChange={e => setDraft(d => ({ ...d, due: e.target.value }))} disabled={!draft.enabled}
+            className="input-sm w-20 disabled:opacity-50" placeholder={inherited.due} maxLength={5} /></div>
+        <div><label className="label">Season end</label>
+          <input value={draft.end} onChange={e => setDraft(d => ({ ...d, end: e.target.value }))} disabled={!draft.enabled}
+            className="input-sm w-20 disabled:opacity-50" placeholder={inherited.end} maxLength={5} /></div>
+      </div>
+      <p className="text-xs text-slate-400">Blank date fields inherit the global window ({inherited.start} → due {inherited.due} → ends {inherited.end}). Dates are MM-DD.</p>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="btn-ghost">Cancel</button>
+        <button onClick={save} disabled={saving} className="btn-primary">{saving ? 'Saving…' : existing ? 'Save' : 'Add override'}</button>
+      </div>
+    </div>
   )
 }
 
