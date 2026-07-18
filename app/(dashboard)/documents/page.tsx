@@ -1,13 +1,15 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Property } from '@/lib/supabase/types'
 import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
+import { trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import {
   Plus, X, Upload, AlertTriangle,
   Download, Trash2, FileText, Search,
-  Sparkles, Check, Clock, Pencil, Archive,
+  Sparkles, Check, Clock, Pencil, Archive, ShieldAlert,
 } from 'lucide-react'
 import { exportToExcel, fmtDate, titleCase, yesNo } from '@/lib/utils/export'
 import { useSort, Th } from '@/lib/utils/sort'
@@ -136,14 +138,29 @@ async function supersedeOlderContracts(
   }
 }
 
+type ContractCoverageFacts = Pick<Contract, 'property_id' | 'contract_type' | 'status' | 'expiration_date'>
+type ContractFormDefaults = { property_id?: string; contract_type?: string }
+
 export default function ContractsPage() {
+  // useSearchParams needs a Suspense boundary (same pattern as the Tasks page).
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-slate-400">Loading…</div>}>
+      <ContractsPageInner />
+    </Suspense>
+  )
+}
+
+function ContractsPageInner() {
   const supabase = createClient()
+  const searchParams = useSearchParams()
   const [contracts, setContracts] = useState<Contract[]>([])
+  const [coverageContracts, setCoverageContracts] = useState<ContractCoverageFacts[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editContract, setEditContract] = useState<Contract | null>(null)
-  const [filterProp, setFilterProp] = useState('')
+  const [formDefaults, setFormDefaults] = useState<ContractFormDefaults | null>(null)
+  const [filterProp, setFilterProp] = useState(searchParams.get('property') ?? '')
   const [filterType, setFilterType] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [search, setSearch] = useState('')
@@ -179,8 +196,13 @@ export default function ContractsPage() {
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('contract_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus)
-    const { data } = await q
+    // Gap detection needs every active trash contract, regardless of the UI filters.
+    const [{ data }, { data: trashFacts }] = await Promise.all([
+      q,
+      supabase.from('contracts').select('property_id, contract_type, status, expiration_date').eq('status', 'active').eq('contract_type', 'trash'),
+    ])
     setContracts(data ?? [])
+    setCoverageContracts(trashFacts ?? [])
     setLoading(false)
   }, [filterProp, filterType, filterStatus])
 
@@ -208,6 +230,12 @@ export default function ContractsPage() {
   const cancelDeadlineSoon = contracts.filter(c => {
     const d = daysUntil(c.cancel_deadline); return d != null && d >= 0 && d <= 90
   })
+
+  // Coverage-gap flag: active properties only (watchlist/disposition are
+  // excluded here; their own property page still shows the gap card).
+  const activeProperties = properties.filter(p => p.status === 'active')
+  const trashGaps = trashContractGaps(activeProperties, coverageContracts)
+  const trashGapProperties = activeProperties.filter(p => trashGaps[p.id])
 
   function exportContracts() {
     const rows = displayed.map(c => ({
@@ -293,7 +321,7 @@ export default function ContractsPage() {
             <Sparkles size={14} />Scan PDF
             <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
           </label>
-          <button onClick={() => { setEditContract(null); setShowForm(true) }} className="btn-primary">
+          <button onClick={() => { setEditContract(null); setFormDefaults(null); setShowForm(true) }} className="btn-primary">
             <Plus size={14} />Add Contract
           </button>
         </div>
@@ -351,6 +379,36 @@ export default function ContractsPage() {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* Coverage-gap flag — soft data-hygiene nudge, clears itself once contracts are added */}
+      {!loading && trashGapProperties.length > 0 && (
+        <div className="p-3 border border-amber-200 bg-amber-50 rounded-xl">
+          <div className="flex items-center gap-2 mb-1.5">
+            <ShieldAlert size={13} className="text-amber-600 flex-shrink-0" />
+            <span className="text-sm font-semibold text-amber-800">
+              {trashGapProperties.length} propert{trashGapProperties.length === 1 ? 'y' : 'ies'} without an active trash/waste contract
+            </span>
+          </div>
+          {trashGapProperties.map(prop => (
+            <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
+              <span className="font-medium">{prop.name}</span>
+              <span className="text-amber-400">·</span>
+              <span>no active trash/waste contract on file</span>
+              <button
+                onClick={() => {
+                  setEditContract(null)
+                  setFormDefaults({ property_id: prop.id, contract_type: 'trash' })
+                  setShowForm(true)
+                }}
+                className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                Add contract
+              </button>
+            </div>
+          ))}
+          <p className="text-xs text-amber-600 mt-1.5 ml-5">If a contract exists, it likely just hasn&apos;t been added yet.</p>
         </div>
       )}
 
@@ -545,9 +603,10 @@ export default function ContractsPage() {
       {showForm && (
         <ContractFormModal
           contract={editContract}
+          defaults={formDefaults}
           properties={properties}
-          onClose={() => { setShowForm(false); setEditContract(null) }}
-          onSave={() => { setShowForm(false); setEditContract(null); fetchContracts() }}
+          onClose={() => { setShowForm(false); setEditContract(null); setFormDefaults(null) }}
+          onSave={() => { setShowForm(false); setEditContract(null); setFormDefaults(null); fetchContracts() }}
         />
       )}
 
@@ -864,8 +923,8 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
 
 // ── Contract Form Modal ──────────────────────────────────────
 
-function ContractFormModal({ contract, properties, onClose, onSave }: {
-  contract: Contract | null; properties: Property[]
+function ContractFormModal({ contract, defaults, properties, onClose, onSave }: {
+  contract: Contract | null; defaults?: ContractFormDefaults | null; properties: Property[]
   onClose: () => void; onSave: () => void
 }) {
   const supabase = createClient()
@@ -875,10 +934,10 @@ function ContractFormModal({ contract, properties, onClose, onSave }: {
   const [saving, setSaving] = useState(false)
 
   const [form, setForm] = useState({
-    property_id:          contract?.property_id ?? '',
+    property_id:          contract?.property_id ?? defaults?.property_id ?? '',
     title:                contract?.title ?? '',
     vendor_name:          contract?.vendor_name ?? '',
-    contract_type:        contract?.contract_type ?? 'other',
+    contract_type:        contract?.contract_type ?? defaults?.contract_type ?? 'other',
     vendor_contact_name:  contract?.vendor_contact_name ?? '',
     vendor_contact_email: contract?.vendor_contact_email ?? '',
     vendor_contact_phone: contract?.vendor_contact_phone ?? '',
