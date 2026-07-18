@@ -6,14 +6,14 @@ import { getSessionUser, unauthorized } from '@/lib/api-auth'
 
 export const maxDuration = 60
 
-const EXTRACTION_PROMPT = `You are extracting structured data from a vendor contract or service agreement for a multifamily real estate firm. These are commonly laundry, trash/waste, pest control, landscaping, elevator, HVAC, plumbing, electrical, security, internet, or similar service agreements. The schema below covers ALL of these types — only fill the fields that apply to THIS contract, and use null for everything that doesn't. For example, a trash contract won't have revenue share; an elevator contract won't have containers.
+const EXTRACTION_PROMPT = `You are extracting structured data from a vendor contract or service agreement for a multifamily real estate firm. These are commonly laundry, trash/waste, pest control, landscaping, snow removal, elevator, HVAC, plumbing, electrical, security, internet, or similar service agreements. The schema below covers ALL of these types — only fill the fields that apply to THIS contract, and use null for everything that doesn't. For example, a trash contract won't have revenue share; an elevator contract won't have containers.
 
 Return ONLY a valid JSON object, no preamble.
 
 {
   "title": string (short descriptive title, e.g. "Trash Removal Agreement", "Elevator Maintenance Contract"),
   "vendor_name": string,
-  "contract_type": one of "laundry" | "trash" | "pest_control" | "landscaping" | "elevator" | "hvac" | "plumbing" | "electrical" | "security" | "internet" | "cable" | "parking" | "management" | "utility" | "other",
+  "contract_type": one of "laundry" | "trash" | "pest_control" | "landscaping" | "snow_removal" | "elevator" | "hvac" | "plumbing" | "electrical" | "security" | "internet" | "cable" | "parking" | "management" | "utility" | "other",
   "vendor_contact_name": string or null,
   "vendor_contact_email": string or null,
   "vendor_contact_phone": string or null,
