@@ -164,7 +164,7 @@ export default function CallDetailPage() {
   async function rerunExtraction() {
     if (!call) return
     if (items.length > 0 &&
-      !confirm('Re-run extraction? The current items are replaced by a fresh extraction of the transcript.')) return
+      !confirm('Re-run extraction? A fresh extraction of the transcript replaces the unlinked proposed items; items already linked to tasks are kept.')) return
     setExtracting(true)
     setActionError(null)
     try {

@@ -48,6 +48,16 @@ export type ExtractOutcome =
   | { ok: true; summary: string; items: CallItem[] }
   | { ok: false; status: number; error: string; detail?: string }
 
+// Real calendar validation for model-supplied dates: the format regex
+// alone admits impossible days ('2026-06-31') that Postgres would reject
+// — failing the whole item batch. Parse + round-trip so an invalid
+// due_hint degrades to null while the item survives.
+function isValidDateOnly(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
 // Exported so the offline prompt-sanity script exercises the EXACT
 // prompt the route ships — no drift between test and production.
 export function buildCallExtractionPrompt(ctx: CallExtractionContext): string {
@@ -168,7 +178,8 @@ async function loadContext(supabase: Client, call: Call): Promise<CallExtraction
 }
 
 /** Run extraction for one call: build context, one Anthropic call, then
- *  persist summary + replace the call's items. Status stays 'draft' —
+ *  persist summary + replace the call's UNLINKED proposal items (items
+ *  already linked to a task survive re-runs). Status stays 'draft' —
  *  processing is the human Confirm step, never the model's. */
 export async function extractCall(supabase: Client, call: Call): Promise<ExtractOutcome> {
   if (!call.transcript?.trim()) {
@@ -205,11 +216,17 @@ export async function extractCall(supabase: Client, call: Call): Promise<Extract
       description: (i.description as string).trim(),
       owner: i.owner === 'pm' || i.owner === 'owner' ? i.owner : null,
       matched_task_id: typeof i.matched_task_id === 'string' && taskIds.has(i.matched_task_id) ? i.matched_task_id : null,
-      due_hint: typeof i.due_hint === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(i.due_hint) ? i.due_hint : null,
+      due_hint: typeof i.due_hint === 'string' && isValidDateOnly(i.due_hint) ? i.due_hint : null,
     }))
 
-  // Persist: summary on the call, then REPLACE the items (a re-run
-  // discards the previous proposal set — the review starts fresh).
+  // Persist: summary on the call, then swap the PROPOSAL set. Items a
+  // partial confirm already linked (task_id set) are never touched —
+  // deleting them would let the next confirm duplicate their tasks. The
+  // fully-validated fresh proposals are INSERTED FIRST (their new ids
+  // are the batch marker), then the stale unlinked rows outside that
+  // batch are deleted — an order that can never strip the call: an
+  // insert failure leaves the old set intact, a delete failure leaves
+  // extra stale rows that the next re-run supersedes.
   const { error: updateError } = await supabase.from('calls')
     .update({ summary: parsed.summary, updated_at: new Date().toISOString() })
     .eq('id', call.id)
@@ -217,20 +234,33 @@ export async function extractCall(supabase: Client, call: Call): Promise<Extract
     return { ok: false, status: 500, error: `Could not save summary: ${updateError.message}` }
   }
 
-  const { error: deleteError } = await supabase.from('call_items').delete().eq('call_id', call.id)
-  if (deleteError) {
-    return { ok: false, status: 500, error: `Could not clear previous items: ${deleteError.message}` }
+  // Kept (linked) items stay in front; fresh proposals continue after.
+  const { data: keptRows, error: keptError } = await supabase.from('call_items')
+    .select('id, sort_order').eq('call_id', call.id).not('task_id', 'is', null)
+  if (keptError) {
+    return { ok: false, status: 500, error: `Could not load existing items: ${keptError.message}` }
   }
+  const baseOrder = (keptRows ?? []).reduce((max, r) => Math.max(max, r.sort_order), -1) + 1
 
   let inserted: CallItem[] = []
   if (items.length > 0) {
     const { data, error: insertError } = await supabase.from('call_items')
-      .insert(items.map((i, idx) => ({ ...i, call_id: call.id, sort_order: idx })))
+      .insert(items.map((i, idx) => ({ ...i, call_id: call.id, sort_order: baseOrder + idx })))
       .select('*')
     if (insertError) {
       return { ok: false, status: 500, error: `Could not save items: ${insertError.message}` }
     }
     inserted = (data ?? []) as CallItem[]
+  }
+
+  let deleteQuery = supabase.from('call_items').delete()
+    .eq('call_id', call.id).is('task_id', null)
+  if (inserted.length > 0) {
+    deleteQuery = deleteQuery.not('id', 'in', `(${inserted.map(i => i.id).join(',')})`)
+  }
+  const { error: deleteError } = await deleteQuery
+  if (deleteError) {
+    return { ok: false, status: 500, error: `Could not clear previous items: ${deleteError.message}` }
   }
 
   return { ok: true, summary: parsed.summary, items: inserted }
