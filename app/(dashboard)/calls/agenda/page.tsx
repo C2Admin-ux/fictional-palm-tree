@@ -14,15 +14,12 @@ import { createClient } from '@/lib/supabase/client'
 import type { CallItem, Task } from '@/lib/supabase/types'
 import { cn, formatDate, formatDateShort, todayISO } from '@/lib/utils'
 import { CALL_ITEM_KIND_LABELS, CALL_ITEM_KIND_STYLES } from '@/lib/calls/ui'
+import { OBLIGATION_SOURCES } from '@/lib/tasks/vocab'
 import { toast } from '@/components/ui/toast'
 import {
   ArrowLeft, AlertTriangle, RotateCcw, Copy, Sparkles, Printer, CalendarClock,
 } from 'lucide-react'
 
-// Auto-generated deadline tasks from the obligations engine (see
-// app/api/tasks/expiration/route.ts — these are its two auto_source
-// values; there is no literal 'expiration' source in the data).
-const OBLIGATION_SOURCES = ['insurance_expiry', 'contract_deadline']
 const OPEN_STATUSES: Task['status'][] = ['inbox', 'next_action', 'waiting', 'blocked']
 
 type PropertyRef = { id: string; name: string }

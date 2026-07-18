@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { isCronRequest, unauthorized } from '@/lib/api-auth'
+import { CONTRACT_SOURCE, INSURANCE_SOURCE, OBLIGATION_SOURCES } from '@/lib/tasks/vocab'
 import type { Contract, Database, InsurancePolicy, Task } from '@/lib/supabase/types'
 
 // ────────────────────────────────────────────────────────────
@@ -33,9 +34,6 @@ const DAY_MS = 24 * 60 * 60 * 1000
 // both insurance expirations and contract cancellations/expirations, so Nick
 // has runway to shop replacements. Priority still escalates as it nears.
 const LEAD_DAYS = 120
-
-const INSURANCE_SOURCE = 'insurance_expiry'
-const CONTRACT_SOURCE = 'contract_deadline'
 
 // What the sync wants a task to look like for one qualifying source record.
 type DesiredTask = {
@@ -72,7 +70,7 @@ export async function GET(req: NextRequest) {
         .eq('status', 'active'),
       supabase.from('tasks')
         .select('*')
-        .in('auto_source', [INSURANCE_SOURCE, CONTRACT_SOURCE]),
+        .in('auto_source', OBLIGATION_SOURCES),
     ])
     if (policiesRes.error) throw policiesRes.error
     if (contractsRes.error) throw contractsRes.error

@@ -20,6 +20,7 @@ import {
 import { InlineText, InlineDate, InlineSelect } from '@/components/ui/inline-edit'
 import { toast } from '@/components/ui/toast'
 import { insertTask } from '@/lib/tasks/create'
+import { CALL_AUTO_SOURCE } from '@/lib/tasks/vocab'
 import {
   ArrowLeft, AlertTriangle, RotateCcw, Sparkles, Plus, Phone,
   CheckCircle2, Circle, X, Link2, ExternalLink, ChevronDown, ChevronRight,
@@ -229,7 +230,7 @@ export default function CallDetailPage() {
           due_date: item.due_hint,
           description: `From PM call — ${call.title || 'PM check-in'} · ${formatDate(call.call_date)}`,
           property_id: item.property_id,
-          auto_source: 'call',
+          auto_source: CALL_AUTO_SOURCE,
           source_record_id: call.id,
           created_by: userId,
           assigned_to: userId,

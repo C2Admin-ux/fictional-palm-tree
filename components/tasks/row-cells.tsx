@@ -6,6 +6,7 @@
 
 import type { Task } from '@/lib/supabase/types'
 import { cn, isOverdue, isSoon, PRIORITY_DOT, RECUR_LABELS } from '@/lib/utils'
+import { CALL_AUTO_SOURCE, OBLIGATION_SOURCES } from '@/lib/tasks/vocab'
 import { InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { CHECK_MS } from '@/components/tasks/complete-collapse'
 import { RefreshCw, Clock, AlertTriangle, Phone, X } from 'lucide-react'
@@ -65,12 +66,12 @@ export function TaskBadges({ task }: { task: Pick<Task, 'recur_freq' | 'auto_sou
           <RefreshCw size={9} />{RECUR_LABELS[task.recur_freq]}
         </span>
       )}
-      {task.auto_source === 'expiration' && (
+      {task.auto_source != null && OBLIGATION_SOURCES.includes(task.auto_source) && (
         <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
           <Clock size={9} />Auto
         </span>
       )}
-      {task.auto_source === 'call' && (
+      {task.auto_source === CALL_AUTO_SOURCE && (
         <span className="inline-flex items-center gap-1 text-xs text-violet-700 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5">
           <Phone size={9} />Call
         </span>
