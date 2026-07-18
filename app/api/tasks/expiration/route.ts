@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { isCronRequest, unauthorized } from '@/lib/api-auth'
-import { CONTRACT_SOURCE, INSURANCE_SOURCE, OBLIGATION_SOURCES } from '@/lib/tasks/vocab'
+import { CONTRACT_SOURCE, INSURANCE_SOURCE, OBLIGATION_SOURCES, SEASONAL_BID_SOURCES } from '@/lib/tasks/vocab'
+import {
+  SEASONS, contractResolvesSeasonalTask, seasonDueDate, seasonYearOf,
+  seasonalPriority, seasonalTitle,
+} from '@/lib/tasks/seasonal'
 import type { Contract, Database, InsurancePolicy, Task } from '@/lib/supabase/types'
 
 // ────────────────────────────────────────────────────────────
@@ -60,7 +64,7 @@ export async function GET(req: NextRequest) {
     const today = new Date().toISOString().slice(0, 10)
 
     // ── 1. Load source records + all existing auto-tasks ──────
-    const [policiesRes, contractsRes, tasksRes] = await Promise.all([
+    const [policiesRes, contractsRes, tasksRes, propertiesRes] = await Promise.all([
       supabase.from('insurance_policies')
         .select('*')
         .eq('status', 'active')
@@ -71,10 +75,14 @@ export async function GET(req: NextRequest) {
       supabase.from('tasks')
         .select('*')
         .in('auto_source', OBLIGATION_SOURCES),
+      supabase.from('properties')
+        .select('id, name, status')
+        .eq('status', 'active'),
     ])
     if (policiesRes.error) throw policiesRes.error
     if (contractsRes.error) throw contractsRes.error
     if (tasksRes.error) throw tasksRes.error
+    if (propertiesRes.error) throw propertiesRes.error
 
     // ── 2. Compute the desired state ───────────────────────────
     const desired: DesiredTask[] = [
@@ -86,9 +94,18 @@ export async function GET(req: NextRequest) {
     const desiredByKey = new Map(desired.map(d => [taskKey(d), d]))
 
     // Existing auto-tasks grouped by (auto_source, source_record_id).
+    // Seasonal bid tasks are keyed differently (their season YEAR matters,
+    // and they resolve on a signed contract, not on the source record
+    // changing) so they're split out and reconciled in step 4 — they must
+    // NOT enter pendingByKey or the generic resolve loop would close them.
     const pendingByKey = new Map<string, Task>()
     const doneByKey = new Map<string, Task[]>()
+    const seasonalTasks: Task[] = []
     for (const t of tasksRes.data ?? []) {
+      if (t.auto_source != null && SEASONAL_BID_SOURCES.includes(t.auto_source)) {
+        seasonalTasks.push(t)
+        continue
+      }
       if (t.status === 'done') {
         const list = doneByKey.get(taskKey(t)) ?? []
         list.push(t)
@@ -159,6 +176,82 @@ export async function GET(req: NextRequest) {
         .eq('id', pending.id)
       if (error) throw error
       counts.resolved++
+    }
+
+    // ── 4. Seasonal bid cycles (snow removal / landscaping) ────
+    // Calendar-driven, not record-driven: inside each season's creation
+    // window every ACTIVE property gets a "gather bids" task, deduped per
+    // (auto_source, property, season year) — the year lives in due_date,
+    // so next year's cycle gets a fresh task and a done task never blocks
+    // it. Open tasks escalate as the due date nears, and auto-resolve when
+    // the property gains an active contract of the matching type that
+    // postdates the task (the bid cycle concluded in a signed contract).
+    // Done tasks are never touched. All logic in lib/tasks/seasonal.ts.
+    const activeContracts = contractsRes.data ?? []
+
+    for (const spec of SEASONS) {
+      const dueDate = seasonDueDate(spec, today) // null outside the creation window
+      if (!dueDate) continue
+      const seasonYear = seasonYearOf(dueDate)
+
+      for (const prop of propertiesRes.data ?? []) {
+        // Any task (open OR done) for this source + property + season year
+        // means the cycle already exists / was handled — never recreate.
+        const exists = seasonalTasks.some(t =>
+          t.auto_source === spec.auto_source &&
+          t.source_record_id === prop.id &&
+          t.due_date != null && seasonYearOf(t.due_date) === seasonYear
+        )
+        if (exists) continue
+
+        const { error } = await supabase.from('tasks').insert({
+          title: seasonalTitle(spec, prop.name),
+          property_id: prop.id,
+          due_date: dueDate,
+          priority: seasonalPriority(today, dueDate),
+          status: 'next_action',
+          auto_source: spec.auto_source,
+          source_record_id: prop.id,
+        })
+        if (error) throw error
+        counts.created++
+        createdTitles.push(seasonalTitle(spec, prop.name))
+      }
+    }
+
+    // Reconcile OPEN seasonal tasks (any season year, year-round):
+    // auto-resolve on a matching signed contract, else refresh escalation.
+    // due_date is never rewritten — it carries the season-year key.
+    const propNameById = new Map((propertiesRes.data ?? []).map(p => [p.id, p.name]))
+    for (const t of seasonalTasks) {
+      if (t.status === 'done') continue
+      const spec = SEASONS.find(s => s.auto_source === t.auto_source)
+      if (!spec) continue
+
+      const signed = activeContracts.some(c => contractResolvesSeasonalTask(c, t, spec))
+      if (signed) {
+        const description = [t.description, `(auto-resolved: ${spec.label} contract signed for the season)`]
+          .filter(Boolean).join('\n')
+        const { error } = await supabase.from('tasks')
+          .update({ status: 'done', completed_at: new Date().toISOString(), description })
+          .eq('id', t.id)
+        if (error) throw error
+        counts.resolved++
+        continue
+      }
+
+      const propName = t.source_record_id != null ? propNameById.get(t.source_record_id) : undefined
+      const wantTitle = propName ? seasonalTitle(spec, propName) : t.title
+      const wantPriority = t.due_date ? seasonalPriority(today, t.due_date) : t.priority
+      if (t.priority !== wantPriority || t.title !== wantTitle) {
+        const { error } = await supabase.from('tasks')
+          .update({ priority: wantPriority, title: wantTitle })
+          .eq('id', t.id)
+        if (error) throw error
+        counts.updated++
+      } else {
+        counts.unchanged++
+      }
     }
 
     return NextResponse.json({
