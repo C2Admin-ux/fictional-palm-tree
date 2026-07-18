@@ -5,7 +5,8 @@ import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Property } from '@/lib/supabase/types'
 import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
-import { trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
+import { trashContractGaps, isUnassigned } from '@/lib/coverage'
+import { CoveredPropertiesSelect, CoveredCountChip } from '@/components/ui/covered-properties-select'
 import {
   Plus, X, Upload, AlertTriangle,
   Download, Trash2, FileText, Search,
@@ -44,6 +45,7 @@ const CANCEL_METHOD_LABELS: Record<string, string> = {
 type Contract = {
   id: string
   property_id: string | null
+  covered_property_ids: string[] | null
   title: string
   vendor_name: string
   contract_type: string
@@ -138,7 +140,7 @@ async function supersedeOlderContracts(
   }
 }
 
-type ContractCoverageFacts = Pick<Contract, 'property_id' | 'contract_type' | 'status' | 'expiration_date'>
+type ContractCoverageFacts = Pick<Contract, 'property_id' | 'covered_property_ids' | 'contract_type' | 'status' | 'expiration_date'>
 type ContractFormDefaults = { property_id?: string; contract_type?: string }
 
 export default function ContractsPage() {
@@ -193,16 +195,19 @@ function ContractsPageInner() {
 
   const fetchContracts = useCallback(async () => {
     let q = supabase.from('contracts').select('*, properties(name)')
-    if (filterProp) q = q.eq('property_id', filterProp)
+    // 'none' = unassigned rows (no property affirmatively linked).
+    if (filterProp) q = filterProp === 'none' ? q.is('property_id', null) : q.eq('property_id', filterProp)
     if (filterType) q = q.eq('contract_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus)
-    // Gap detection needs every active trash contract, regardless of the UI filters.
-    const [{ data }, { data: trashFacts }] = await Promise.all([
+    // Gap detection needs every active contract, regardless of the UI
+    // filters — all types, so unassigned contracts of any type get flagged
+    // (trashContractGaps only counts the 'trash' ones toward coverage).
+    const [{ data }, { data: coverageFacts }] = await Promise.all([
       q,
-      supabase.from('contracts').select('property_id, contract_type, status, expiration_date').eq('status', 'active').eq('contract_type', 'trash'),
+      supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('status', 'active'),
     ])
     setContracts(data ?? [])
-    setCoverageContracts(trashFacts ?? [])
+    setCoverageContracts(coverageFacts ?? [])
     setLoading(false)
   }, [filterProp, filterType, filterStatus])
 
@@ -234,12 +239,16 @@ function ContractsPageInner() {
   // Coverage-gap flag: active properties only (watchlist/disposition are
   // excluded here; their own property page still shows the gap card).
   const activeProperties = properties.filter(p => p.status === 'active')
+  const activePropertyIds = activeProperties.map(p => p.id)
   const trashGaps = trashContractGaps(activeProperties, coverageContracts)
   const trashGapProperties = activeProperties.filter(p => trashGaps[p.id])
+  // Unassigned = no property affirmatively linked; covers nothing, so it's
+  // its own hygiene flag rather than blanket coverage.
+  const unassignedCount = coverageContracts.filter(isUnassigned).length
 
   function exportContracts() {
     const rows = displayed.map(c => ({
-      'Property': c.properties?.name ?? 'Portfolio-wide',
+      'Property': c.properties?.name ?? 'Unassigned',
       'Vendor': c.vendor_name,
       'Title': c.title,
       'Type': titleCase(c.contract_type),
@@ -348,7 +357,7 @@ function ContractsPageInner() {
               <div key={c.id} className="flex items-center gap-2 text-xs text-red-700 py-0.5 ml-5">
                 <span className="font-medium">{c.vendor_name}</span>
                 <span className="text-red-400">·</span>
-                <span>{c.properties?.name ?? 'Portfolio'}</span>
+                <span>{c.properties?.name ?? 'Unassigned'}</span>
                 <span className="text-red-400">·</span>
                 <span>{CANCEL_METHOD_LABELS[c.cancel_method ?? ''] ?? 'Written notice'} required</span>
                 <span className="ml-auto font-semibold">{d === 0 ? 'TODAY' : `${d}d`}</span>
@@ -374,7 +383,7 @@ function ContractsPageInner() {
                 <span className="text-amber-400">·</span>
                 <span>{TYPE_LABELS[c.contract_type] ?? c.contract_type}</span>
                 <span className="text-amber-400">·</span>
-                <span>{c.properties?.name ?? 'Portfolio'}</span>
+                <span>{c.properties?.name ?? 'Unassigned'}</span>
                 <span className="ml-auto font-semibold">{d}d left</span>
               </div>
             )
@@ -383,32 +392,49 @@ function ContractsPageInner() {
       )}
 
       {/* Coverage-gap flag — soft data-hygiene nudge, clears itself once contracts are added */}
-      {!loading && trashGapProperties.length > 0 && (
+      {!loading && (trashGapProperties.length > 0 || unassignedCount > 0) && (
         <div className="p-3 border border-amber-200 bg-amber-50 rounded-xl">
-          <div className="flex items-center gap-2 mb-1.5">
-            <ShieldAlert size={13} className="text-amber-600 flex-shrink-0" />
-            <span className="text-sm font-semibold text-amber-800">
-              {trashGapProperties.length} propert{trashGapProperties.length === 1 ? 'y' : 'ies'} without an active trash/waste contract
-            </span>
-          </div>
-          {trashGapProperties.map(prop => (
-            <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
-              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
-              <span className="font-medium">{prop.name}</span>
-              <span className="text-amber-400">·</span>
-              <span>no active trash/waste contract on file</span>
+          {trashGapProperties.length > 0 && (
+            <>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldAlert size={13} className="text-amber-600 flex-shrink-0" />
+                <span className="text-sm font-semibold text-amber-800">
+                  {trashGapProperties.length} propert{trashGapProperties.length === 1 ? 'y' : 'ies'} without an active trash/waste contract
+                </span>
+              </div>
+              {trashGapProperties.map(prop => (
+                <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
+                  <span className="font-medium">{prop.name}</span>
+                  <span className="text-amber-400">·</span>
+                  <span>no active trash/waste contract on file</span>
+                  <button
+                    onClick={() => {
+                      setEditContract(null)
+                      setFormDefaults({ property_id: prop.id, contract_type: 'trash' })
+                      setShowForm(true)
+                    }}
+                    className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                    Add contract
+                  </button>
+                </div>
+              ))}
+              <p className="text-xs text-amber-600 mt-1.5 ml-5">If a contract exists, it likely just hasn&apos;t been added yet.</p>
+            </>
+          )}
+          {unassignedCount > 0 && (
+            <div className={cn('flex items-center gap-2', trashGapProperties.length > 0 && 'mt-2 pt-2 border-t border-amber-200/70')}>
+              <ShieldAlert size={13} className="text-amber-600 flex-shrink-0" />
+              <span className="text-sm font-semibold text-amber-800">
+                {unassignedCount} contract{unassignedCount === 1 ? ' has' : 's have'} no property assigned
+              </span>
               <button
-                onClick={() => {
-                  setEditContract(null)
-                  setFormDefaults({ property_id: prop.id, contract_type: 'trash' })
-                  setShowForm(true)
-                }}
-                className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
-                Add contract
+                onClick={() => setFilterProp('none')}
+                className="ml-auto text-xs font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                View
               </button>
             </div>
-          ))}
-          <p className="text-xs text-amber-600 mt-1.5 ml-5">If a contract exists, it likely just hasn&apos;t been added yet.</p>
+          )}
         </div>
       )}
 
@@ -422,6 +448,7 @@ function ContractsPageInner() {
         </div>
         <FilterSelect value={filterProp} onChange={setFilterProp}>
           <option value="">All properties</option>
+          <option value="none">No property assigned</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </FilterSelect>
         <FilterSelect value={filterType} onChange={setFilterType}>
@@ -486,8 +513,9 @@ function ContractsPageInner() {
                     onClick={() => { setEditContract(contract); setShowForm(true) }}>
 
                     <td className="px-4 py-3">
-                      <span className="text-xs font-medium text-slate-600">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
                         {contract.properties?.name ?? '—'}
+                        <CoveredCountChip coveredIds={contract.covered_property_ids} propertyId={contract.property_id} activePropertyIds={activePropertyIds} />
                       </span>
                     </td>
 
@@ -812,7 +840,7 @@ function ContractExtractionReviewModal({ extractedContracts, extractedFile, prop
                     <div>
                       <label className="label">Property</label>
                       <select value={d.property_id} onChange={e => update(idx, 'property_id', e.target.value)} className="input">
-                        <option value="">Portfolio-wide</option>
+                        <option value="">— assign —</option>
                         {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </div>
@@ -933,6 +961,9 @@ function ContractFormModal({ contract, defaults, properties, onClose, onSave }: 
   const [dragOver, setDragOver] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // Affirmative multi-property coverage — only checked properties count as
+  // covered (see lib/coverage.ts); no property + no checks = unassigned.
+  const [coveredIds, setCoveredIds] = useState<string[]>(contract?.covered_property_ids ?? [])
   const [form, setForm] = useState({
     property_id:          contract?.property_id ?? defaults?.property_id ?? '',
     title:                contract?.title ?? '',
@@ -1014,8 +1045,10 @@ function ContractFormModal({ contract, defaults, properties, onClose, onSave }: 
     const n = (v: string) => v !== '' ? parseFloat(v) : null
     const i = (v: string) => v !== '' ? parseInt(v) : null
 
+    const alsoCovers = coveredIds.filter(id => id !== form.property_id)
     const payload: any = {
       property_id: form.property_id || null,
+      covered_property_ids: alsoCovers.length ? alsoCovers : null,
       title: form.title,
       vendor_name: form.vendor_name,
       contract_type: form.contract_type,
@@ -1129,7 +1162,7 @@ function ContractFormModal({ contract, defaults, properties, onClose, onSave }: 
             <div>
               <label className="label">Property</label>
               <select value={form.property_id} onChange={e => setF('property_id', e.target.value)} className="input">
-                <option value="">Portfolio-wide</option>
+                <option value="">Unassigned</option>
                 {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
@@ -1140,6 +1173,12 @@ function ContractFormModal({ contract, defaults, properties, onClose, onSave }: 
               </select>
             </div>
           </div>
+          <CoveredPropertiesSelect
+            properties={properties.filter(p => p.status === 'active')}
+            primaryId={form.property_id}
+            value={coveredIds}
+            onChange={setCoveredIds}
+          />
 
           {F('vendor_name', 'Vendor Name', 'text', 'e.g. CSC ServiceWorks', true)}
           {F('title', 'Contract Title', 'text', 'e.g. Laundry Services — Fox Hill', true)}

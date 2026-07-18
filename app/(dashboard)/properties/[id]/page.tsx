@@ -58,10 +58,10 @@ export default async function PropertyPage({
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
-    // Portfolio-wide (property_id null) rows are included so blanket
-    // policies count toward the coverage-gap check below; the Insurance
-    // card still lists only this property's own policies.
-    supabase.from('insurance_policies').select('*').or(`property_id.eq.${params.id},property_id.is.null`).eq('status', 'active'),
+    // Only policies AFFIRMATIVELY covering this property: linked via
+    // property_id or listed in covered_property_ids (cs = array contains).
+    // Unassigned rows (property_id null, no covered ids) cover nothing.
+    supabase.from('insurance_policies').select('*').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`).eq('status', 'active'),
     supabase.from('property_permits').select('*').eq('property_id', params.id).order('issued_date', { ascending: false, nullsFirst: false }),
     // The tab label only needs a count — the items-embedded rows are
     // fetched only when the inspections tab is actually active.
@@ -71,9 +71,9 @@ export default async function PropertyPage({
           .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
           .eq('property_id', params.id).order('inspection_date', { ascending: false })
       : Promise.resolve({ data: null }),
-    // Trash-contract coverage check; portfolio-wide (property_id null)
-    // contracts count as covering this property.
-    supabase.from('contracts').select('property_id, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},property_id.is.null`),
+    // Trash-contract coverage check — only contracts affirmatively covering
+    // this property (property_id link or covered_property_ids contains it).
+    supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -82,7 +82,9 @@ export default async function PropertyPage({
   const propMetrics = (metrics ?? []) as any[]
   const propDocs = (documents ?? []) as any[]
   const allActivePolicies = (policies ?? []) as any[]
-  const propPolicies = allActivePolicies.filter((pol: any) => pol.property_id === params.id)
+  // Every fetched row affirmatively covers this property (see query above),
+  // so portfolio/multi-property policies belong on the Insurance card too.
+  const propPolicies = allActivePolicies
   // Soft data-hygiene flags: shown for every property status — even a
   // watchlist/disposition property should have its coverage recorded.
   const insuranceGapLabel = describeGaps(coverageGaps([{ id: params.id }], allActivePolicies)[params.id])

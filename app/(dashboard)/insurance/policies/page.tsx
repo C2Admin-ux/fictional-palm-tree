@@ -6,7 +6,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { coverageGaps, describeGaps, hasGap } from '@/lib/coverage'
+import { coverageGaps, describeGaps, hasGap, isUnassigned } from '@/lib/coverage'
+import { CoveredPropertiesSelect, CoveredCountChip } from '@/components/ui/covered-properties-select'
 import { Plus, X, Shield, AlertTriangle, ShieldAlert, Search, Sparkles, Check, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
@@ -22,7 +23,7 @@ import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
 const POLICY_TYPE_LABELS: Record<string,string> = { gl:'General Liability', property:'Property', umbrella:'Umbrella', workers_comp:"Workers' Comp", auto:'Commercial Auto', other:'Other' }
 type PolicyWithProp = InsurancePolicy & { properties?: { name: string } | null }
-type CoveragePolicyFacts = Pick<InsurancePolicy, 'property_id' | 'policy_type' | 'status' | 'expiry_date'>
+type CoveragePolicyFacts = Pick<InsurancePolicy, 'property_id' | 'covered_property_ids' | 'policy_type' | 'status' | 'expiry_date'>
 type FormDefaults = { property_id?: string; policy_type?: string }
 
 export default function InsurancePoliciesPage() {
@@ -76,13 +77,14 @@ function PoliciesPageInner() {
 
   const fetchPolicies = useCallback(async () => {
     let q = supabase.from('insurance_policies').select('*, properties(name)')
-    if (filterProp) q = q.eq('property_id', filterProp)
+    // 'none' = unassigned rows (no property affirmatively linked).
+    if (filterProp) q = filterProp === 'none' ? q.is('property_id', null) : q.eq('property_id', filterProp)
     if (filterType) q = q.eq('policy_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus as InsurancePolicy['status'])
     // Gap detection needs every active policy, regardless of the UI filters.
     const [{ data }, { data: activeFacts }] = await Promise.all([
       q,
-      supabase.from('insurance_policies').select('property_id, policy_type, status, expiry_date').eq('status', 'active'),
+      supabase.from('insurance_policies').select('property_id, covered_property_ids, policy_type, status, expiry_date').eq('status', 'active'),
     ])
     setPolicies(data ?? [])
     setCoveragePolicies(activeFacts ?? [])
@@ -102,12 +104,16 @@ function PoliciesPageInner() {
   // Coverage-gap flag: active properties only (watchlist/disposition are
   // excluded here; their own property page still shows the gap card).
   const activeProperties = properties.filter(p => p.status === 'active')
+  const activePropertyIds = activeProperties.map(p => p.id)
   const gaps = coverageGaps(activeProperties, coveragePolicies)
   const gapProperties = activeProperties.filter(p => hasGap(gaps[p.id]))
+  // Unassigned = no property affirmatively linked; covers nothing, so it's
+  // its own hygiene flag rather than blanket coverage.
+  const unassignedCount = coveragePolicies.filter(isUnassigned).length
 
   function exportPolicies() {
     const rows = displayed.map(p => ({
-      'Property': (p as any).properties?.name ?? 'Portfolio-wide',
+      'Property': (p as any).properties?.name ?? 'Unassigned',
       'Type': titleCase(p.policy_type),
       'Carrier': p.carrier,
       'Policy #': p.policy_number ?? '',
@@ -183,7 +189,7 @@ function PoliciesPageInner() {
               <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', (d ?? 0) <= 0 ? 'bg-red-500' : (d ?? 999) <= 30 ? 'bg-red-400' : 'bg-amber-400')} />
               <span className="font-medium">{p.carrier}</span><span className="text-amber-400">·</span>
               <span>{POLICY_TYPE_LABELS[p.policy_type] ?? p.policy_type}</span><span className="text-amber-400">·</span>
-              <span>{(p as any).properties?.name ?? 'Portfolio'}</span>
+              <span>{(p as any).properties?.name ?? 'Unassigned'}</span>
               <span className="ml-auto font-semibold">{(d ?? 0) <= 0 ? 'EXPIRED' : `${d}d`}</span>
             </div>
           )})}
@@ -191,42 +197,59 @@ function PoliciesPageInner() {
       )}
 
       {/* Coverage-gap flag — soft data-hygiene nudge, clears itself once policies are added */}
-      {!loading && gapProperties.length > 0 && (
+      {!loading && (gapProperties.length > 0 || unassignedCount > 0) && (
         <div className="p-3 border border-amber-200 bg-amber-50 rounded-xl">
-          <div className="flex items-center gap-2 mb-1.5">
-            <ShieldAlert size={13} className="text-amber-600" />
-            <span className="text-sm font-semibold text-amber-800">
-              {gapProperties.length} propert{gapProperties.length === 1 ? 'y' : 'ies'} without both an active GL and Property policy
-            </span>
-          </div>
-          {gapProperties.map(prop => {
-            const label = describeGaps(gaps[prop.id]) ?? ''
-            return (
-              <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
-                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
-                <span className="font-medium">{prop.name}</span>
-                <span className="text-amber-400">·</span>
-                <span>{label.charAt(0).toLowerCase() + label.slice(1)} on file</span>
-                <button
-                  onClick={() => {
-                    setEditPolicy(null)
-                    setFormDefaults({ property_id: prop.id, policy_type: gaps[prop.id].missingGl ? 'gl' : 'property' })
-                    setShowForm(true)
-                  }}
-                  className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
-                  Add policy
-                </button>
+          {gapProperties.length > 0 && (
+            <>
+              <div className="flex items-center gap-2 mb-1.5">
+                <ShieldAlert size={13} className="text-amber-600" />
+                <span className="text-sm font-semibold text-amber-800">
+                  {gapProperties.length} propert{gapProperties.length === 1 ? 'y' : 'ies'} without both an active GL and Property policy
+                </span>
               </div>
-            )
-          })}
-          <p className="text-xs text-amber-600 mt-1.5 ml-5">If coverage exists, it likely just hasn&apos;t been added yet.</p>
+              {gapProperties.map(prop => {
+                const label = describeGaps(gaps[prop.id]) ?? ''
+                return (
+                  <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
+                    <span className="font-medium">{prop.name}</span>
+                    <span className="text-amber-400">·</span>
+                    <span>{label.charAt(0).toLowerCase() + label.slice(1)} on file</span>
+                    <button
+                      onClick={() => {
+                        setEditPolicy(null)
+                        setFormDefaults({ property_id: prop.id, policy_type: gaps[prop.id].missingGl ? 'gl' : 'property' })
+                        setShowForm(true)
+                      }}
+                      className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                      Add policy
+                    </button>
+                  </div>
+                )
+              })}
+              <p className="text-xs text-amber-600 mt-1.5 ml-5">If coverage exists, it likely just hasn&apos;t been added yet.</p>
+            </>
+          )}
+          {unassignedCount > 0 && (
+            <div className={cn('flex items-center gap-2', gapProperties.length > 0 && 'mt-2 pt-2 border-t border-amber-200/70')}>
+              <ShieldAlert size={13} className="text-amber-600" />
+              <span className="text-sm font-semibold text-amber-800">
+                {unassignedCount} polic{unassignedCount === 1 ? 'y has' : 'ies have'} no property assigned
+              </span>
+              <button
+                onClick={() => setFilterProp('none')}
+                className="ml-auto text-xs font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                View
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative"><Search size={13} className="absolute left-2.5 top-2 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} className="pl-7 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Search carrier…" /></div>
-        <FilterSelect value={filterProp} onChange={setFilterProp}><option value="">All properties</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</FilterSelect>
+        <FilterSelect value={filterProp} onChange={setFilterProp}><option value="">All properties</option><option value="none">No property assigned</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</FilterSelect>
         <FilterSelect value={filterType} onChange={setFilterType}><option value="">All types</option>{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</FilterSelect>
         <FilterSelect value={filterStatus} onChange={setFilterStatus}><option value="active">Active</option><option value="all">All</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="archived">Archived</option></FilterSelect>
         {(filterProp || filterType || filterStatus !== 'active' || search) && <button onClick={() => { setFilterProp(''); setFilterType(''); setFilterStatus('active'); setSearch('') }} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"><X size={11} />Clear</button>}
@@ -262,7 +285,12 @@ function PoliciesPageInner() {
                 const expired = p.status === 'expired' || (days ?? 999) <= 0
                 return (
                   <tr key={p.id} className="hover:bg-slate-50 cursor-pointer group" onClick={() => { setEditPolicy(p); setShowForm(true) }}>
-                    <td className="px-4 py-2.5 text-xs text-slate-500">{(p as any).properties?.name ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">
+                      <span className="inline-flex items-center gap-1.5">
+                        {(p as any).properties?.name ?? '—'}
+                        <CoveredCountChip coveredIds={p.covered_property_ids} propertyId={p.property_id} activePropertyIds={activePropertyIds} />
+                      </span>
+                    </td>
                     <td className="px-3 py-2.5"><span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{POLICY_TYPE_LABELS[p.policy_type] ?? p.policy_type}</span></td>
                     <td className="px-3 py-2.5 font-medium text-slate-800 text-xs">{p.carrier}</td>
                     <td className="px-3 py-2.5 text-xs text-slate-500 font-mono">{p.policy_number ?? '—'}</td>
@@ -552,12 +580,16 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
 
 function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { policy: PolicyWithProp | null; defaults?: FormDefaults | null; properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
+  // Affirmative multi-property coverage — only checked properties count as
+  // covered (see lib/coverage.ts); no property + no checks = unassigned.
+  const [coveredIds, setCoveredIds] = useState<string[]>(policy?.covered_property_ids ?? [])
   const [form, setForm] = useState({ property_id: policy?.property_id ?? defaults?.property_id ?? '', policy_type: policy?.policy_type ?? defaults?.policy_type ?? 'gl', carrier: policy?.carrier ?? '', policy_number: policy?.policy_number ?? '', agent_name: policy?.agent_name ?? '', agent_phone: policy?.agent_phone ?? '', agent_email: policy?.agent_email ?? '', broker_agency: policy?.broker_agency ?? '', per_occurrence: policy?.per_occurrence?.toString() ?? '', aggregate_limit: policy?.aggregate_limit?.toString() ?? '', building_coverage: policy?.building_coverage?.toString() ?? '', deductible: policy?.deductible?.toString() ?? '', annual_premium: policy?.annual_premium?.toString() ?? '', effective_date: policy?.effective_date ?? '', expiry_date: policy?.expiry_date ?? '', certificate_holder: policy?.certificate_holder ?? 'C2 Capital Partners', mortgagee: policy?.mortgagee ?? '', notes: policy?.notes ?? '' })
   const [saving, setSaving] = useState(false)
   const n = (v: string) => v !== '' ? parseFloat(v) : null
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
-    const payload: any = { property_id: form.property_id || null, policy_type: form.policy_type, carrier: form.carrier, policy_number: form.policy_number || null, agent_name: form.agent_name || null, agent_phone: form.agent_phone || null, agent_email: form.agent_email || null, broker_agency: form.broker_agency || null, per_occurrence: n(form.per_occurrence), aggregate_limit: n(form.aggregate_limit), building_coverage: n(form.building_coverage), deductible: n(form.deductible), annual_premium: n(form.annual_premium), effective_date: form.effective_date || null, expiry_date: form.expiry_date, certificate_holder: form.certificate_holder || null, mortgagee: form.mortgagee || null, notes: form.notes || null, status: 'active' }
+    const alsoCovers = coveredIds.filter(id => id !== form.property_id)
+    const payload: any = { property_id: form.property_id || null, covered_property_ids: alsoCovers.length ? alsoCovers : null, policy_type: form.policy_type, carrier: form.carrier, policy_number: form.policy_number || null, agent_name: form.agent_name || null, agent_phone: form.agent_phone || null, agent_email: form.agent_email || null, broker_agency: form.broker_agency || null, per_occurrence: n(form.per_occurrence), aggregate_limit: n(form.aggregate_limit), building_coverage: n(form.building_coverage), deductible: n(form.deductible), annual_premium: n(form.annual_premium), effective_date: form.effective_date || null, expiry_date: form.expiry_date, certificate_holder: form.certificate_holder || null, mortgagee: form.mortgagee || null, notes: form.notes || null, status: 'active' }
     if (policy) {
       await supabase.from('insurance_policies').update(payload).eq('id', policy.id)
     } else {
@@ -577,7 +609,7 @@ function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { po
           setSaving(false)
           const propLabel = form.property_id
             ? (properties.find(p => p.id === form.property_id)?.name ?? 'this property')
-            : 'portfolio-wide'
+            : 'unassigned'
           alert(`A policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} already exists for ${propLabel}. Duplicate not saved.`)
           return
         }
@@ -591,9 +623,15 @@ function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { po
     <Modal title={policy ? 'Edit Policy' : 'Add Policy'} onClose={onClose} maxWidth="2xl">
       <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Portfolio-wide</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
+            <div><label className="label">Property</label><select value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Unassigned</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Policy Type *</label><select required value={form.policy_type} onChange={e => setForm(f => ({ ...f, policy_type: e.target.value }))} className="input">{POLICY_TYPES.map(t => <option key={t} value={t}>{POLICY_TYPE_LABELS[t]}</option>)}</select></div>
           </div>
+          <CoveredPropertiesSelect
+            properties={properties.filter(p => p.status === 'active')}
+            primaryId={form.property_id}
+            value={coveredIds}
+            onChange={setCoveredIds}
+          />
           <div className="grid grid-cols-2 gap-3">{F('carrier', 'Carrier *')}{F('policy_number', 'Policy Number')}{F('effective_date', 'Effective Date', 'date')}{F('expiry_date', 'Expiry Date *', 'date')}</div>
           <div className="grid grid-cols-3 gap-3">{F('per_occurrence', 'Per Occurrence ($)', 'number')}{F('aggregate_limit', 'Aggregate ($)', 'number')}{F('annual_premium', 'Annual Premium ($)', 'number')}</div>
           <div className="grid grid-cols-2 gap-3">{F('agent_name', 'Agent')}{F('agent_phone', 'Agent Phone')}{F('agent_email', 'Agent Email')}{F('broker_agency', 'Broker Agency')}</div>
