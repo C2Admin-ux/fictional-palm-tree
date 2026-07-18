@@ -1,11 +1,13 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, Shield, AlertTriangle, Search, Sparkles, Check, Download, Pencil, Archive, Trash2 } from 'lucide-react'
+import { coverageGaps, describeGaps, hasGap } from '@/lib/coverage'
+import { Plus, X, Shield, AlertTriangle, ShieldAlert, Search, Sparkles, Check, Download, Pencil, Archive, Trash2 } from 'lucide-react'
 import { InlineSelect } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -20,15 +22,29 @@ import { exportToExcel, fmtDate, titleCase } from '@/lib/utils/export'
 const POLICY_TYPES = ['gl','property','umbrella','workers_comp','auto','other'] as const
 const POLICY_TYPE_LABELS: Record<string,string> = { gl:'General Liability', property:'Property', umbrella:'Umbrella', workers_comp:"Workers' Comp", auto:'Commercial Auto', other:'Other' }
 type PolicyWithProp = InsurancePolicy & { properties?: { name: string } | null }
+type CoveragePolicyFacts = Pick<InsurancePolicy, 'property_id' | 'policy_type' | 'status' | 'expiry_date'>
+type FormDefaults = { property_id?: string; policy_type?: string }
 
 export default function InsurancePoliciesPage() {
+  // useSearchParams needs a Suspense boundary (same pattern as the Tasks page).
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-slate-400">Loading…</div>}>
+      <PoliciesPageInner />
+    </Suspense>
+  )
+}
+
+function PoliciesPageInner() {
   const supabase = createClient()
+  const searchParams = useSearchParams()
   const [policies, setPolicies] = useState<PolicyWithProp[]>([])
+  const [coveragePolicies, setCoveragePolicies] = useState<CoveragePolicyFacts[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editPolicy, setEditPolicy] = useState<PolicyWithProp | null>(null)
-  const [filterProp, setFilterProp] = useState('')
+  const [formDefaults, setFormDefaults] = useState<FormDefaults | null>(null)
+  const [filterProp, setFilterProp] = useState(searchParams.get('property') ?? '')
   const [filterType, setFilterType] = useState('')
   const [filterStatus, setFilterStatus] = useState('active')
   const [search, setSearch] = useState('')
@@ -63,8 +79,13 @@ export default function InsurancePoliciesPage() {
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('policy_type', filterType)
     if (filterStatus !== 'all') q = q.eq('status', filterStatus as InsurancePolicy['status'])
-    const { data } = await q
+    // Gap detection needs every active policy, regardless of the UI filters.
+    const [{ data }, { data: activeFacts }] = await Promise.all([
+      q,
+      supabase.from('insurance_policies').select('property_id, policy_type, status, expiry_date').eq('status', 'active'),
+    ])
     setPolicies(data ?? [])
+    setCoveragePolicies(activeFacts ?? [])
     setLoading(false)
   }, [filterProp, filterType, filterStatus])
 
@@ -77,6 +98,12 @@ export default function InsurancePoliciesPage() {
 
   const expiring = displayed.filter(p => { const d = daysUntil(p.expiry_date); return d != null && d <= 90 })
   const totalPremium = policies.filter(p => p.status === 'active').reduce((s, p) => s + (p.annual_premium ?? 0), 0)
+
+  // Coverage-gap flag: active properties only (watchlist/disposition are
+  // excluded here; their own property page still shows the gap card).
+  const activeProperties = properties.filter(p => p.status === 'active')
+  const gaps = coverageGaps(activeProperties, coveragePolicies)
+  const gapProperties = activeProperties.filter(p => hasGap(gaps[p.id]))
 
   function exportPolicies() {
     const rows = displayed.map(p => ({
@@ -138,7 +165,7 @@ export default function InsurancePoliciesPage() {
             <Sparkles size={14} />Scan PDF
             <input type="file" accept=".pdf" className="hidden" onChange={pdf.onInputChange} />
           </label>
-          <button onClick={() => { setEditPolicy(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
+          <button onClick={() => { setEditPolicy(null); setFormDefaults(null); setShowForm(true) }} className="btn-primary"><Plus size={14} />Add Policy</button>
         </div>
       </div>
 
@@ -160,6 +187,39 @@ export default function InsurancePoliciesPage() {
               <span className="ml-auto font-semibold">{(d ?? 0) <= 0 ? 'EXPIRED' : `${d}d`}</span>
             </div>
           )})}
+        </div>
+      )}
+
+      {/* Coverage-gap flag — soft data-hygiene nudge, clears itself once policies are added */}
+      {!loading && gapProperties.length > 0 && (
+        <div className="p-3 border border-amber-200 bg-amber-50 rounded-xl">
+          <div className="flex items-center gap-2 mb-1.5">
+            <ShieldAlert size={13} className="text-amber-600" />
+            <span className="text-sm font-semibold text-amber-800">
+              {gapProperties.length} propert{gapProperties.length === 1 ? 'y' : 'ies'} without both an active GL and Property policy
+            </span>
+          </div>
+          {gapProperties.map(prop => {
+            const label = describeGaps(gaps[prop.id]) ?? ''
+            return (
+              <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
+                <span className="font-medium">{prop.name}</span>
+                <span className="text-amber-400">·</span>
+                <span>{label.charAt(0).toLowerCase() + label.slice(1)} on file</span>
+                <button
+                  onClick={() => {
+                    setEditPolicy(null)
+                    setFormDefaults({ property_id: prop.id, policy_type: gaps[prop.id].missingGl ? 'gl' : 'property' })
+                    setShowForm(true)
+                  }}
+                  className="ml-auto font-semibold text-amber-800 hover:text-amber-900 hover:underline">
+                  Add policy
+                </button>
+              </div>
+            )
+          })}
+          <p className="text-xs text-amber-600 mt-1.5 ml-5">If coverage exists, it likely just hasn&apos;t been added yet.</p>
         </div>
       )}
 
@@ -261,7 +321,7 @@ export default function InsurancePoliciesPage() {
         </div>
       )}
 
-      {showForm && <PolicyFormModal policy={editPolicy} properties={properties} onClose={() => { setShowForm(false); setEditPolicy(null) }} onSave={() => { setShowForm(false); setEditPolicy(null); fetchPolicies() }} />}
+      {showForm && <PolicyFormModal policy={editPolicy} defaults={formDefaults} properties={properties} onClose={() => { setShowForm(false); setEditPolicy(null); setFormDefaults(null) }} onSave={() => { setShowForm(false); setEditPolicy(null); setFormDefaults(null); fetchPolicies() }} />}
 
       {extractedPolicies && (
         <ExtractionReviewModal
@@ -490,9 +550,9 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
   )
 }
 
-function PolicyFormModal({ policy, properties, onClose, onSave }: { policy: PolicyWithProp | null; properties: Property[]; onClose: () => void; onSave: () => void }) {
+function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { policy: PolicyWithProp | null; defaults?: FormDefaults | null; properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
-  const [form, setForm] = useState({ property_id: policy?.property_id ?? '', policy_type: policy?.policy_type ?? 'gl', carrier: policy?.carrier ?? '', policy_number: policy?.policy_number ?? '', agent_name: policy?.agent_name ?? '', agent_phone: policy?.agent_phone ?? '', agent_email: policy?.agent_email ?? '', broker_agency: policy?.broker_agency ?? '', per_occurrence: policy?.per_occurrence?.toString() ?? '', aggregate_limit: policy?.aggregate_limit?.toString() ?? '', building_coverage: policy?.building_coverage?.toString() ?? '', deductible: policy?.deductible?.toString() ?? '', annual_premium: policy?.annual_premium?.toString() ?? '', effective_date: policy?.effective_date ?? '', expiry_date: policy?.expiry_date ?? '', certificate_holder: policy?.certificate_holder ?? 'C2 Capital Partners', mortgagee: policy?.mortgagee ?? '', notes: policy?.notes ?? '' })
+  const [form, setForm] = useState({ property_id: policy?.property_id ?? defaults?.property_id ?? '', policy_type: policy?.policy_type ?? defaults?.policy_type ?? 'gl', carrier: policy?.carrier ?? '', policy_number: policy?.policy_number ?? '', agent_name: policy?.agent_name ?? '', agent_phone: policy?.agent_phone ?? '', agent_email: policy?.agent_email ?? '', broker_agency: policy?.broker_agency ?? '', per_occurrence: policy?.per_occurrence?.toString() ?? '', aggregate_limit: policy?.aggregate_limit?.toString() ?? '', building_coverage: policy?.building_coverage?.toString() ?? '', deductible: policy?.deductible?.toString() ?? '', annual_premium: policy?.annual_premium?.toString() ?? '', effective_date: policy?.effective_date ?? '', expiry_date: policy?.expiry_date ?? '', certificate_holder: policy?.certificate_holder ?? 'C2 Capital Partners', mortgagee: policy?.mortgagee ?? '', notes: policy?.notes ?? '' })
   const [saving, setSaving] = useState(false)
   const n = (v: string) => v !== '' ? parseFloat(v) : null
   async function handleSubmit(e: React.FormEvent) {
