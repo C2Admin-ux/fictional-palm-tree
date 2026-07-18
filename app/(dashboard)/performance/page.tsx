@@ -104,7 +104,7 @@ export default function PerformancePage() {
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[780px]">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50">
+              <tr className="border-b border-slate-200/70 bg-slate-50">
                 <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Property</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">Occupancy</th>
                 <th className="text-center px-3 py-3 text-xs font-medium text-slate-500">Leased</th>
@@ -117,7 +117,7 @@ export default function PerformancePage() {
                 <th className="w-12" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-200/70">
               {properties.map(prop => {
                 const m = currentMetrics[prop.id]
                 const woRate = m?.work_orders_opened && m.work_orders_opened > 0

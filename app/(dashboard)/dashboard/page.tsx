@@ -151,7 +151,7 @@ export default async function DashboardPage() {
             : topTasks.map(task => {
               const overdue = task.due_date && new Date(task.due_date) < new Date()
               return (
-                <div key={task.id} className="flex items-center gap-2.5 py-2 border-b border-slate-50 last:border-0">
+                <div key={task.id} className="flex items-center gap-2.5 py-2 border-b border-slate-200/70 last:border-0">
                   <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                     style={{ background: PRIORITY_DOT[task.priority] ?? '#94a3b8' }} />
                   <span className="text-sm text-slate-700 flex-1 truncate">{task.title}</span>
@@ -197,18 +197,20 @@ export default async function DashboardPage() {
             <h2 className="text-sm font-semibold text-amber-800">{expiringPolicies.length} insurance polic{expiringPolicies.length === 1 ? 'y' : 'ies'} expiring within 90 days</h2>
             <Link href="/insurance/policies" className="ml-auto text-xs text-amber-700 hover:underline">View all →</Link>
           </div>
-          {expiringPolicies.slice(0, 3).map(p => {
-            const days = daysUntil(p.expiry_date)
-            return (
-              <div key={p.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5">
-                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(days ?? 0) <= 30 ? 'bg-red-500' : 'bg-amber-400'}`} />
-                <span className="font-medium">{p.carrier}</span>
-                <span className="text-amber-400">·</span>
-                <span>{p.policy_type.toUpperCase()}</span>
-                <span className="ml-auto font-medium">{(days ?? 0) <= 0 ? 'EXPIRED' : `${days}d left`}</span>
-              </div>
-            )
-          })}
+          <div className="divide-y divide-amber-200/70">
+            {expiringPolicies.slice(0, 3).map(p => {
+              const days = daysUntil(p.expiry_date)
+              return (
+                <div key={p.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(days ?? 0) <= 30 ? 'bg-red-500' : 'bg-amber-400'}`} />
+                  <span className="font-medium">{p.carrier}</span>
+                  <span className="text-amber-400">·</span>
+                  <span>{p.policy_type.toUpperCase()}</span>
+                  <span className="ml-auto font-medium">{(days ?? 0) <= 0 ? 'EXPIRED' : `${days}d left`}</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -408,10 +408,10 @@ export default function CallDetailPage() {
 
         {grouped.map(([key, group]) => (
           <div key={key} className="card overflow-visible">
-            <div className="px-4 py-2.5 border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            <div className="px-4 py-2.5 border-b border-slate-200/70 text-xs font-semibold text-slate-500 uppercase tracking-wide">
               {group.label}
             </div>
-            <div className="divide-y divide-slate-50">
+            <div className="divide-y divide-slate-200/70">
               {group.items.map(item => (
                 <ItemRow
                   key={item.id}

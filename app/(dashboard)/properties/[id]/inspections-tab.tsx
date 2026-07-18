@@ -92,14 +92,14 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm min-w-[640px]">
-          <thead className="bg-slate-50 border-b border-slate-100">
+          <thead className="bg-slate-50 border-b border-slate-200/70">
             <tr>
               {['Date', 'Type', 'Status', 'Score', 'Follow-ups', 'Report'].map(h => (
                 <th key={h} className="text-left px-4 py-2 text-xs font-medium text-slate-500">{h}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-50">
+          <tbody className="divide-y divide-slate-200/70">
             {rows.map(insp => {
               return (
                 <tr key={insp.id} className="hover:bg-slate-50">

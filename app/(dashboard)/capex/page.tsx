@@ -220,7 +220,7 @@ function CapexInner() {
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden md:block">
             <table className="w-full text-sm min-w-[800px]">
-              <thead className="bg-slate-50 border-b border-slate-100">
+              <thead className="bg-slate-50 border-b border-slate-200/70">
                 <tr>
                   <Th label="Property" field="property_id" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                   <Th label="Title" field="title" current={sort} dir={dir} onSort={toggle} />
@@ -233,7 +233,7 @@ function CapexInner() {
                   <Th label="Target" field="target_completion" current={sort} dir={dir} onSort={toggle} />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50">
+              <tbody className="divide-y divide-slate-200/70">
                 {displayed.map(p => {
                   const { pct, over } = budgetUsage(p)
 
