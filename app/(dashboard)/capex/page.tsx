@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
-import { cn, formatCurrency } from '@/lib/utils'
+import { cn, formatCurrency, propertyColor } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Plus, X, HardHat, Search, List, LayoutGrid, AlertTriangle } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS } from '@/components/ui/inline-edit'
@@ -20,6 +20,52 @@ import { CapexBoard, ProjectCard, budgetUsage, type CapexWithProp, type CapexSta
 const STATUSES = CAPEX_STATUS_OPTIONS.map(o => o.value as CapexProject['status'])
 const ACTIVE_STATUSES: CapexProject['status'][] = ['planning', 'approved', 'in_progress']
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
+
+// ── Property grouping (list view) ────────────────────────────
+// Sections in property-name order, projects without a property under
+// "No property" last. Input order (the active column sort) is
+// preserved within each group.
+
+type PropertyGroup = {
+  key: string
+  label: string
+  projects: CapexWithProp[]
+  budget: number
+  spend: number
+}
+
+function groupByProperty(projects: CapexWithProp[]): PropertyGroup[] {
+  const map = new Map<string, PropertyGroup>()
+  for (const p of projects) {
+    const key = p.property_id ?? 'none'
+    let entry = map.get(key)
+    if (!entry) {
+      entry = { key, label: p.properties?.name ?? 'No property', projects: [], budget: 0, spend: 0 }
+      map.set(key, entry)
+    }
+    entry.projects.push(p)
+    entry.budget += p.budget ?? 0
+    entry.spend += p.actual_spend ?? 0
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    a.key === 'none' ? 1 : b.key === 'none' ? -1 : a.label.localeCompare(b.label))
+}
+
+// Shared section-header content (desktop table row + mobile card list):
+// property dot, name, project count, summed budget vs actual.
+function GroupHeader({ group }: { group: PropertyGroup }) {
+  return (
+    <>
+      <span className="w-2 h-2 rounded-full flex-shrink-0"
+        style={{ background: propertyColor(group.key === 'none' ? null : group.label) }} />
+      <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide truncate">{group.label}</span>
+      <span className="text-xs text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded-full flex-shrink-0">{group.projects.length}</span>
+      <span className="ml-auto pl-2 text-xs text-slate-400 whitespace-nowrap">
+        {formatCurrency(group.budget, true)} budget · {formatCurrency(group.spend, true)} spent
+      </span>
+    </>
+  )
+}
 
 export default function CapexPage() {
   return (
@@ -44,6 +90,8 @@ function CapexInner() {
   const [filterStatus, setFilterStatus] = useState('active')
   const [filterCategory, setFilterCategory] = useState('')
   const [search, setSearch] = useState('')
+  // List-view sectioning — grouped by property by default.
+  const [groupBy, setGroupBy] = useState<'property' | 'none'>('property')
   const [moveError, setMoveError] = useState<string | null>(null)
   // Monotonic fetch sequence: responses that don't match the latest seq are
   // stale (a newer fetch — or an optimistic mutation — superseded them).
@@ -93,6 +141,15 @@ function CapexInner() {
   const totalBudget = displayed.reduce((s, p) => s + (p.budget ?? 0), 0)
   const totalSpend  = displayed.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
 
+  // Sections for the grouped list; null renders the flat table. A single
+  // group (e.g. a property filter is active) also renders flat — the
+  // header would just repeat the filter.
+  const groups = (() => {
+    if (view !== 'list' || groupBy !== 'property') return null
+    const g = groupByProperty(displayed)
+    return g.length > 1 ? g : null
+  })()
+
   // Optimistic status change from the board: move the card immediately,
   // snap it back with an inline error if the update fails.
   async function moveProject(id: string, status: CapexStatus) {
@@ -115,6 +172,98 @@ function CapexInner() {
   }
 
   const filtersActive = filterProp || filterCategory || search || (view === 'list' && filterStatus !== 'active')
+
+  // Mobile card — shared by the flat and grouped lists. Inline editing
+  // is desktop-only; tap through to detail.
+  function renderCard(p: CapexWithProp) {
+    return (
+      <Link key={p.id} href={`/capex/${p.id}`} className="block">
+        <ProjectCard project={p} showStatus showChevron
+          className="hover:shadow-md transition-shadow" />
+      </Link>
+    )
+  }
+
+  // Desktop table row — shared by the flat and grouped tables.
+  function renderRow(p: CapexWithProp) {
+    const { pct, over } = budgetUsage(p)
+
+    async function patch(fields: Record<string, unknown>) {
+      await supabase.from('capex_projects').update(fields).eq('id', p.id)
+      fetchProjects()
+    }
+
+    return (
+      <tr key={p.id} className="hover:bg-slate-50 group">
+        <td className="px-4 py-2.5 text-xs text-slate-500">{p.properties?.name ?? '—'}</td>
+        <td className="px-3 py-2.5">
+          <InlineText
+            value={p.title}
+            onSave={v => patch({ title: v })}
+            displayClassName="font-medium text-slate-900 text-sm"
+          />
+        </td>
+        <td className="px-3 py-2.5">
+          <InlineSelect
+            value={p.category ?? ''}
+            options={CAPEX_CATEGORY_OPTIONS}
+            onSave={v => patch({ category: v })}
+            trigger={
+              p.category
+                ? <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full capitalize cursor-pointer hover:bg-slate-200 transition-colors">{p.category.replace('_', ' ')}</span>
+                : <span className="text-xs text-slate-300 italic cursor-pointer hover:text-slate-500">set category</span>
+            }
+          />
+        </td>
+        <td className="px-3 py-2.5">
+          <InlineSelect
+            value={p.status}
+            options={CAPEX_STATUS_OPTIONS}
+            onSave={v => patch({ status: v })}
+          />
+        </td>
+        <td className="px-3 py-2.5 text-right">
+          <InlineText
+            value={p.budget?.toString() ?? ''}
+            onSave={v => patch({ budget: parseFloat(v) || null })}
+            displayClassName={cn('text-sm text-slate-700', !p.budget && 'text-slate-300 italic')}
+            placeholder="set budget"
+          />
+        </td>
+        <td className={cn('px-3 py-2.5 text-right text-sm font-medium', over ? 'text-red-600' : 'text-slate-700')}>{formatCurrency(p.actual_spend, true)}</td>
+        <td className="px-3 py-2.5 text-right">
+          {p.budget != null && p.budget > 0 ? (
+            <div className="flex items-center justify-end gap-2">
+              <div className="w-16 bg-slate-100 rounded-full h-1.5">
+                <div className={cn('h-1.5 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')} style={{ width: `${Math.min(pct, 100)}%` }} />
+              </div>
+              <span className={cn('text-xs min-w-[2rem] text-right', over ? 'text-red-500 font-medium' : 'text-slate-400')}>{pct}%</span>
+            </div>
+          ) : over ? (
+            <span className="text-xs text-red-500 font-medium whitespace-nowrap">over — no budget</span>
+          ) : (
+            <span className="text-xs text-slate-300">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2.5">
+          <InlineText
+            value={p.vendor_name}
+            onSave={v => patch({ vendor_name: v })}
+            displayClassName="text-xs text-slate-600"
+            placeholder="add vendor"
+          />
+        </td>
+        <td className="px-3 py-2.5">
+          <InlineDate
+            value={p.target_completion}
+            onSave={v => patch({ target_completion: v })}
+            className="text-xs text-slate-500"
+            emptyLabel="set date"
+          />
+        </td>
+      </tr>
+    )
+  }
 
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-5">
@@ -175,6 +324,14 @@ function CapexInner() {
           <option value="">All categories</option>
           {CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
         </FilterSelect>
+        {view === 'list' && (
+          <FilterSelect value={groupBy} onChange={v => setGroupBy(v as 'property' | 'none')}
+            ariaLabel="Group by"
+            options={[
+              { value: 'property', label: 'Group: Property' },
+              { value: 'none',     label: 'Group: None' },
+            ]} />
+        )}
         {filtersActive && (
           <button onClick={() => { setFilterProp(''); setFilterStatus('active'); setFilterCategory(''); setSearch('') }}
             className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
@@ -207,15 +364,23 @@ function CapexInner() {
         <CapexBoard projects={displayed} onMove={moveProject} />
       ) : (
         <>
-          {/* Mobile cards — inline editing is desktop-only; tap through to detail */}
-          <div className="space-y-2 md:hidden">
-            {displayed.map(p => (
-              <Link key={p.id} href={`/capex/${p.id}`} className="block">
-                <ProjectCard project={p} showStatus showChevron
-                  className="hover:shadow-md transition-shadow" />
-              </Link>
-            ))}
-          </div>
+          {/* Mobile cards */}
+          {groups ? (
+            <div className="space-y-4 md:hidden">
+              {groups.map(g => (
+                <div key={g.key} className="space-y-2">
+                  <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
+                    <GroupHeader group={g} />
+                  </div>
+                  {g.projects.map(renderCard)}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-2 md:hidden">
+              {displayed.map(renderCard)}
+            </div>
+          )}
 
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden md:block">
@@ -233,87 +398,25 @@ function CapexInner() {
                   <Th label="Target" field="target_completion" current={sort} dir={dir} onSort={toggle} />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200/70">
-                {displayed.map(p => {
-                  const { pct, over } = budgetUsage(p)
-
-                  async function patch(fields: Record<string, unknown>) {
-                    await supabase.from('capex_projects').update(fields).eq('id', p.id)
-                    fetchProjects()
-                  }
-
-                  return (
-                    <tr key={p.id} className="hover:bg-slate-50 group">
-                      <td className="px-4 py-2.5 text-xs text-slate-500">{p.properties?.name ?? '—'}</td>
-                      <td className="px-3 py-2.5">
-                        <InlineText
-                          value={p.title}
-                          onSave={v => patch({ title: v })}
-                          displayClassName="font-medium text-slate-900 text-sm"
-                        />
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <InlineSelect
-                          value={p.category ?? ''}
-                          options={CAPEX_CATEGORY_OPTIONS}
-                          onSave={v => patch({ category: v })}
-                          trigger={
-                            p.category
-                              ? <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full capitalize cursor-pointer hover:bg-slate-200 transition-colors">{p.category.replace('_', ' ')}</span>
-                              : <span className="text-xs text-slate-300 italic cursor-pointer hover:text-slate-500">set category</span>
-                          }
-                        />
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <InlineSelect
-                          value={p.status}
-                          options={CAPEX_STATUS_OPTIONS}
-                          onSave={v => patch({ status: v })}
-                        />
-                      </td>
-                      <td className="px-3 py-2.5 text-right">
-                        <InlineText
-                          value={p.budget?.toString() ?? ''}
-                          onSave={v => patch({ budget: parseFloat(v) || null })}
-                          displayClassName={cn('text-sm text-slate-700', !p.budget && 'text-slate-300 italic')}
-                          placeholder="set budget"
-                        />
-                      </td>
-                      <td className={cn('px-3 py-2.5 text-right text-sm font-medium', over ? 'text-red-600' : 'text-slate-700')}>{formatCurrency(p.actual_spend, true)}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        {p.budget != null && p.budget > 0 ? (
-                          <div className="flex items-center justify-end gap-2">
-                            <div className="w-16 bg-slate-100 rounded-full h-1.5">
-                              <div className={cn('h-1.5 rounded-full', over ? 'bg-red-400' : 'bg-orange-400')} style={{ width: `${Math.min(pct, 100)}%` }} />
-                            </div>
-                            <span className={cn('text-xs min-w-[2rem] text-right', over ? 'text-red-500 font-medium' : 'text-slate-400')}>{pct}%</span>
-                          </div>
-                        ) : over ? (
-                          <span className="text-xs text-red-500 font-medium whitespace-nowrap">over — no budget</span>
-                        ) : (
-                          <span className="text-xs text-slate-300">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <InlineText
-                          value={p.vendor_name}
-                          onSave={v => patch({ vendor_name: v })}
-                          displayClassName="text-xs text-slate-600"
-                          placeholder="add vendor"
-                        />
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <InlineDate
-                          value={p.target_completion}
-                          onSave={v => patch({ target_completion: v })}
-                          className="text-xs text-slate-500"
-                          emptyLabel="set date"
-                        />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
+              {groups ? groups.map(g => (
+                // One tbody per property: a section header row (slightly
+                // stronger top edge for scanability), then the project
+                // rows — the active column sort applies within the group.
+                <tbody key={g.key} className="divide-y divide-slate-200/70">
+                  <tr className="bg-slate-50 border-t border-slate-200">
+                    <td colSpan={9} className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <GroupHeader group={g} />
+                      </div>
+                    </td>
+                  </tr>
+                  {g.projects.map(renderRow)}
+                </tbody>
+              )) : (
+                <tbody className="divide-y divide-slate-200/70">
+                  {displayed.map(renderRow)}
+                </tbody>
+              )}
             </table>
           </div>
         </>
