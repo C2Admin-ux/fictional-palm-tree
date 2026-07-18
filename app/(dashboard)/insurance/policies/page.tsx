@@ -262,7 +262,7 @@ function PoliciesPageInner() {
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
-            <thead className="bg-slate-50 border-b border-slate-100">
+            <thead className="bg-slate-50 border-b border-slate-200/70">
               <tr>
                 <Th label="Property" field="property_id" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                 <Th label="Type" field="policy_type" current={sort} dir={dir} onSort={toggle} />
@@ -278,7 +278,7 @@ function PoliciesPageInner() {
                 <th className="w-20" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-200/70">
               {displayed.map(p => {
                 const days = daysUntil(p.expiry_date)
                 const warn = (days ?? 999) <= 90

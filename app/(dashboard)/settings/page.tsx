@@ -162,7 +162,7 @@ function PropertiesTab() {
 
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 border-b border-slate-100">
+          <thead className="bg-slate-50 border-b border-slate-200/70">
             <tr>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">Property</th>
               <th className="text-left px-3 py-2.5 text-xs font-medium text-slate-500">Address</th>
@@ -173,7 +173,7 @@ function PropertiesTab() {
               <th className="w-28" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-50">
+          <tbody className="divide-y divide-slate-200/70">
             {properties.map(prop => {
               const isEditing = editing === prop.id
               const draft = drafts[prop.id] ?? prop
@@ -401,7 +401,7 @@ function ContactsTab() {
 
       <div className="card overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 border-b border-slate-100">
+          <thead className="bg-slate-50 border-b border-slate-200/70">
             <tr>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">Name</th>
               <th className="text-left px-3 py-2.5 text-xs font-medium text-slate-500">Role</th>
@@ -411,7 +411,7 @@ function ContactsTab() {
               <th className="w-20" />
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-50">
+          <tbody className="divide-y divide-slate-200/70">
             {contacts.map(c => (
               <tr key={c.id} className="hover:bg-slate-50 group">
                 <td className="px-4 py-2.5">

@@ -180,7 +180,7 @@ export default function CallsPage() {
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden sm:block">
             <table className="w-full text-sm min-w-[800px]">
-              <thead className="bg-slate-50 border-b border-slate-100">
+              <thead className="bg-slate-50 border-b border-slate-200/70">
                 <tr>
                   <Th label="Date" field="call_date" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                   <Th label="PMC" field="pmc_name" current={sort} dir={dir} onSort={toggle} />
@@ -192,7 +192,7 @@ export default function CallsPage() {
                   <th className="w-14" />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50">
+              <tbody className="divide-y divide-slate-200/70">
                 {displayed.map(call => (
                   <tr key={call.id} className="hover:bg-slate-50 cursor-pointer group"
                     onClick={() => router.push(`/calls/${call.id}`)}>

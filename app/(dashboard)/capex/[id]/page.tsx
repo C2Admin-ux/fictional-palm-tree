@@ -226,7 +226,7 @@ export default function CapexDetailPage() {
               <>
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-slate-100">
+                    <tr className="border-b border-slate-200/70">
                       <th className="text-left pb-2 text-slate-400 font-medium">Description</th>
                       <th className="text-left pb-2 text-slate-400 font-medium hidden sm:table-cell">Date</th>
                       <th className="text-left pb-2 text-slate-400 font-medium">Status</th>
@@ -234,7 +234,7 @@ export default function CapexDetailPage() {
                       <th className="w-8" />
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
+                  <tbody className="divide-y divide-slate-200/70">
                     {lineItems.map(line => (
                       <tr key={line.id} className="group">
                         <td className="py-2">

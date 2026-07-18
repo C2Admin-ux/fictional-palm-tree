@@ -362,19 +362,21 @@ function ContractsPageInner() {
               {cancelDeadlineSoon.length} cancellation deadline{cancelDeadlineSoon.length > 1 ? 's' : ''} within 90 days
             </span>
           </div>
-          {cancelDeadlineSoon.map(c => {
-            const d = daysUntil(c.cancel_deadline)!
-            return (
-              <div key={c.id} className="flex items-center gap-2 text-xs text-red-700 py-0.5 ml-5">
-                <span className="font-medium">{c.vendor_name}</span>
-                <span className="text-red-400">·</span>
-                <span>{c.properties?.name ?? 'Unassigned'}</span>
-                <span className="text-red-400">·</span>
-                <span>{CANCEL_METHOD_LABELS[c.cancel_method ?? ''] ?? 'Written notice'} required</span>
-                <span className="ml-auto font-semibold">{d === 0 ? 'TODAY' : `${d}d`}</span>
-              </div>
-            )
-          })}
+          <div className="divide-y divide-red-200/70">
+            {cancelDeadlineSoon.map(c => {
+              const d = daysUntil(c.cancel_deadline)!
+              return (
+                <div key={c.id} className="flex items-center gap-2 text-xs text-red-700 py-0.5 ml-5">
+                  <span className="font-medium">{c.vendor_name}</span>
+                  <span className="text-red-400">·</span>
+                  <span>{c.properties?.name ?? 'Unassigned'}</span>
+                  <span className="text-red-400">·</span>
+                  <span>{CANCEL_METHOD_LABELS[c.cancel_method ?? ''] ?? 'Written notice'} required</span>
+                  <span className="ml-auto font-semibold">{d === 0 ? 'TODAY' : `${d}d`}</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -386,19 +388,21 @@ function ContractsPageInner() {
               {expiringSoon.length} contract{expiringSoon.length > 1 ? 's' : ''} expiring within 90 days
             </span>
           </div>
-          {expiringSoon.map(c => {
-            const d = daysUntil(c.expiration_date)!
-            return (
-              <div key={c.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
-                <span className="font-medium">{c.vendor_name}</span>
-                <span className="text-amber-400">·</span>
-                <span>{TYPE_LABELS[c.contract_type] ?? c.contract_type}</span>
-                <span className="text-amber-400">·</span>
-                <span>{c.properties?.name ?? 'Unassigned'}</span>
-                <span className="ml-auto font-semibold">{d}d left</span>
-              </div>
-            )
-          })}
+          <div className="divide-y divide-amber-200/70">
+            {expiringSoon.map(c => {
+              const d = daysUntil(c.expiration_date)!
+              return (
+                <div key={c.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
+                  <span className="font-medium">{c.vendor_name}</span>
+                  <span className="text-amber-400">·</span>
+                  <span>{TYPE_LABELS[c.contract_type] ?? c.contract_type}</span>
+                  <span className="text-amber-400">·</span>
+                  <span>{c.properties?.name ?? 'Unassigned'}</span>
+                  <span className="ml-auto font-semibold">{d}d left</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -413,6 +417,7 @@ function ContractsPageInner() {
                   {trashGapProperties.length} propert{trashGapProperties.length === 1 ? 'y' : 'ies'} without an active trash/waste contract
                 </span>
               </div>
+              <div className="divide-y divide-amber-200/70">
               {trashGapProperties.map(prop => (
                 <div key={prop.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5 ml-5">
                   <span className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400" />
@@ -430,6 +435,7 @@ function ContractsPageInner() {
                   </button>
                 </div>
               ))}
+              </div>
               <p className="text-xs text-amber-600 mt-1.5 ml-5">If a contract exists, it likely just hasn&apos;t been added yet.</p>
             </>
           )}
@@ -496,7 +502,7 @@ function ContractsPageInner() {
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[900px]">
-            <thead className="bg-slate-50 border-b border-slate-100">
+            <thead className="bg-slate-50 border-b border-slate-200/70">
               <tr>
                 <Th label="Property" className="pl-4" />
                 <Th label="Vendor / Title" />
@@ -509,7 +515,7 @@ function ContractsPageInner() {
                 <th className="w-20" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-200/70">
               {displayed.map(contract => {
                 const expDays = daysUntil(contract.expiration_date)
                 const cancelDays = daysUntil(contract.cancel_deadline)

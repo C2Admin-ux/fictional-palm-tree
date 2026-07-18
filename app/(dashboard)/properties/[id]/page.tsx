@@ -201,7 +201,7 @@ export default async function PropertyPage({
                 {propTasks.length === 0
                   ? <p className="text-xs text-slate-400 italic">No open tasks</p>
                   : propTasks.slice(0, 5).map((t: any) => (
-                    <div key={t.id} className="flex items-center gap-2 py-1.5 border-b border-slate-50 last:border-0">
+                    <div key={t.id} className="flex items-center gap-2 py-1.5 border-b border-slate-200/70 last:border-0">
                       <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                         style={{ background: PRIORITY_DOT[t.priority as string] ?? '#94a3b8' }} />
                       <span className="text-sm text-slate-700 flex-1 truncate">{t.title}</span>
@@ -319,7 +319,7 @@ export default async function PropertyPage({
                   {propPolicies.map((p: any) => {
                     const days = daysUntil(p.expiry_date)
                     return (
-                      <div key={p.id} className="flex justify-between text-xs py-1.5 border-b border-slate-50 last:border-0">
+                      <div key={p.id} className="flex justify-between text-xs py-1.5 border-b border-slate-200/70 last:border-0">
                         <span className="text-slate-600 font-medium">{p.policy_type.toUpperCase()} — {p.carrier}</span>
                         <span className={`font-medium ${(days ?? 999) <= 30 ? 'text-red-600' : (days ?? 999) <= 90 ? 'text-amber-600' : 'text-slate-400'}`}>
                           {(days ?? 0) <= 0 ? 'EXPIRED' : `${days}d`}
@@ -388,13 +388,13 @@ export default async function PropertyPage({
                 <div className="card overflow-auto">
                   <table className="w-full text-sm min-w-[640px]">
                     <thead>
-                      <tr className="border-b border-slate-100 bg-slate-50">
+                      <tr className="border-b border-slate-200/70 bg-slate-50">
                         {['Month', 'Occupancy', 'Delinquency', 'NOI Actual', 'NOI Budget', 'Move Ins', 'Move Outs', 'WO Close'].map(h => (
                           <th key={h} className="text-left px-4 py-2 text-xs font-medium text-slate-500">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-50">
+                    <tbody className="divide-y divide-slate-200/70">
                       {propMetrics.map((m: any) => {
                         const woRate = m.work_orders_opened > 0 ? Math.round((m.work_orders_closed ?? 0) / m.work_orders_opened * 100) : null
                         return (
@@ -465,13 +465,13 @@ export default async function PropertyPage({
                 <div className="card overflow-auto">
                   <table className="w-full text-sm min-w-[760px]">
                     <thead>
-                      <tr className="border-b border-slate-100 bg-slate-50">
+                      <tr className="border-b border-slate-200/70 bg-slate-50">
                         {['Permit No', 'Type', 'Description', 'Address', 'Status', 'Issued'].map(h => (
                           <th key={h} className="text-left px-4 py-2 text-xs font-medium text-slate-500">{h}</th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-50">
+                    <tbody className="divide-y divide-slate-200/70">
                       {propPermits.map(pr => {
                         const status = (pr.status ?? '').toUpperCase()
                         const statusCls = status.startsWith('EXPIRED')
@@ -524,7 +524,7 @@ export default async function PropertyPage({
                   {propDocs.map((d: any, i: number) => {
                     const days = daysUntil(d.expiration_date)
                     return (
-                      <div key={d.id} className={`flex items-center gap-3 px-4 py-3 ${i < propDocs.length - 1 ? 'border-b border-slate-100' : ''}`}>
+                      <div key={d.id} className={`flex items-center gap-3 px-4 py-3 ${i < propDocs.length - 1 ? 'border-b border-slate-200/70' : ''}`}>
                         <div className="w-8 h-8 rounded bg-slate-100 flex items-center justify-center text-xs font-bold text-slate-500 flex-shrink-0">
                           {d.category.slice(0, 3).toUpperCase()}
                         </div>

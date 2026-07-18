@@ -211,7 +211,7 @@ export default function InspectionsPage() {
           {/* Desktop table */}
           <div className="card overflow-x-auto hidden sm:block">
             <table className="w-full text-sm min-w-[800px]">
-              <thead className="bg-slate-50 border-b border-slate-100">
+              <thead className="bg-slate-50 border-b border-slate-200/70">
                 <tr>
                   <Th label="Property" field="property_name" current={sort} dir={dir} onSort={toggle} className="pl-4" />
                   <Th label="Type" field="inspection_type" current={sort} dir={dir} onSort={toggle} />
@@ -223,7 +223,7 @@ export default function InspectionsPage() {
                   <th className="w-14" />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50">
+              <tbody className="divide-y divide-slate-200/70">
                 {displayed.map(insp => (
                   <tr key={insp.id} className="hover:bg-slate-50 cursor-pointer group"
                     onClick={() => router.push(`/inspections/${insp.id}`)}>

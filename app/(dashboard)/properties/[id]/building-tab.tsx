@@ -186,7 +186,7 @@ export default function BuildingTab({ propertyId, propertyName, initialFacts }: 
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Unit Mix</div>
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs text-slate-400 border-b border-slate-100">
+              <tr className="text-xs text-slate-400 border-b border-slate-200/70">
                 <th className="text-left font-medium py-1.5">Type</th>
                 <th className="text-right font-medium py-1.5">Count</th>
                 <th className="text-right font-medium py-1.5">Avg SF</th>
@@ -194,7 +194,7 @@ export default function BuildingTab({ propertyId, propertyName, initialFacts }: 
             </thead>
             <tbody>
               {facts.unit_mix.map((u, i) => (
-                <tr key={i} className="border-b border-slate-50">
+                <tr key={i} className="border-b border-slate-200/70">
                   <td className="py-1.5 text-slate-700 font-medium">{u.type}</td>
                   <td className="py-1.5 text-right text-slate-600">{u.count}</td>
                   <td className="py-1.5 text-right text-slate-500">{u.sf ? u.sf.toLocaleString() : '—'}</td>
@@ -219,7 +219,7 @@ export default function BuildingTab({ propertyId, propertyName, initialFacts }: 
               <table className="w-full text-sm">
                 <tbody>
                   {catItems.map(it => (
-                    <tr key={it.id} className="group border-b border-slate-50 last:border-0">
+                    <tr key={it.id} className="group border-b border-slate-200/70 last:border-0">
                       <td className="py-1.5 pr-3 text-slate-500 align-top w-1/3">{it.label}</td>
                       <td className="py-1.5 pr-3 text-slate-800 align-top">
                         {it.value}

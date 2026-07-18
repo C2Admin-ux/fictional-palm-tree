@@ -91,7 +91,7 @@ export default function InsuranceClaimsPage() {
       ) : (
         <div className="card overflow-x-auto">
           <table className="w-full text-sm min-w-[950px]">
-            <thead className="bg-slate-50 border-b border-slate-100">
+            <thead className="bg-slate-50 border-b border-slate-200/70">
               <tr>
                 <Th label="Claim ID" className="pl-4" />
                 <Th label="Property" field="property_id" current={sort} dir={dir} onSort={toggle} />
@@ -106,7 +106,7 @@ export default function InsuranceClaimsPage() {
                 <Th label="Follow-up" field="follow_up_date" current={sort} dir={dir} onSort={toggle} />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-200/70">
               {displayed.map(c => {
                 const days = daysOpen(c)
                 const outstanding = (c.amount_approved ?? 0) - (c.amount_paid ?? 0)
