@@ -56,6 +56,10 @@ export default function CallDetailPage() {
   // Default ON for both — the common case confirms everything.
   const [uncheckedCreate, setUncheckedCreate] = useState<Set<string>>(new Set())
   const [uncheckedLink, setUncheckedLink] = useState<Set<string>>(new Set())
+  // Items whose created task exists but could not be linked AND could not
+  // be compensation-deleted — re-confirming would duplicate the task, so
+  // they sit out for the rest of the session (see confirmProcess).
+  const [orphanedItems, setOrphanedItems] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setUserId(data.session?.user.id ?? null))
@@ -175,6 +179,7 @@ export default function CallDetailPage() {
       } else {
         setUncheckedCreate(new Set())
         setUncheckedLink(new Set())
+        setOrphanedItems(new Set())
         await Promise.all([fetchCall(), fetchItems()])
         toast('Extraction complete')
       }
@@ -185,22 +190,28 @@ export default function CallDetailPage() {
   }
 
   // ── Confirm & process ──────────────────────────────────────
-  // Checked actions become tasks; matched items get linked to their
-  // existing task. Per-item failures are counted, not hidden — the call
-  // only flips to processed when every requested write landed.
+  // Checked matches (any kind) link their existing task; unchecked
+  // matches are skipped entirely — never silently turned into new tasks
+  // (clear the match first to make an action creatable). Checked
+  // unmatched actions become tasks, and a creation only counts when BOTH
+  // the task insert and the item link landed. Per-item failures are
+  // counted, not hidden — the call only flips to processed when every
+  // requested write landed.
 
   async function confirmProcess() {
     if (!call) return
     setProcessing(true)
     setActionError(null)
     let created = 0, linked = 0, failed = 0
+    let orphanMessage: string | null = null
 
     for (const item of items) {
       if (item.task_id) continue // already linked (e.g. earlier partial run)
+      if (orphanedItems.has(item.id)) continue // its task exists unlinked — retrying would duplicate it
 
-      // Matched proposal accepted → link the existing task.
-      if (item.matched_task_id && !uncheckedLink.has(item.id) &&
-        (item.kind === 'action' || item.kind === 'update')) {
+      // Matched proposal: link when checked, otherwise skip entirely.
+      if (item.matched_task_id) {
+        if (uncheckedLink.has(item.id)) continue
         const { error } = await supabase.from('call_items')
           .update({ task_id: item.matched_task_id }).eq('id', item.id)
         if (error) { failed++; continue }
@@ -226,17 +237,28 @@ export default function CallDetailPage() {
         if (!task) { failed++; continue }
         const { error: linkError } = await supabase.from('call_items')
           .update({ task_id: task.id }).eq('id', item.id)
-        // Task exists either way — surface it as created; a failed link
-        // just means the chip won't show until a later save fixes it.
+        if (linkError) {
+          // Compensate: delete the task the item doesn't know about. If
+          // THAT also fails an unlinked task really exists — saying
+          // "confirm again" would invite a duplicate, so the item sits
+          // out for this session (same pattern as inspection findings).
+          const { error: deleteError } = await supabase.from('tasks').delete().eq('id', task.id)
+          if (deleteError) {
+            setOrphanedItems(prev => new Set(prev).add(item.id))
+            orphanMessage = `“${task.title}” exists in Tasks but couldn’t be linked to its call item — delete it there, or reload and confirm again.`
+          }
+          failed++
+          continue
+        }
         setItems(list => list.map(i => i.id === item.id ? { ...i, task_id: task.id } : i))
         setTaskRefs(prev => ({ ...prev, [task.id]: { id: task.id, title: task.title, status: task.status } }))
         created++
-        if (linkError) failed++
       }
     }
 
     if (failed > 0) {
-      setActionError(`${failed} item${failed === 1 ? '' : 's'} could not be processed — fix and confirm again.`)
+      const base = `${failed} item${failed === 1 ? '' : 's'} could not be processed — fix and confirm again.`
+      setActionError(orphanMessage ? `${base} ${orphanMessage}` : base)
     } else {
       await patchCall({ status: 'processed' })
     }
@@ -593,6 +615,14 @@ function ItemRow({
                   className="rounded border-slate-300" />
                 link
               </label>
+            )}
+            {isDraft && (
+              // Wrong match? Clearing it turns the item back into a plain
+              // proposal — actions regain their "Create task" checkbox.
+              <button onClick={() => onPatch({ matched_task_id: null })} title="Clear match"
+                className="text-slate-300 hover:text-red-400 transition-colors">
+                <X size={11} />
+              </button>
             )}
           </span>
         )}
