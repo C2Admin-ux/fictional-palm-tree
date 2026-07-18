@@ -150,7 +150,7 @@ export type Database = {
         Relationships: []
       }
       calls: {
-        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email'; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string }
+        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['calls']['Row']>
         Update: Partial<Database['public']['Tables']['calls']['Row']>
         Relationships: [{ foreignKeyName: 'calls_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]

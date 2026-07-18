@@ -40,8 +40,9 @@ function verifySvixSignature(secret: string, req: NextRequest, payload: string):
   return signatures.split(' ').some(entry => {
     const [version, sig] = entry.split(',')
     if (version !== 'v1' || !sig) return false
-    let candidate: Buffer
-    try { candidate = Buffer.from(sig, 'base64') } catch { return false }
+    // Buffer.from never throws on malformed base64 — it decodes what it
+    // can; the length check rejects anything that isn't a full HMAC.
+    const candidate = Buffer.from(sig, 'base64')
     return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected)
   })
 }
@@ -149,7 +150,9 @@ export async function POST(req: NextRequest) {
     }
     if (!bestBody(email) && emailId) {
       const fetched = await fetchReceivedEmail(emailId)
-      if (fetched) email = { subject: email.subject ?? fetched.subject, ...fetched }
+      // Webhook subject wins when present — spread fetched FIRST so the
+      // computed subject isn't clobbered by the fetched one.
+      if (fetched) email = { ...fetched, subject: email.subject ?? fetched.subject }
     }
 
     const transcript = bestBody(email)
@@ -166,21 +169,19 @@ export async function POST(req: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
 
-    // Webhook retries (timeout, 5xx) must not pile up duplicate drafts:
-    // same-day email calls with the same subject count as the same call.
-    const { data: existing } = await supabase.from('calls')
-      .select('id')
-      .eq('source', 'email').eq('title', title).eq('call_date', today)
-      .limit(1)
-    if (existing && existing.length > 0) {
-      return NextResponse.json({ success: true, duplicate: true, call_id: existing[0].id })
-    }
-
+    // Webhook retries (timeout, 5xx) must not pile up duplicate drafts.
+    // Dedupe on the EMAIL'S identity: external_id carries the Resend
+    // email id under a unique partial index, so the unique-violation on
+    // insert IS the duplicate signal — atomic, no check-then-insert
+    // race, and two distinct same-day emails with the same subject both
+    // land. (Events without an email id can't dedupe — external_id null
+    // sits outside the partial index.)
     const { data: call, error: insertError } = await supabase.from('calls')
       .insert({
         title,
         call_date: today,
         source: 'email',
+        external_id: emailId ?? null,
         transcript,
         status: 'draft',
         pmc_id: null, // Nick assigns the PMC during review
@@ -188,6 +189,13 @@ export async function POST(req: NextRequest) {
       .select('*')
       .single()
     if (insertError || !call) {
+      if (insertError?.code === '23505' && emailId) {
+        // Already ingested — ack with the existing call so Resend stops
+        // retrying (the lookup is best-effort).
+        const { data: existing } = await supabase.from('calls')
+          .select('id').eq('external_id', emailId).limit(1)
+        return NextResponse.json({ success: true, duplicate: true, call_id: existing?.[0]?.id ?? null })
+      }
       console.error('Inbound call insert failed:', insertError)
       return NextResponse.json({ error: insertError?.message ?? 'Insert failed' }, { status: 500 })
     }

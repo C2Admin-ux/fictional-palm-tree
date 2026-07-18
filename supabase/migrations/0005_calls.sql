@@ -11,6 +11,10 @@ create table if not exists calls (
   title text not null default '',
   call_date date not null default current_date,
   source text not null default 'paste' check (source in ('paste', 'email')),
+  -- Identity of the inbound email that created this call (the Resend
+  -- email id) — the atomic dedupe key for webhook retries. Null for
+  -- pasted calls and legacy rows.
+  external_id text,
   transcript text,
   summary text,
   status text not null default 'draft' check (status in ('draft', 'processed')),
@@ -22,6 +26,11 @@ create table if not exists calls (
 -- The list page and "previous call" lookups both read per-PMC, newest first.
 create index if not exists calls_pmc_id_call_date_idx
   on calls (pmc_id, call_date desc);
+
+-- One call per inbound email: the unique-violation on insert IS the
+-- duplicate signal in the inbound route (no check-then-insert race).
+create unique index if not exists calls_external_id_key
+  on calls (external_id) where external_id is not null;
 
 create table if not exists call_items (
   id uuid primary key default gen_random_uuid(),
