@@ -1,15 +1,13 @@
 import crypto from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { anthropicConfigured } from '@/lib/anthropic'
-import { extractCall } from '@/lib/calls/extract'
-import type { Call, Database } from '@/lib/supabase/types'
+import { cleanCallTitle, ingestCallEmail, serviceRoleClient, trimTranscriptBoilerplate } from '@/lib/calls/ingest'
 
 // Inbound call notes by email (Resend `email.received` webhook).
 // Gemini/Meet call notes auto-forwarded to the receiving address land
-// here: verify the webhook, fetch the full email, create a DRAFT call
-// (pmc unassigned — Nick assigns during review), and run extraction
-// inline as best-effort. Extraction failure still leaves the draft.
+// here: verify the webhook, fetch the full email, then hand off to the
+// shared ingest pipeline (lib/calls/ingest.ts) — draft call, pmc
+// unassigned, best-effort extraction. POST /api/calls/ingest is the
+// direct-post sibling transport sharing that pipeline.
 //
 // Auth (fail closed, mirroring the cron philosophy in lib/api-auth.ts):
 //   • RESEND_INBOUND_SECRET set   → svix signature must verify
@@ -45,11 +43,6 @@ function verifySvixSignature(secret: string, req: NextRequest, payload: string):
     const candidate = Buffer.from(sig, 'base64')
     return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected)
   })
-}
-
-/** Strip any stack of Fwd:/Fw:/Re: prefixes from a subject line. */
-function cleanSubject(subject: string): string {
-  return subject.replace(/^\s*((re|fwd?|fw)\s*:\s*)+/i, '').trim()
 }
 
 /** Crude but dependency-free HTML → text for emails without a text body. */
@@ -155,65 +148,28 @@ export async function POST(req: NextRequest) {
       if (fetched) email = { ...fetched, subject: email.subject ?? fetched.subject }
     }
 
-    const transcript = bestBody(email)
+    const transcript = trimTranscriptBoilerplate(bestBody(email))
     if (!transcript) {
       // Nothing extractable — ack so Resend doesn't retry a permanently
       // empty email, but say so in the response for the webhook log.
       return NextResponse.json({ success: true, skipped: 'empty email body' })
     }
-    const title = cleanSubject(email.subject ?? '') || 'PM call notes (email)'
-    const today = new Date().toISOString().slice(0, 10)
+    const title = cleanCallTitle(email.subject ?? '') || 'PM call notes (email)'
 
-    const supabase = createClient<Database>(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
-
-    // Webhook retries (timeout, 5xx) must not pile up duplicate drafts.
-    // Dedupe on the EMAIL'S identity: external_id carries the Resend
-    // email id under a unique partial index, so the unique-violation on
-    // insert IS the duplicate signal — atomic, no check-then-insert
-    // race, and two distinct same-day emails with the same subject both
-    // land. (Events without an email id can't dedupe — external_id null
-    // sits outside the partial index.)
-    const { data: call, error: insertError } = await supabase.from('calls')
-      .insert({
-        title,
-        call_date: today,
-        source: 'email',
-        external_id: emailId ?? null,
-        transcript,
-        status: 'draft',
-        pmc_id: null, // Nick assigns the PMC during review
-      })
-      .select('*')
-      .single()
-    if (insertError || !call) {
-      if (insertError?.code === '23505' && emailId) {
-        // Already ingested — ack with the existing call so Resend stops
-        // retrying (the lookup is best-effort).
-        const { data: existing } = await supabase.from('calls')
-          .select('id').eq('external_id', emailId).limit(1)
-        return NextResponse.json({ success: true, duplicate: true, call_id: existing?.[0]?.id ?? null })
-      }
-      console.error('Inbound call insert failed:', insertError)
-      return NextResponse.json({ error: insertError?.message ?? 'Insert failed' }, { status: 500 })
+    const result = await ingestCallEmail(serviceRoleClient(), {
+      title,
+      callDate: new Date().toISOString().slice(0, 10),
+      externalId: emailId ?? null, // Resend email id (dedupes webhook retries)
+      transcript,
+    })
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status })
     }
-
-    // Extraction inline, best-effort: a failure (rate limit, model
-    // hiccup) still leaves the draft call for manual re-run in the app.
-    let extracted = false
-    if (anthropicConfigured()) {
-      try {
-        const result = await extractCall(supabase, call as Call)
-        extracted = result.ok
-        if (!result.ok) console.error('Inbound extraction failed:', result.error, result.detail ?? '')
-      } catch (err) {
-        console.error('Inbound extraction threw:', err)
-      }
+    if (result.duplicate) {
+      // Ack duplicates so Resend stops retrying.
+      return NextResponse.json({ success: true, duplicate: true, call_id: result.callId })
     }
-
-    return NextResponse.json({ success: true, call_id: call.id, extracted })
+    return NextResponse.json({ success: true, call_id: result.callId, extracted: result.extracted })
   } catch (err: any) {
     console.error('Inbound call route error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })

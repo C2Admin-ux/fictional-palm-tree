@@ -5,8 +5,10 @@
 // (so unresolved commitments carry forward as accountability context).
 //
 // Two callers share this path so the behavior can't drift:
-//   • POST /api/calls/extract   (session-authed review surface)
-//   • POST /api/calls/inbound   (Resend webhook, service-role client)
+//   • POST /api/calls/extract  (session-authed review surface)
+//   • lib/calls/ingest.ts      (email ingest pipeline behind the
+//     /api/calls/inbound webhook and /api/calls/ingest direct post,
+//     service-role client)
 // The caller supplies the Supabase client; RLS vs service-role is its
 // concern, not this module's.
 
