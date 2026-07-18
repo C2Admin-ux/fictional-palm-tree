@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Property } from '@/lib/supabase/types'
-import { cn, propertyColor } from '@/lib/utils'
+import { cn, propertyAbbr, propertyColor } from '@/lib/utils'
 import { isOverlayOpen } from '@/lib/ui/overlay'
 import { Toaster } from '@/components/ui/toast'
 import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
@@ -20,10 +20,6 @@ const NAV_SOON = [
 ]
 
 type SidebarProperty = { id: string; name: string; status: Property['status'] }
-
-function propertyAbbr(name: string): string {
-  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()

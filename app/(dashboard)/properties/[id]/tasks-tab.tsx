@@ -280,7 +280,7 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
 
   const row = (
     <div className={cn(
-      'flex items-center px-6 py-0 min-h-[32px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
+      'flex items-center px-6 py-0 min-h-[30px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
       isDone && 'opacity-60'
     )}>
       {/* Priority pip */}
@@ -291,9 +291,11 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
       <CompleteCircle isDone={isDone || leaving}
         onToggle={() => onDone(task)} />
 
-      {/* Title */}
-      <div className="flex-1 min-w-0 py-1.5">
-        <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
+      {/* Title — snooze/done hints sit inline to its right (title
+          truncates first) so a row stays a single ~30px line, matching
+          the tasks page TaskRow. */}
+      <div className="flex-1 min-w-0 py-1 flex items-center gap-2 overflow-hidden">
+        <div className={cn('flex items-center min-w-0 flex-shrink text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
           <InlineText
             value={task.title}
             onSave={v => patch({ title: v })}
@@ -308,17 +310,13 @@ const PropertyTaskRow = memo(function PropertyTaskRow({
             />
           )}
         </div>
-        {(snoozed || (isDone && task.completed_at)) && (
-          <div className="flex items-center gap-2 mt-0.5">
-            {snoozed && (
-              <span className="text-xs text-indigo-500 flex items-center gap-1">
-                <Moon size={9} />snoozed until {formatDateShort(task.snoozed_until)}
-              </span>
-            )}
-            {isDone && task.completed_at && (
-              <span className="text-xs text-emerald-600">done {formatDateShort(task.completed_at)}</span>
-            )}
-          </div>
+        {snoozed && (
+          <span className="flex-shrink-0 text-xs text-indigo-500 inline-flex items-center gap-1 whitespace-nowrap">
+            <Moon size={9} />snoozed until {formatDateShort(task.snoozed_until)}
+          </span>
+        )}
+        {isDone && task.completed_at && (
+          <span className="flex-shrink-0 text-xs text-emerald-600 whitespace-nowrap">done {formatDateShort(task.completed_at)}</span>
         )}
       </div>
 

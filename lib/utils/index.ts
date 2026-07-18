@@ -233,6 +233,13 @@ export function propertyColor(name: string | null | undefined): string {
   return PROPERTY_FALLBACK_COLORS[hash % PROPERTY_FALLBACK_COLORS.length]
 }
 
+// Two-letter block abbreviation ("Fox Hill Apartments" → "FH") —
+// shared by the sidebar property blocks and the mobile task-row
+// property chip.
+export function propertyAbbr(name: string): string {
+  return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+}
+
 // ── Recurrence helpers ───────────────────────────────────────
 
 export const RECUR_LABELS: Record<string, string> = {

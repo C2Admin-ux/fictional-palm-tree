@@ -9,7 +9,7 @@ import {
   cn, formatDateShort, daysUntil,
   todayISO,
   STATUS_STYLES, STATUS_LABELS,
-  propertyColor,
+  propertyColor, propertyAbbr,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
@@ -933,7 +933,7 @@ const TaskRow = memo(function TaskRow({
       data-task-id={task.id}
       onClick={() => onSelect(task.id)}
       className={cn(
-        'flex items-center px-6 py-0 min-h-[32px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
+        'flex items-center px-6 py-0 min-h-[30px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
         isDone && 'opacity-60',
         selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
       )}>
@@ -944,9 +944,12 @@ const TaskRow = memo(function TaskRow({
       {/* Checkbox */}
       <CompleteCircle isDone={isDone || leaving} onToggle={() => onDone(task)} />
 
-      {/* Title — inline editable */}
-      <div className="flex-1 min-w-0 py-1.5">
-        <div className={cn('text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
+      {/* Title — inline editable. Property/CapEx/blocked chips and meta
+          sit inline to its right (title truncates first) so a row stays
+          a single ~30px line. Below md the property chip collapses to
+          its 2-letter abbreviation to leave the title room. */}
+      <div className="flex-1 min-w-0 py-1 flex items-center gap-2 overflow-hidden">
+        <div className={cn('flex items-center min-w-0 flex-shrink text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
           <InlineText
             value={task.title}
             onSave={v => patch({ title: v })}
@@ -961,25 +964,29 @@ const TaskRow = memo(function TaskRow({
             />
           )}
         </div>
-        {(task.properties?.name || task.capex_projects?.title || isBlocked || meta) && (
-          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-            {task.properties?.name && (
-              <span className="text-xs font-medium px-1.5 py-0.5 rounded"
-                style={{ background: `${pc}18`, color: pc }}>
-                {task.properties.name}
-              </span>
-            )}
-            {task.capex_projects?.title && (
-              <span className="text-xs text-orange-600 flex items-center gap-1">
-                <LinkIcon size={9} />{task.capex_projects.title.slice(0, 24)}
-              </span>
-            )}
-            {isBlocked && (
-              <span className="text-xs text-amber-600">⛓ blocked</span>
-            )}
-            {meta}
-          </div>
+        {task.properties?.name && (
+          <>
+            <span className="hidden md:inline-block flex-shrink-0 max-w-[13ch] truncate text-xs font-medium px-1.5 py-0.5 rounded"
+              style={{ background: `${pc}18`, color: pc }}>
+              {task.properties.name}
+            </span>
+            <span className="md:hidden flex-shrink-0 text-[10px] font-semibold px-1 py-0.5 rounded"
+              style={{ background: `${pc}18`, color: pc }}
+              title={task.properties.name}>
+              {propertyAbbr(task.properties.name)}
+            </span>
+          </>
         )}
+        {task.capex_projects?.title && (
+          <span className="flex-shrink min-w-0 max-w-[11rem] text-xs text-orange-600 inline-flex items-center gap-1">
+            <LinkIcon size={9} className="flex-shrink-0" />
+            <span className="truncate">{task.capex_projects.title}</span>
+          </span>
+        )}
+        {isBlocked && (
+          <span className="flex-shrink-0 text-xs text-amber-600 whitespace-nowrap">⛓ blocked</span>
+        )}
+        {meta && <span className="min-w-0 truncate">{meta}</span>}
       </div>
 
       {/* Rock toggle — 'rock' tag on/off */}
