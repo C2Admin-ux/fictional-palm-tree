@@ -6,7 +6,7 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
-  FileSignature, Shield, FileBarChart, ClipboardCheck, Settings,
+  FileSignature, Shield, FileBarChart, ClipboardCheck, Phone, Settings,
 } from 'lucide-react'
 
 export type NavItem = { href: string; label: string; icon: LucideIcon }
@@ -20,5 +20,6 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/insurance/policies', label: 'Insurance',      icon: Shield },
   { href: '/reports',            label: 'Reports',        icon: FileBarChart },
   { href: '/inspections',        label: 'Inspections',    icon: ClipboardCheck },
+  { href: '/calls',              label: 'Calls',          icon: Phone },
   { href: '/settings',           label: 'Settings',       icon: Settings },
 ]

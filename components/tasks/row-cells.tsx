@@ -8,7 +8,7 @@ import type { Task } from '@/lib/supabase/types'
 import { cn, isOverdue, isSoon, PRIORITY_DOT, RECUR_LABELS } from '@/lib/utils'
 import { InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
 import { CHECK_MS } from '@/components/tasks/complete-collapse'
-import { RefreshCw, Clock, AlertTriangle, X } from 'lucide-react'
+import { RefreshCw, Clock, AlertTriangle, Phone, X } from 'lucide-react'
 
 // Priority pip — click to change priority.
 export function PriorityPip({ priority, isDone, onSave }: {
@@ -68,6 +68,11 @@ export function TaskBadges({ task }: { task: Pick<Task, 'recur_freq' | 'auto_sou
       {task.auto_source === 'expiration' && (
         <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
           <Clock size={9} />Auto
+        </span>
+      )}
+      {task.auto_source === 'call' && (
+        <span className="inline-flex items-center gap-1 text-xs text-violet-700 bg-violet-50 border border-violet-200 rounded-full px-1.5 py-0.5">
+          <Phone size={9} />Call
         </span>
       )}
     </span>
