@@ -9,6 +9,7 @@ import {
 import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert } from 'lucide-react'
 import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import BuildingTab from './building-tab'
+import EditProperty from './edit-property'
 import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
 import TasksTab from './tasks-tab'
 import { StatusBadge } from '@/components/ui/badge'
@@ -155,6 +156,20 @@ export default async function PropertyPage({
               ))}
             </div>
           )}
+          <EditProperty
+            propertyId={params.id}
+            initial={{
+              name: p.name,
+              status: p.status,
+              address: p.address ?? null,
+              city: p.city ?? null,
+              state: p.state ?? null,
+              zip: p.zip ?? null,
+              units_total: p.units_total ?? null,
+              pms_platform: p.pms_platform ?? null,
+              pmc_id: p.pmc_id ?? null,
+            }}
+          />
           <Link href={`/properties/${params.id}?tab=tasks`} className="btn-primary text-xs py-1.5 flex-shrink-0">
             <Plus size={12} />Add task
           </Link>
