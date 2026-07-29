@@ -75,46 +75,50 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   // JPEG/PNG — rare webp/gif fallback uploads are skipped, and an
   // individual failed download drops that photo rather than the report;
   // both are counted so the PDF can disclose the omission.
-  const admin = await createAdminClient()
-  const photos: Record<string, ReportPhoto> = {}
-  const allPaths = Array.from(new Set(items.flatMap(i => i.photo_paths)))
-  let omittedPhotos = 0
-  const queue = [...allPaths]
-  const downloadWorker = async () => {
-    for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
-      const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-      const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' as const : ext === 'png' ? 'png' as const : null
-      if (!format) { omittedPhotos++; continue }
-      const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
-      if (error || !blob) { omittedPhotos++; continue }
-      photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(4, allPaths.length) }, downloadWorker))
-
-  // ── Assemble + render ───────────────────────────────────────
-  const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
-  const instances = buildSectionInstances(template, items)
-  const actionItems = items.filter(i => i.requires_action)
-  const score = inspectionScore(items)
-
-  const data: ReportData = {
-    propertyName: inspection.properties?.name ?? 'Property',
-    pmcName: inspection.properties?.pmcs?.name ?? null,
-    typeLabel: INSPECTION_TYPE_LABELS[inspection.inspection_type] ?? inspection.inspection_type,
-    dateLabel: formatDate(inspection.inspection_date),
-    inspectorName,
-    notes: inspection.notes,
-    score,
-    grade: scoreGrade(score),
-    openFindings: actionItems.length,
-    groups: groupItemsByInstance(instances, items),
-    actionItems,
-    photos,
-    omittedPhotos,
-  }
-
+  // Everything from here can fail for environment reasons (service-role
+  // key, storage access, the PDF renderer itself) — keep it inside the
+  // try so the caller always gets a JSON envelope naming the cause
+  // instead of an opaque function crash.
   try {
+    const admin = await createAdminClient()
+    const photos: Record<string, ReportPhoto> = {}
+    const allPaths = Array.from(new Set(items.flatMap(i => i.photo_paths)))
+    let omittedPhotos = 0
+    const queue = [...allPaths]
+    const downloadWorker = async () => {
+      for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+        const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+        const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' as const : ext === 'png' ? 'png' as const : null
+        if (!format) { omittedPhotos++; continue }
+        const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
+        if (error || !blob) { omittedPhotos++; continue }
+        photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, allPaths.length) }, downloadWorker))
+
+    // ── Assemble + render ───────────────────────────────────────
+    const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
+    const instances = buildSectionInstances(template, items)
+    const actionItems = items.filter(i => i.requires_action)
+    const score = inspectionScore(items)
+
+    const data: ReportData = {
+      propertyName: inspection.properties?.name ?? 'Property',
+      pmcName: inspection.properties?.pmcs?.name ?? null,
+      typeLabel: INSPECTION_TYPE_LABELS[inspection.inspection_type] ?? inspection.inspection_type,
+      dateLabel: formatDate(inspection.inspection_date),
+      inspectorName,
+      notes: inspection.notes,
+      score,
+      grade: scoreGrade(score),
+      openFindings: actionItems.length,
+      groups: groupItemsByInstance(instances, items),
+      actionItems,
+      photos,
+      omittedPhotos,
+    }
+
     const pdf = await renderInspectionReport(data)
 
     // Store next to the inspection's photos; regenerating overwrites.

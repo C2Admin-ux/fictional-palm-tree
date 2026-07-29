@@ -538,7 +538,12 @@ function ReportPanel({ inspection, onUpdated }: {
     try {
       const res = await fetch(`/api/inspections/${inspection.id}/report`, { method: 'POST' })
       const json = await res.json().catch(() => ({}))
-      if (!res.ok || !json.success) throw new Error(json.error ?? `Report generation failed (${res.status})`)
+      if (!res.ok || !json.success) {
+        // Surface the route's detail too — "Report generation failed" alone
+        // is undiagnosable from the field.
+        const base = json.error ?? `Report generation failed (${res.status})`
+        throw new Error(json.detail ? `${base} — ${json.detail}` : base)
+      }
       // Mirror the server: a freshly generated PDF has by definition not
       // been sent, so the sent marker clears alongside the new path.
       onUpdated({ report_file_path: json.path, report_sent_at: null })
