@@ -117,10 +117,16 @@ export async function toggleDoneOptimistic(
 
   if (wasDone) return
 
+  // Spawn failures NEVER walk back the completion (it already committed
+  // and is what the user asked for) — but they must not be silent either,
+  // or the series would quietly die. Collect and surface below.
+  let spawnFailures = 0
   let spawned: Task | null = null
   if (task.recur_freq) {
-    spawned = await createNextOccurrence(supabase, task)
+    const res = await createNextOccurrence(supabase, task)
+    spawned = res.task
     if (spawned) store.insert(spawned)
+    if (res.error) spawnFailures++
   }
   // Recurring CHILDREN completed by the bulk write spawn their next
   // occurrences too. Their parent just went done in this same action,
@@ -129,13 +135,18 @@ export async function toggleDoneOptimistic(
   const spawnedChildren: Task[] = []
   for (const c of children) {
     if (!c.recur_freq) continue
-    const s = await createNextOccurrence(supabase, c, { parentStatus: 'done' })
-    if (s) {
-      spawnedChildren.push(s)
-      store.insert(s)
+    const res = await createNextOccurrence(supabase, c, { parentStatus: 'done' })
+    if (res.task) {
+      spawnedChildren.push(res.task)
+      store.insert(res.task)
     }
+    if (res.error) spawnFailures++
   }
   const spawnedAll = spawned ? [spawned, ...spawnedChildren] : spawnedChildren
+
+  if (spawnFailures > 0) {
+    toast('Completed, but creating the next occurrence failed — un-complete and re-complete to retry', { tone: 'error' })
+  }
 
   const base = children.length > 0
     ? `Completed with ${children.length} subtask${children.length === 1 ? '' : 's'}`
