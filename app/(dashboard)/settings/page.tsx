@@ -15,6 +15,14 @@ type Tab = 'properties' | 'pmcs' | 'contacts' | 'digest'
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('properties')
 
+  // Deep-link support: /settings?tab=pmcs etc. Read once on mount from
+  // location.search (client page — avoids the useSearchParams Suspense
+  // boundary requirement for this one-shot read).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab')
+    if (t === 'properties' || t === 'pmcs' || t === 'contacts' || t === 'digest') setTab(t)
+  }, [])
+
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'properties', label: 'Properties', icon: <Building2 size={14} /> },
     { id: 'pmcs',       label: 'PMCs',        icon: <Users size={14} /> },
