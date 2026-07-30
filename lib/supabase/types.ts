@@ -161,6 +161,15 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['call_items']['Row']>
         Relationships: [{ foreignKeyName: 'call_items_call_id_fkey'; columns: ['call_id']; isOneToOne: false; referencedRelation: 'calls'; referencedColumns: ['id'] }]
       }
+      alert_settings: {
+        // Obligations-engine overrides (0007): property_id NULL = global
+        // default for the key. Keys/value shapes documented in the migration
+        // and parsed defensively in lib/tasks/seasonal.ts.
+        Row: { id: string; property_id: string | null; setting_key: string; value: Json; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['alert_settings']['Row']> & { setting_key: string; value: Json }
+        Update: Partial<Database['public']['Tables']['alert_settings']['Row']>
+        Relationships: [{ foreignKeyName: 'alert_settings_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
+      }
       property_permits: {
         Row: { id: string; property_id: string; permit_no: string; permit_type: string | null; subtype: string | null; description: string | null; status: string | null; issued_date: string | null; expiration_date: string | null; address: string | null; source: string | null; notes: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['property_permits']['Row']> & { property_id: string; permit_no: string }
@@ -200,3 +209,4 @@ export type PropertyPcaItem = Database['public']['Tables']['property_pca_items']
 export type PropertyPermit = Database['public']['Tables']['property_permits']['Row']
 export type Call = Database['public']['Tables']['calls']['Row']
 export type CallItem = Database['public']['Tables']['call_items']['Row']
+export type AlertSetting = Database['public']['Tables']['alert_settings']['Row']

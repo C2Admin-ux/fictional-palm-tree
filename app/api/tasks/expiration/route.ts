@@ -3,7 +3,8 @@ import { createClient } from '@supabase/supabase-js'
 import { isCronRequest, unauthorized } from '@/lib/api-auth'
 import { CONTRACT_SOURCE, INSURANCE_SOURCE, OBLIGATION_SOURCES, SEASONAL_BID_SOURCES } from '@/lib/tasks/vocab'
 import {
-  SEASONS, contractResolvesSeasonalTask, seasonDueDate, seasonYearOf,
+  OBLIGATION_LEAD_DAYS_KEY, SEASONS, contractResolvesSeasonalTask,
+  parseLeadDaysSetting, resolveSeasonConfig, seasonDueDate, seasonYearOf,
   seasonalPriority, seasonalTitle,
 } from '@/lib/tasks/seasonal'
 import type { Contract, Database, InsurancePolicy, Task } from '@/lib/supabase/types'
@@ -37,7 +38,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 // Lead time before a deadline that an obligation task appears. 120 days for
 // both insurance expirations and contract cancellations/expirations, so Nick
 // has runway to shop replacements. Priority still escalates as it nears.
-const LEAD_DAYS = 120
+// Overridable via the global 'obligation_lead_days' alert_settings row
+// (Settings → Alerts); this constant is the fallback.
+const DEFAULT_LEAD_DAYS = 120
 
 // What the sync wants a task to look like for one qualifying source record.
 type DesiredTask = {
@@ -63,12 +66,29 @@ export async function GET(req: NextRequest) {
   try {
     const today = new Date().toISOString().slice(0, 10)
 
+    // ── 0. Load alert_settings overrides (one query per run) ──
+    // Feeds the insurance query's lead window below, so it loads first.
+    // Settings must never take the cron down: a failed load (e.g. the 0007
+    // migration not applied yet) logs and runs on code defaults, and every
+    // value is parsed defensively in lib/tasks/seasonal.ts.
+    let alertSettings: { property_id: string | null; setting_key: string; value: unknown }[] = []
+    {
+      const res = await supabase.from('alert_settings').select('property_id, setting_key, value')
+      if (res.error) console.error('alert_settings load failed; using code defaults:', res.error.message)
+      else alertSettings = res.data
+    }
+    const globalSetting = (key: string) =>
+      alertSettings.find(s => s.setting_key === key && s.property_id === null)?.value
+    const propertySetting = (key: string, propertyId: string) =>
+      alertSettings.find(s => s.setting_key === key && s.property_id === propertyId)?.value
+    const leadDays = parseLeadDaysSetting(globalSetting(OBLIGATION_LEAD_DAYS_KEY)) ?? DEFAULT_LEAD_DAYS
+
     // ── 1. Load source records + all existing auto-tasks ──────
     const [policiesRes, contractsRes, tasksRes, propertiesRes] = await Promise.all([
       supabase.from('insurance_policies')
         .select('*')
         .eq('status', 'active')
-        .lte('expiry_date', addDays(today, LEAD_DAYS)),
+        .lte('expiry_date', addDays(today, leadDays)),
       supabase.from('contracts')
         .select('*')
         .eq('status', 'active'),
@@ -88,7 +108,7 @@ export async function GET(req: NextRequest) {
     const desired: DesiredTask[] = [
       ...(policiesRes.data ?? []).map(p => desiredInsuranceTask(p, today)),
       ...(contractsRes.data ?? [])
-        .map(c => desiredContractTask(c, today))
+        .map(c => desiredContractTask(c, today, leadDays))
         .filter((d): d is DesiredTask => d !== null),
     ]
     const desiredByKey = new Map(desired.map(d => [taskKey(d), d]))
@@ -187,16 +207,29 @@ export async function GET(req: NextRequest) {
     // the property gains an active contract of the matching type that
     // postdates the task (the bid cycle concluded in a signed contract).
     // Done tasks are never touched. All logic in lib/tasks/seasonal.ts.
+    //
+    // Windows resolve per property from alert_settings (property row →
+    // global row → code defaults). enabled=false at the property level
+    // skips that property (e.g. in-house snow removal); at the global
+    // level it stops CREATION for the whole cycle — existing open tasks
+    // still escalate and auto-resolve below either way.
     const activeContracts = contractsRes.data ?? []
 
     for (const spec of SEASONS) {
-      const dueDate = seasonDueDate(spec, today) // null outside the creation window
-      if (!dueDate) continue
-      const seasonYear = seasonYearOf(dueDate)
+      const globalValue = globalSetting(spec.setting_key)
 
       for (const prop of propertiesRes.data ?? []) {
+        const cfg = resolveSeasonConfig(spec, globalValue, propertySetting(spec.setting_key, prop.id))
+        if (!cfg.enabled) continue
+        const dueDate = seasonDueDate(cfg, today) // null outside the creation window
+        if (!dueDate) continue
+        const seasonYear = seasonYearOf(dueDate)
+
         // Any task (open OR done) for this source + property + season year
         // means the cycle already exists / was handled — never recreate.
+        // Keyed on the due date's YEAR (= window start's year, enforced in
+        // parseSeasonSetting), so moving a window mid-season updates
+        // nothing retroactively and never duplicates the year's task.
         const exists = seasonalTasks.some(t =>
           t.auto_source === spec.auto_source &&
           t.source_record_id === prop.id &&
@@ -281,12 +314,12 @@ function desiredInsuranceTask(policy: InsurancePolicy, today: string): DesiredTa
   }
 }
 
-function desiredContractTask(contract: Contract, today: string): DesiredTask | null {
+function desiredContractTask(contract: Contract, today: string, leadDays: number): DesiredTask | null {
   // Cancel window is the actionable deadline when present; otherwise the
-  // contract's expiration. Both surface LEAD_DAYS (120d) ahead.
+  // contract's expiration. Both surface leadDays (default 120d) ahead.
   const deadline = contract.cancel_deadline ?? contract.expiration_date
   if (!deadline) return null
-  if (deadline > addDays(today, LEAD_DAYS)) return null
+  if (deadline > addDays(today, leadDays)) return null
 
   const days = daysBetween(today, deadline)
   const kind = contract.cancel_deadline ? 'cancel window' : 'expiration'
