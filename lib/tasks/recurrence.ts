@@ -18,6 +18,27 @@ export type RecurrenceFields = Pick<
   'recur_end_type' | 'recur_end_date' | 'recur_end_count' | 'recur_count'
 >
 
+// One recurrence step from `date`, or null for an unknown frequency.
+function stepOnce(task: RecurrenceFields, date: Date): Date | null {
+  switch (task.recur_freq) {
+    case 'daily':     return addDays(date, 1)
+    case 'weekly':    return addDays(date, 7)
+    case 'biweekly':  return addDays(date, 14)
+    case 'monthly':   return addMonths(date, 1)
+    case 'quarterly': return addMonths(date, 3)
+    case 'annually':  return addMonths(date, 12)
+    case 'custom': {
+      const interval = task.recur_interval ?? 1
+      switch (task.recur_unit) {
+        case 'months': return addMonths(date, interval)
+        case 'weeks':  return addDays(date, interval * 7)
+        default:       return addDays(date, interval)
+      }
+    }
+    default: return null
+  }
+}
+
 // Next due date for a recurring task, or null when the series has
 // reached its end condition (or the task isn't recurring).
 export function nextOccurrence(task: RecurrenceFields): { due_date: string } | null {
@@ -32,27 +53,25 @@ export function nextOccurrence(task: RecurrenceFields): { due_date: string } | n
   ) return null
 
   // Step from the original due date — a task completed late shouldn't
-  // drift the whole series. Dateless recurring tasks step from today.
+  // drift the series anchor (day-of-month / weekday). Dateless recurring
+  // tasks step from today.
   const base = parseISO(task.due_date ?? todayISO())
 
-  let next: Date
-  switch (task.recur_freq) {
-    case 'daily':     next = addDays(base, 1);    break
-    case 'weekly':    next = addDays(base, 7);    break
-    case 'biweekly':  next = addDays(base, 14);   break
-    case 'monthly':   next = addMonths(base, 1);  break
-    case 'quarterly': next = addMonths(base, 3);  break
-    case 'annually':  next = addMonths(base, 12); break
-    case 'custom': {
-      const interval = task.recur_interval ?? 1
-      switch (task.recur_unit) {
-        case 'months': next = addMonths(base, interval);   break
-        case 'weeks':  next = addDays(base, interval * 7); break
-        default:       next = addDays(base, interval);     break
-      }
-      break
-    }
-    default: return null
+  let next = stepOnce(task, base)
+  if (!next) return null
+  // A zero/negative custom interval can't advance — bail rather than loop.
+  if (next <= base) return null
+
+  // CATCH UP past today. Completing a long-overdue instance used to spawn
+  // the next occurrence one step from the stale due date — often still in
+  // the past, so a near-identical overdue row reappeared instantly and
+  // completions looked like they didn't stick. Keep stepping (anchor
+  // preserved) until the next occurrence is actually in the future.
+  const today = todayISO()
+  for (let i = 0; format(next, 'yyyy-MM-dd') <= today && i < 1000; i++) {
+    const stepped = stepOnce(task, next)
+    if (!stepped || stepped <= next) break
+    next = stepped
   }
 
   const due_date = format(next, 'yyyy-MM-dd')
@@ -80,10 +99,14 @@ export function nextParentTaskId(
   return parentStatus === 'done' ? null : task.parent_task_id
 }
 
-// Create the next instance of a completed recurring task. Returns the
-// inserted row, or null when the series ended, an instance for that
-// due date already exists (un-complete → re-complete guard), or the
-// insert failed.
+// Outcome of a spawn attempt. `task` is the inserted row; a null task
+// with a null error means the series ended (or the occurrence already
+// exists) — nothing to do. A non-null error means the spawn SHOULD have
+// happened but a DB call failed; callers surface it (the completion
+// itself already committed and must not be walked back for this).
+export type NextOccurrenceResult = { task: Task | null; error: string | null }
+
+// Create the next instance of a completed recurring task.
 //
 // Subtasks: spawning does NOT copy the completed task's subtasks — a
 // recurring PARENT's next occurrence starts with an empty subtask list
@@ -96,9 +119,9 @@ export function nextParentTaskId(
 export async function createNextOccurrence(
   supabase: Client, task: Task,
   ctx?: { parentStatus?: Task['status'] }
-): Promise<Task | null> {
+): Promise<NextOccurrenceResult> {
   const next = nextOccurrence(task)
-  if (!next) return null
+  if (!next) return { task: null, error: null }
 
   const parentId = task.recur_parent_id ?? task.id
 
@@ -109,7 +132,10 @@ export async function createNextOccurrence(
     .eq('recur_parent_id', parentId)
     .eq('due_date', next.due_date)
     .limit(1)
-  if (lookupError || (existing && existing.length > 0)) return null
+  // A failed lookup skips the insert (double-creation risk beats a
+  // missed spawn) but is surfaced rather than swallowed.
+  if (lookupError) return { task: null, error: lookupError.message }
+  if (existing && existing.length > 0) return { task: null, error: null }
 
   let parentStatus: Task['status'] | null = ctx?.parentStatus ?? null
   if (task.parent_task_id && parentStatus == null) {
@@ -133,6 +159,6 @@ export async function createNextOccurrence(
     .select('*')
     .single()
 
-  if (error || !created) return null
-  return created as Task
+  if (error || !created) return { task: null, error: error?.message ?? 'insert returned no row' }
+  return { task: created as Task, error: null }
 }
