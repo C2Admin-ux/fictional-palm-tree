@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
+import { cancelInspectionUploads } from '@/lib/inspections/upload-queue'
 import { inspectionScore } from '@/lib/inspections/score'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
@@ -94,6 +95,9 @@ export default function InspectionsPage() {
       .select('photo_paths').eq('inspection_id', insp.id)
     const { error } = await supabase.from('inspections').delete().eq('id', insp.id)
     if (error) { setActionError(`Delete failed: ${error.message}`); return }
+    // Photos still queued/in flight for this inspection are pointless now —
+    // cancel them (the queue best-effort removes anything already landed).
+    cancelInspectionUploads(insp.id)
     const paths = (itemRows ?? []).flatMap(r => r.photo_paths ?? [])
     await removeInspectionPhotos(supabase, paths)
     setInspections(prev => prev.filter(i => i.id !== insp.id))
