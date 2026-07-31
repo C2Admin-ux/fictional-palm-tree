@@ -20,7 +20,13 @@ import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
   ACTION_PRIORITIES, PRIORITY_LABELS, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { uploadInspectionPhotos, signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { compressImage } from '@/lib/inspections/compress'
+import {
+  enqueueInspectionPhotos, cancelItemUploads, resumePendingUploads,
+  subscribeUploadQueue, retryUpload, type UploadEntrySnapshot,
+} from '@/lib/inspections/upload-queue'
+import { withTimeoutRetry, randomUuid } from '@/lib/utils/retry'
 import {
   instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
   groupItemsByInstance, type SectionInstance,
@@ -32,7 +38,7 @@ import { findingTaskInsertPayload, insertTask } from '@/lib/tasks/create'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
-  FileText, Send, ExternalLink, ListTodo, CheckSquare,
+  FileText, Send, ExternalLink, ListTodo, CheckSquare, UploadCloud,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
@@ -70,12 +76,7 @@ export default function InspectionDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Latest items, readable from async closures that may have gone stale
-  // while an upload was in flight.
-  const itemsRef = useRef<InspectionItem[]>([])
-  useEffect(() => { itemsRef.current = items }, [items])
-
-  // Latest inspection, for the same reason — invalidateReport runs after
+  // Latest inspection, readable from async closures — invalidateReport runs after
   // async mutations and must see the current report/status fields.
   const inspectionRef = useRef<InspectionDetail | null>(null)
   useEffect(() => { inspectionRef.current = inspection }, [inspection])
@@ -147,11 +148,22 @@ export default function InspectionDetailPage() {
     setSignTick(n => n + 1)
   }, [])
 
+  // Stall-protected (10s timeout + retry): a hung request in the field
+  // surfaces as a quick "retrying" toast, never an indefinite spinner.
+  // Safe to retry — the patch payload is fixed, so a duplicate is a no-op.
   async function patchInspection(patch: Partial<Inspection>): Promise<boolean> {
     if (!inspection) return false
     setActionError(null)
-    const { error } = await supabase.from('inspections').update(patch).eq('id', inspection.id)
-    if (error) { setActionError(`Save failed: ${error.message}`); return false }
+    try {
+      await withTimeoutRetry(async signal => {
+        const { error } = await supabase.from('inspections')
+          .update(patch).eq('id', inspection.id).abortSignal(signal)
+        if (error) throw new Error(error.message)
+      }, { onRetry: retryIndex => { if (retryIndex === 1) toast('Slow connection — retrying save…') } })
+    } catch (e) {
+      setActionError(`Save failed: ${e instanceof Error ? e.message : 'check connection and try again.'}`)
+      return false
+    }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
     return true
   }
@@ -180,6 +192,59 @@ export default function InspectionDetailPage() {
     try { await supabase.storage.from(BUCKET).remove([oldPath]) } catch { /* non-fatal */ }
   }, [])
 
+  // ── Background photo uploads ─────────────────────────────────
+  // Photos upload through the background queue (lib/inspections/upload-queue)
+  // so saving a finding never waits on the network for photos. The queue
+  // feeds two things back: per-entry status (for thumbnails + the global
+  // pill) and photo_paths appends as uploads land. Local object URLs keep
+  // showing a just-uploaded photo until its signed URL exists.
+  const [uploads, setUploads] = useState<UploadEntrySnapshot[]>([])
+  const [localPreviews, setLocalPreviews] = useState<Record<string, string>>({})
+  const localPreviewsRef = useRef<Record<string, string>>({})
+  useEffect(() => { localPreviewsRef.current = localPreviews }, [localPreviews])
+
+  useEffect(() => {
+    const unsubscribe = subscribeUploadQueue({
+      onChange: setUploads,
+      onPathsUpdated: update => {
+        // The queue also resumes other inspections' pending photos — their
+        // previews are ours to release, nothing else to do.
+        if (update.inspectionId !== inspectionId) { URL.revokeObjectURL(update.previewUrl); return }
+        setItems(prev => prev.map(i => i.id === update.itemId ? { ...i, photo_paths: update.photoPaths } : i))
+        setLocalPreviews(prev => ({ ...prev, [update.uploadedPath]: update.previewUrl }))
+        // A photo landing is a change to report content like any other.
+        invalidateReport()
+      },
+    })
+    resumePendingUploads()
+    return () => {
+      unsubscribe()
+      Object.values(localPreviewsRef.current).forEach(URL.revokeObjectURL)
+    }
+  }, [inspectionId, invalidateReport])
+
+  // Once a path has a live signed URL its local preview is redundant —
+  // release the blob memory (a long walk can queue dozens of photos).
+  useEffect(() => {
+    setLocalPreviews(prev => {
+      const stale = Object.keys(prev).filter(p => photoUrls[p])
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const p of stale) { URL.revokeObjectURL(prev[p]); delete next[p] }
+      return next
+    })
+  }, [photoUrls])
+
+  // This inspection's queue entries, grouped for the finding cards.
+  const inspectionUploads = useMemo(
+    () => uploads.filter(u => u.inspectionId === inspectionId), [uploads, inspectionId])
+  const uploadsByItem = useMemo(() => {
+    const map: Record<string, UploadEntrySnapshot[]> = {}
+    for (const u of inspectionUploads) (map[u.itemId] ??= []).push(u)
+    return map
+  }, [inspectionUploads])
+  const failedUploadCount = inspectionUploads.filter(u => u.status === 'failed').length
+
   // ── Section instances: template + instances already on saved items ──
 
   // Fallback guards against an out-of-vocabulary type on a pre-existing row.
@@ -199,6 +264,9 @@ export default function InspectionDetailPage() {
     // cleanup after, best-effort (orphaned files acceptable, lost rows not).
     const { error } = await supabase.from('inspection_items').delete().eq('id', item.id)
     if (error) { setActionError(`Delete failed: ${error.message}`); return }
+    // Pending/in-flight photo uploads for this finding are now pointless —
+    // cancel them (the queue best-effort removes anything already landed).
+    cancelItemUploads(item.id)
     await removeInspectionPhotos(supabase, item.photo_paths)
     setItems(prev => prev.filter(i => i.id !== item.id))
     invalidateReport()
@@ -279,24 +347,21 @@ export default function InspectionDetailPage() {
     })
   }
 
+  // Adding photos to an existing finding: compress locally (fails fast on
+  // an unsupported format, before anything is queued), then hand off to the
+  // background queue — photo_paths and thumbnails update as uploads land.
   async function appendPhotos(item: InspectionItem, files: File[]) {
     if (!inspection || files.length === 0) return
     try {
-      const paths = await uploadInspectionPhotos(supabase, inspection.property_id, inspection.id, files)
-      // Re-read the item from the LATEST state — the prop may be stale if
-      // another mutation resolved while the upload was in flight.
-      const current = itemsRef.current.find(i => i.id === item.id) ?? item
-      const { data, error } = await supabase.from('inspection_items')
-        .update({ photo_paths: [...current.photo_paths, ...paths] })
-        .eq('id', item.id)
-        .select()
-        .single()
-      if (error || !data) throw new Error(error?.message ?? 'Save failed')
-      const updated = data as InspectionItem
-      setItems(prev => prev.map(i => i.id === updated.id ? updated : i))
-      invalidateReport()
+      const photos = await Promise.all(files.map(compressImage))
+      enqueueInspectionPhotos({
+        propertyId: inspection.property_id,
+        inspectionId: inspection.id,
+        itemId: item.id,
+        photos,
+      })
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Photo upload failed — try again.')
+      alert(e instanceof Error ? e.message : 'Could not read those photos — try again.')
     }
   }
 
@@ -398,6 +463,7 @@ export default function InspectionDetailPage() {
       {!isDraft && (
         <ReportPanel
           inspection={inspection}
+          pendingPhotoCount={inspectionUploads.length}
           onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
         />
       )}
@@ -456,6 +522,9 @@ export default function InspectionDetailPage() {
                     key={item.id}
                     item={item}
                     photoUrls={photoUrls}
+                    localPreviews={localPreviews}
+                    pendingUploads={uploadsByItem[item.id] ?? []}
+                    onRetryUpload={retryUpload}
                     onView={setLightbox}
                     onEdit={() => setEditItem(item)}
                     onDelete={() => deleteItem(item)}
@@ -480,14 +549,32 @@ export default function InspectionDetailPage() {
           <button className="absolute top-4 right-4 text-white/70 hover:text-white" aria-label="Close photo">
             <X size={22} />
           </button>
-          {photoUrls[lightbox] ? (
+          {photoUrls[lightbox] || localPreviews[lightbox] ? (
+            // Freshly uploaded photos may not have a signed URL yet — fall
+            // back to the local object URL the queue handed off.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={photoUrls[lightbox].url} alt="Inspection photo"
-              onError={() => invalidatePhoto(lightbox)}
+            <img src={photoUrls[lightbox]?.url ?? localPreviews[lightbox]} alt="Inspection photo"
+              onError={() => { if (photoUrls[lightbox]) invalidatePhoto(lightbox) }}
               className="max-h-full max-w-full rounded-lg object-contain" />
           ) : (
             <div className="w-64 h-64 rounded-lg bg-white/10 animate-pulse" />
           )}
+        </div>
+      )}
+
+      {/* Unobtrusive global upload status — Nick shouldn't have to wonder
+          whether it's safe to pocket the phone. */}
+      {inspectionUploads.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 pointer-events-none">
+          <span className={cn(
+            'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-white shadow-lg',
+            failedUploadCount > 0 ? 'bg-red-600/95' : 'bg-slate-800/90'
+          )}>
+            <UploadCloud size={12} className={failedUploadCount > 0 ? undefined : 'animate-pulse'} />
+            {failedUploadCount > 0
+              ? `${failedUploadCount} photo${failedUploadCount === 1 ? '' : 's'} failed — tap the photo to retry`
+              : `${inspectionUploads.length} photo${inspectionUploads.length === 1 ? '' : 's'} uploading`}
+          </span>
         </div>
       )}
 
@@ -517,8 +604,12 @@ export default function InspectionDetailPage() {
 // Generate (or regenerate) the PDF report, open it via a signed URL, and
 // email it to the PM. Everything is an explicit button — no auto-sends.
 
-function ReportPanel({ inspection, onUpdated }: {
+function ReportPanel({ inspection, pendingPhotoCount, onUpdated }: {
   inspection: InspectionDetail
+  // Photos for this inspection still in the background upload queue
+  // (uploading, retrying, or failed) — a report generated now would
+  // silently miss them.
+  pendingPhotoCount: number
   onUpdated: (patch: Partial<Inspection>) => void
 }) {
   const supabase = createClient()
@@ -533,6 +624,11 @@ function ReportPanel({ inspection, onUpdated }: {
   const hasReport = !!inspection.report_file_path
 
   async function generate() {
+    // A report without the queued photos would be silently incomplete —
+    // surface it, and only proceed on an explicit confirm.
+    if (pendingPhotoCount > 0 && !confirm(
+      `${pendingPhotoCount} photo${pendingPhotoCount === 1 ? ' is' : 's are'} still uploading (or failed) for this inspection. `
+      + 'A report generated now will be missing them. Generate anyway?')) return
     setGenerating(true)
     setError(null)
     try {
@@ -594,6 +690,12 @@ function ReportPanel({ inspection, onUpdated }: {
           )}
         </div>
       </div>
+      {pendingPhotoCount > 0 && (
+        <p className="text-xs text-amber-600 flex items-center gap-1.5">
+          <UploadCloud size={12} className="flex-shrink-0" />
+          {pendingPhotoCount} photo{pendingPhotoCount === 1 ? '' : 's'} still uploading — a report generated now would be missing {pendingPhotoCount === 1 ? 'it' : 'them'}.
+        </p>
+      )}
       {error && (
         <p className="text-xs text-red-600 flex items-center gap-1.5">
           <AlertTriangle size={12} className="flex-shrink-0" />{error}
@@ -753,9 +855,14 @@ function SendReportModal({ inspection, onClose, onSent }: {
 
 // ── Finding card ─────────────────────────────────────────────
 
-function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask, createDisabled }: {
+function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUpload, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask, createDisabled }: {
   item: InspectionItem
   photoUrls: Record<string, SignedPhotoUrl>
+  // Local object URLs for freshly uploaded photos without a signed URL yet.
+  localPreviews: Record<string, string>
+  // This finding's photos still in the background upload queue.
+  pendingUploads: UploadEntrySnapshot[]
+  onRetryUpload: (entryId: string) => void
   onView: (path: string) => void
   onEdit: () => void
   onDelete: () => void
@@ -765,6 +872,7 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
   creatingTask: boolean
   createDisabled: boolean  // orphaned unlinked task exists — retry would duplicate
 }) {
+  // Only covers local compression now — uploads continue in the background.
   const [uploading, setUploading] = useState(false)
 
   async function handleAdd(e: React.ChangeEvent<HTMLInputElement>) {
@@ -821,17 +929,48 @@ function FindingCard({ item, photoUrls, onView, onEdit, onDelete, onAppendPhotos
       <div className="flex gap-1.5 mt-2 flex-wrap">
           {item.photo_paths.map(path => {
             const signed = photoUrls[path]
-            return signed ? (
+            const src = signed?.url ?? localPreviews[path]
+            return src ? (
               <button key={path} onClick={() => onView(path)} className="block" title="View full size">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={signed.url} alt="Finding photo"
-                  onError={() => onPhotoError(path)}
+                <img src={src} alt="Finding photo"
+                  onError={() => { if (signed) onPhotoError(path) }}
                   className="w-16 h-16 sm:w-20 sm:h-20 object-cover rounded-lg border border-slate-200" />
               </button>
             ) : (
               <div key={path} className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg bg-slate-100 animate-pulse" />
             )
           })}
+          {/* Photos still uploading in the background: local preview with a
+              per-photo status badge; a failed one is tappable to retry. */}
+          {pendingUploads.map(u => (
+            <div key={u.id} className="relative flex-shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u.previewUrl} alt="Photo uploading"
+                className={cn(
+                  'w-16 h-16 sm:w-20 sm:h-20 object-cover rounded-lg border',
+                  u.status === 'failed' ? 'border-red-300 opacity-60' : 'border-slate-200 opacity-75'
+                )} />
+              {u.status === 'failed' ? (
+                <button
+                  onClick={() => onRetryUpload(u.id)}
+                  title={`Upload failed${u.error ? ` (${u.error})` : ''} — tap to retry`}
+                  aria-label="Retry photo upload"
+                  className="absolute inset-0 flex items-center justify-center rounded-lg bg-red-500/25 text-red-700">
+                  <RotateCcw size={16} />
+                </button>
+              ) : (
+                <span
+                  title={u.status === 'retrying' ? 'Connection hiccup — retrying upload' : 'Uploading…'}
+                  className={cn(
+                    'absolute bottom-1 right-1 rounded-full p-1 text-white',
+                    u.status === 'retrying' ? 'bg-amber-500' : 'bg-blue-500 animate-pulse'
+                  )}>
+                  {u.status === 'retrying' ? <RotateCcw size={9} /> : <UploadCloud size={9} />}
+                </span>
+              )}
+            </div>
+          ))}
           <label
             title="Add photos to this finding"
             className={cn(
@@ -871,7 +1010,7 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
   const [description, setDescription] = useState('')
   const [followUp, setFollowUp] = useState(false)
   const [priority, setPriority] = useState<ActionPriority>('medium')
-  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [state, setState] = useState<'idle' | 'saving' | 'retrying' | 'saved' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -929,23 +1068,49 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
   const canSave = active != null && (files.length > 0 || description.trim().length > 0)
 
   async function save() {
-    if (!canSave || !active || state === 'saving') return
+    if (!canSave || !active || state === 'saving' || state === 'retrying') return
     setState('saving')
     setError(null)
     try {
-      const paths = files.length > 0
-        ? await uploadInspectionPhotos(supabase, inspection.property_id, inspection.id, files)
-        : []
-      const { data, error: insertError } = await supabase.from('inspection_items').insert({
-        inspection_id: inspection.id,
-        section_name: active.name,
-        unit_number: active.unit,
-        item_label: description.trim(),
-        requires_action: followUp,
-        action_priority: followUp ? priority : null,
-        photo_paths: paths,
-      }).select().single()
-      if (insertError || !data) throw new Error(insertError?.message ?? 'Save failed')
+      // Compress first — pure local work (off the main thread where
+      // supported), and an unsupported format must fail BEFORE the row
+      // inserts and the form resets. The network wait for photos is gone:
+      // they upload via the background queue after the row lands.
+      const photos = files.length > 0 ? await Promise.all(files.map(compressImage)) : []
+
+      // Client-generated id makes the insert retry-safe: if a timed-out
+      // first attempt actually landed, the retry hits the duplicate key
+      // and recovers the existing row instead of inserting a twin.
+      const itemId = randomUuid()
+      const inserted = await withTimeoutRetry<InspectionItem>(async signal => {
+        const { data, error: insertError } = await supabase.from('inspection_items').insert({
+          id: itemId,
+          inspection_id: inspection.id,
+          section_name: active.name,
+          unit_number: active.unit,
+          item_label: description.trim(),
+          requires_action: followUp,
+          action_priority: followUp ? priority : null,
+          photo_paths: [],
+        }).select().abortSignal(signal).single()
+        if (insertError?.code === '23505') {
+          const { data: existing, error: refetchError } = await supabase.from('inspection_items')
+            .select('*').eq('id', itemId).abortSignal(signal).single()
+          if (refetchError || !existing) throw new Error(refetchError?.message ?? 'Save failed')
+          return existing as InspectionItem
+        }
+        if (insertError || !data) throw new Error(insertError?.message ?? 'Save failed')
+        return data as InspectionItem
+      }, { onRetry: () => setState('retrying') })
+
+      if (photos.length > 0) {
+        enqueueInspectionPhotos({
+          propertyId: inspection.property_id,
+          inspectionId: inspection.id,
+          itemId: inserted.id,
+          photos,
+        })
+      }
 
       // Saved — reset for the next finding.
       previews.forEach(URL.revokeObjectURL)
@@ -957,7 +1122,7 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
       setState('saved')
       if (savedTimer.current) clearTimeout(savedTimer.current)
       savedTimer.current = setTimeout(() => setState(s => s === 'saved' ? 'idle' : s), 2500)
-      onSaved(data as InspectionItem)
+      onSaved(inserted)
     } catch (e) {
       // Keep the form populated — nothing captured is lost.
       setState('error')
@@ -1060,9 +1225,9 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
         )}
         <button
           onClick={save}
-          disabled={!canSave || state === 'saving'}
+          disabled={!canSave || state === 'saving' || state === 'retrying'}
           className="btn-primary ml-auto min-h-[42px] px-6">
-          {state === 'saving' ? 'Saving…' : 'Save'}
+          {state === 'saving' ? 'Saving…' : state === 'retrying' ? 'Retrying…' : 'Save'}
         </button>
       </div>
 
@@ -1098,25 +1263,34 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
       ? item.action_priority as ActionPriority
       : 'medium')
   const [saving, setSaving] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Stall-protected: 10s timeout per attempt + retry with backoff. The
+  // update payload is fixed, so a retried write that already landed is a
+  // harmless repeat. Form state survives failure.
   async function save(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     setError(null)
-    const { data, error: updateError } = await supabase.from('inspection_items').update({
-      item_label: description.trim(),
-      section_name: sectionName,
-      unit_number: unitNumber.trim() || null,
-      requires_action: followUp,
-      action_priority: followUp ? priority : null,
-    }).eq('id', item.id).select().single()
-    if (updateError || !data) {
-      setError(updateError?.message ?? 'Save failed')
+    try {
+      const data = await withTimeoutRetry<InspectionItem>(async signal => {
+        const { data, error: updateError } = await supabase.from('inspection_items').update({
+          item_label: description.trim(),
+          section_name: sectionName,
+          unit_number: unitNumber.trim() || null,
+          requires_action: followUp,
+          action_priority: followUp ? priority : null,
+        }).eq('id', item.id).select().abortSignal(signal).single()
+        if (updateError || !data) throw new Error(updateError?.message ?? 'Save failed')
+        return data as InspectionItem
+      }, { onRetry: () => setRetrying(true) })
+      onSaved(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed')
       setSaving(false)
-      return
+      setRetrying(false)
     }
-    onSaved(data as InspectionItem)
   }
 
   return (
@@ -1181,7 +1355,7 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary">
-            {saving ? 'Saving…' : 'Save changes'}
+            {saving ? (retrying ? 'Retrying…' : 'Saving…') : 'Save changes'}
           </button>
         </div>
       </form>
