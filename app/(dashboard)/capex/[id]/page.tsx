@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, CapexLineItem, CapexBid, Task } from '@/lib/supabase/types'
@@ -24,13 +24,23 @@ export default function CapexDetailPage() {
   const [bids, setBids] = useState<CapexBid[]>([])
   const [linkedTasks, setLinkedTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
-  const [editMode, setEditMode] = useState(false)
+  const [editMode, setEditModeState] = useState(false)
   const [form, setForm] = useState<Partial<CapexProject>>({})
   const [addingLine, setAddingLine] = useState(false)
   const [newLine, setNewLine] = useState({ description: '', vendor: '', amount: '', invoice_date: '', invoice_number: '', status: 'pending' as CapexLineItem['status'] })
   const [saving, setSaving] = useState(false)
+  // Ref mirror of editMode so an in-flight fetchAll (e.g. triggered by a
+  // bid mutation's onChanged) checks the CURRENT mode when it resolves,
+  // not the mode captured when it started.
+  const editModeRef = useRef(false)
+  const setEditMode = (v: boolean) => { editModeRef.current = v; setEditModeState(v) }
+  // Monotonic fetch sequence (mirrors the list page): responses that
+  // don't match the latest seq are stale — a newer fetch (every bid/line
+  // mutation refetches, bumping the seq on entry) has superseded them.
+  const fetchSeq = useRef(0)
 
   async function fetchAll() {
+    const seq = ++fetchSeq.current
     const [{ data: proj }, { data: lines }, { data: bidRows }, { data: tasks }] = await Promise.all([
       supabase.from('capex_projects').select('*, properties(name)').eq('id', id).single(),
       supabase.from('capex_line_items').select('*').eq('project_id', id).order('created_at', { ascending: false }),
@@ -42,8 +52,12 @@ export default function CapexDetailPage() {
         .is('parent_task_id', null)
         .order('due_date', { ascending: true, nullsFirst: false }),
     ])
+    if (seq !== fetchSeq.current) return // stale — a newer fetch won
     setProject((proj as unknown) as ProjectWithProp)
-    setForm((proj as any) ?? {})
+    // Don't wipe unsaved header/budget edits: bid-card mutations refetch
+    // while the project form may be mid-edit — only sync the form when
+    // NOT editing (saveProject exits edit mode before its refetch).
+    if (!editModeRef.current) setForm((proj as any) ?? {})
     setLineItems(lines ?? [])
     setBids(bidRows ?? [])
     setLinkedTasks(tasks ?? [])
@@ -153,7 +167,7 @@ export default function CapexDetailPage() {
               </>
             ) : (
               <>
-                <button onClick={() => setEditMode(true)} className="btn-secondary">Edit</button>
+                <button onClick={() => { setForm(project ?? {}); setEditMode(true) }} className="btn-secondary">Edit</button>
                 <button onClick={deleteProject} className="btn-ghost text-red-500 hover:bg-red-50">
                   <Trash2 size={14} />
                 </button>
