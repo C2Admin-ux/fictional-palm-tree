@@ -13,7 +13,8 @@ import { Modal } from '@/components/ui/modal'
 import { StatTile } from '@/components/ui/stat-tile'
 import { EmptyState } from '@/components/ui/empty-state'
 import Link from 'next/link'
-import { CapexBoard, ProjectCard, BidChip, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
+import { BidChip } from '@/components/capex/bid-chip'
+import { CapexBoard, ProjectCard, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
 
 // Status values derive from the shared options so every status surface
 // (board columns, inline select, filters, form) stays in lockstep.

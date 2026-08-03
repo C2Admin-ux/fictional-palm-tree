@@ -1,15 +1,17 @@
 import type { createClient } from '@/lib/supabase/client'
+import { BUCKET, SIGNED_URL_TTL_S, removeFiles } from '@/lib/storage'
 
 type SupabaseClient = ReturnType<typeof createClient>
 
-// Photos live in the existing private `c2-documents` bucket, alongside
-// contract/insurance files, at:
+// Photos live in the private `c2-documents` bucket (see lib/storage.ts
+// for the generic bucket helpers — BUCKET/signedFileUrl/removeFiles are
+// re-exported here for back-compat), alongside contract/insurance files, at:
 //   ${propertyId}/inspections/${inspectionId}/${stamp}-${i}-${rand}.${ext}
 // (Compression itself lives in ./compress.ts — client-only Worker code —
 // and uploading in ./upload-queue.ts; this module owns the storage layout
-// and signed-URL/removal helpers, and is safe to import server-side.)
-export const BUCKET = 'c2-documents'
-const SIGNED_URL_TTL_S = 3600
+// and photo-specific signed-URL/removal helpers, and is safe to import
+// server-side.)
+export { BUCKET, signedFileUrl } from '@/lib/storage'
 // Treat a signed URL as stale 5 minutes before it actually expires so a
 // thumbnail never 403s mid-view.
 const SIGNED_URL_SAFETY_MS = 5 * 60 * 1000
@@ -54,24 +56,11 @@ export async function signedPhotoUrls(
   return map
 }
 
-// Signed URL for a single stored file (e.g. the generated report PDF) —
-// used by the "View PDF"/"View report" buttons to open the private bucket
-// file in a new tab. Returns the URL or the error message, never throws.
-export async function signedFileUrl(
-  supabase: SupabaseClient,
-  path: string,
-): Promise<{ url: string | null; error: string | null }> {
-  const { data, error } = await supabase.storage.from(BUCKET)
-    .createSignedUrl(path, SIGNED_URL_TTL_S)
-  return { url: data?.signedUrl ?? null, error: error?.message ?? null }
-}
-
 // Best-effort storage cleanup when a finding (or one of its photos) is
 // deleted. Non-fatal: orphaned files are acceptable, lost DB rows are not.
 export async function removeInspectionPhotos(
   supabase: SupabaseClient,
   paths: string[],
 ): Promise<void> {
-  if (paths.length === 0) return
-  try { await supabase.storage.from(BUCKET).remove(paths) } catch { /* non-fatal */ }
+  return removeFiles(supabase, paths)
 }

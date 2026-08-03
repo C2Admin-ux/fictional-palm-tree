@@ -9,7 +9,8 @@ import {
 } from '@dnd-kit/core'
 import type { CapexProject } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT, CAPEX_STATUS_STYLES } from '@/lib/utils'
-import { bidGlance, bidChipLabel, BID_CHIP_TONES, type BidLike } from '@/lib/capex/bids'
+import { type BidLike } from '@/lib/capex/bids'
+import { BidChip } from '@/components/capex/bid-chip'
 import { CAPEX_PRIORITY_OPTIONS, CAPEX_STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { CalendarDays, ChevronRight } from 'lucide-react'
 
@@ -20,25 +21,6 @@ export type CapexWithProp = CapexProject & {
   capex_bids?: BidLike[] | null
 }
 
-// One compact bid-status chip, shared by the board cards and the list's
-// desktop rows/mobile cards. Renders nothing unless the project has
-// bids or a bid target; tooltip lists who we're still waiting on.
-export function BidChip({ bids, target, className }: {
-  bids: BidLike[] | null | undefined
-  target: number | null
-  className?: string
-}) {
-  const list = bids ?? []
-  if (list.length === 0 && target == null) return null
-  const g = bidGlance(list, target)
-  return (
-    <span
-      title={g.outstandingVendors.length ? `Waiting on: ${g.outstandingVendors.join(', ')}` : undefined}
-      className={cn('badge whitespace-nowrap font-medium', BID_CHIP_TONES[g.state], className)}>
-      {bidChipLabel(g)}
-    </span>
-  )
-}
 export type CapexStatus = CapexProject['status']
 
 // Shared "% Used" bar logic — same numbers the list table shows.

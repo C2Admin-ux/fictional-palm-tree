@@ -10,8 +10,9 @@ import { useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexBid, CapexProject } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, todayISO } from '@/lib/utils'
-import { bidGlance, bidChipLabel, BID_CHIP_TONES } from '@/lib/capex/bids'
-import { BUCKET, signedFileUrl } from '@/lib/inspections/photos'
+import { bidGlance } from '@/lib/capex/bids'
+import { BidChip } from '@/components/capex/bid-chip'
+import { BUCKET, signedFileUrl, removeFiles } from '@/lib/storage'
 import { Modal } from '@/components/ui/modal'
 import { toast } from '@/components/ui/toast'
 import { Plus, FileText, Trash2, Pencil } from 'lucide-react'
@@ -123,12 +124,7 @@ export function BidsCard({ project, bids, onChanged }: {
       <div className="flex items-center justify-between gap-2 flex-wrap mb-4">
         <h2 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
           Bids
-          {(bids.length > 0 || project.bids_target != null) && (
-            <span className={cn('badge whitespace-nowrap font-medium', BID_CHIP_TONES[glance.state])}
-              title={glance.outstandingVendors.length ? `Waiting on: ${glance.outstandingVendors.join(', ')}` : undefined}>
-              {bidChipLabel(glance)}
-            </span>
-          )}
+          <BidChip bids={bids} target={project.bids_target} />
         </h2>
         <div className="flex items-center gap-2">
           {targetDraft == null ? (
