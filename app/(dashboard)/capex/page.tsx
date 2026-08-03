@@ -13,7 +13,7 @@ import { Modal } from '@/components/ui/modal'
 import { StatTile } from '@/components/ui/stat-tile'
 import { EmptyState } from '@/components/ui/empty-state'
 import Link from 'next/link'
-import { CapexBoard, ProjectCard, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
+import { CapexBoard, ProjectCard, BidChip, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
 
 // Status values derive from the shared options so every status surface
 // (board columns, inline select, filters, form) stays in lockstep.
@@ -108,7 +108,9 @@ function CapexInner() {
     // property/category narrow the query server-side.
     const seq = ++fetchSeq.current
     setRefreshing(true)
-    let q = supabase.from('capex_projects').select('*, properties(name)')
+    // capex_bids embed is lean on purpose — just what bidGlance needs
+    // for the one-chip summary on rows and cards.
+    let q = supabase.from('capex_projects').select('*, properties(name), capex_bids(vendor_name, status, amount)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterCategory) q = q.eq('category', filterCategory)
     const { data } = await q
@@ -252,6 +254,11 @@ function CapexInner() {
             displayClassName="text-xs text-slate-600"
             placeholder="add vendor"
           />
+          {(p.capex_bids?.length || p.bids_target != null) ? (
+            <div className="mt-1">
+              <BidChip bids={p.capex_bids} target={p.bids_target} />
+            </div>
+          ) : null}
         </td>
         <td className="px-3 py-2.5">
           <InlineDate
