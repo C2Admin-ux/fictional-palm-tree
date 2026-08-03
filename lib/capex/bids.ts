@@ -58,7 +58,9 @@ export function bidGlance(bids: BidLike[], target: number | null | undefined): B
 //   "2/4 — waiting on 2 vendors"
 //   "3 bids in — ready to decide"
 //   "✓ Acme · $12K"                   decided
-// The denominator is the target when set, else received + outstanding.
+// The denominator is max(target, received + outstanding) — more bids in
+// flight than the target must never read as "1/2 — waiting on 3 vendors"
+// or overshoot like "4/3 bids".
 export function bidChipLabel(g: BidGlance): string {
   if (g.state === 'decided' && g.selected) {
     const amt = g.selected.amount != null ? ` · ${formatCurrency(g.selected.amount, true)}` : ''
@@ -66,7 +68,7 @@ export function bidChipLabel(g: BidGlance): string {
   }
   if (g.state === 'ready')
     return `${g.received} bid${g.received === 1 ? '' : 's'} in — ready to decide`
-  const total = g.target ?? g.received + g.requested
+  const total = Math.max(g.target ?? 0, g.received + g.requested)
   if (g.requested > 0) {
     const waiting = g.requested === 1 ? g.outstandingVendors[0] : `${g.requested} vendors`
     return `${g.received}/${total} — waiting on ${waiting}`
