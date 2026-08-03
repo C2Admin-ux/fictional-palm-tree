@@ -3,10 +3,11 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { CapexProject, CapexLineItem, Task } from '@/lib/supabase/types'
+import type { CapexProject, CapexLineItem, CapexBid, Task } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, STATUS_STYLES, STATUS_LABELS, PRIORITY_DOT } from '@/lib/utils'
 import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
+import { BidsCard } from './bids-card'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
@@ -20,6 +21,7 @@ export default function CapexDetailPage() {
 
   const [project, setProject] = useState<ProjectWithProp | null>(null)
   const [lineItems, setLineItems] = useState<CapexLineItem[]>([])
+  const [bids, setBids] = useState<CapexBid[]>([])
   const [linkedTasks, setLinkedTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [editMode, setEditMode] = useState(false)
@@ -29,9 +31,10 @@ export default function CapexDetailPage() {
   const [saving, setSaving] = useState(false)
 
   async function fetchAll() {
-    const [{ data: proj }, { data: lines }, { data: tasks }] = await Promise.all([
+    const [{ data: proj }, { data: lines }, { data: bidRows }, { data: tasks }] = await Promise.all([
       supabase.from('capex_projects').select('*, properties(name)').eq('id', id).single(),
       supabase.from('capex_line_items').select('*').eq('project_id', id).order('created_at', { ascending: false }),
+      supabase.from('capex_bids').select('*').eq('project_id', id).order('created_at', { ascending: true }),
       // Top-level tasks only — subtasks never render outside their
       // parent's drill-down, so the flat Open Linked Tasks list here
       // shows parents only.
@@ -42,6 +45,7 @@ export default function CapexDetailPage() {
     setProject((proj as unknown) as ProjectWithProp)
     setForm((proj as any) ?? {})
     setLineItems(lines ?? [])
+    setBids(bidRows ?? [])
     setLinkedTasks(tasks ?? [])
     setLoading(false)
   }
@@ -190,6 +194,9 @@ export default function CapexDetailPage() {
               </span>
             </div>
           </div>
+
+          {/* Vendor bids */}
+          <BidsCard project={project} bids={bids} onChanged={fetchAll} />
 
           {/* Line items */}
           <div className="card p-5">
