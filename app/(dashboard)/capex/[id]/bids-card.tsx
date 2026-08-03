@@ -46,6 +46,7 @@ export function BidsCard({ project, bids, onChanged }: {
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({})
   // Bid-target inline edit (null = not editing)
   const [targetDraft, setTargetDraft] = useState<string | null>(null)
+  const [targetError, setTargetError] = useState<string | null>(null)
   const cancelTarget = useRef(false)
 
   const glance = bidGlance(bids, project.bids_target)
@@ -63,8 +64,18 @@ export function BidsCard({ project, bids, onChanged }: {
   async function saveTarget() {
     const v = targetDraft?.trim() ?? ''
     setTargetDraft(null)
-    const parsed = v === '' ? null : parseInt(v, 10)
-    const next = parsed != null && Number.isFinite(parsed) && parsed > 0 ? parsed : null
+    // Explicit blank clears the target; 0/negative/junk keeps the prior
+    // target and says so inline — never a silent clear.
+    let next: number | null = null
+    if (v !== '') {
+      const parsed = parseInt(v, 10)
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        setTargetError('Target must be 1 or more (blank clears it)')
+        return
+      }
+      next = parsed
+    }
+    setTargetError(null)
     if (next === (project.bids_target ?? null)) return
     const { error } = await supabase.from('capex_projects')
       .update({ bids_target: next }).eq('id', project.id)
@@ -72,11 +83,27 @@ export function BidsCard({ project, bids, onChanged }: {
     onChanged()
   }
 
+  // One-click decline follows the house delete pattern: act immediately,
+  // offer Undo via toast (restores the prior status — nothing else
+  // changes here). Declined bids also stay editable (see statusEditable)
+  // so there's always a path back even after the toast is gone.
   async function declineBid(bid: CapexBid) {
+    const prevStatus = bid.status
     const { error } = await supabase.from('capex_bids')
       .update({ status: 'declined' }).eq('id', bid.id)
-    if (error) toast(`Couldn't update bid — ${error.message}`, { tone: 'error' })
+    if (error) { toast(`Couldn't update bid — ${error.message}`, { tone: 'error' }); onChanged(); return }
     onChanged()
+    toast(`Bid from ${bid.vendor_name} marked declined`, {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const { error: e } = await supabase.from('capex_bids')
+            .update({ status: prevStatus }).eq('id', bid.id)
+          if (e) toast(`Couldn't restore bid — ${e.message}`, { tone: 'error' })
+          onChanged()
+        },
+      },
+    })
   }
 
   // House delete pattern: delete immediately, offer Undo via toast. The
@@ -112,11 +139,21 @@ export function BidsCard({ project, bids, onChanged }: {
     onChanged()
   }
 
-  async function openPdf(bid: CapexBid) {
+  // Open the tab synchronously in the click handler (popup blockers kill
+  // a window.open that happens after an await) and point it at the signed
+  // URL once that resolves; close it + toast if signing fails.
+  function openPdf(bid: CapexBid) {
     if (!bid.file_path) return
-    const { url, error } = await signedFileUrl(supabase, bid.file_path)
-    if (url) window.open(url, '_blank', 'noopener')
-    else toast(`Couldn't open PDF — ${error}`, { tone: 'error' })
+    const win = window.open('', '_blank')
+    if (win) win.opener = null
+    void signedFileUrl(supabase, bid.file_path).then(({ url, error }) => {
+      if (url && win) win.location.href = url
+      else if (url) window.open(url, '_blank', 'noopener') // sync open was blocked anyway — try direct
+      else {
+        win?.close()
+        toast(`Couldn't open PDF — ${error}`, { tone: 'error' })
+      }
+    })
   }
 
   return (
@@ -127,8 +164,9 @@ export function BidsCard({ project, bids, onChanged }: {
           <BidChip bids={bids} target={project.bids_target} />
         </h2>
         <div className="flex items-center gap-2">
+          {targetError && <span className="text-xs text-red-600">{targetError}</span>}
           {targetDraft == null ? (
-            <button onClick={() => setTargetDraft(project.bids_target?.toString() ?? '')}
+            <button onClick={() => { setTargetError(null); setTargetDraft(project.bids_target?.toString() ?? '') }}
               className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
               title="How many bids to gather before deciding (blank = no target)">
               Target: {project.bids_target != null ? `${project.bids_target} bids` : '—'}
@@ -271,16 +309,22 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
   onSaved: () => void
 }) {
   const supabase = createClient()
-  // Status is user-editable only pre-decision; a selected/rejected/
-  // declined bid keeps its status through an edit.
-  const statusEditable = !markReceived && (bid == null || bid.status === 'requested' || bid.status === 'received')
+  // Status is user-editable only pre-decision; a selected/rejected bid
+  // keeps its status through an edit. Declined IS editable — the select
+  // is the recovery path back to requested/received.
+  const statusEditable = !markReceived &&
+    (bid == null || bid.status === 'requested' || bid.status === 'received' || bid.status === 'declined')
   const [form, setFormState] = useState({
     vendor_name: bid?.vendor_name ?? '',
     vendor_email: bid?.vendor_email ?? '',
     vendor_phone: bid?.vendor_phone ?? '',
     status: (markReceived ? 'received' : bid?.status ?? 'requested') as CapexBid['status'],
     amount: bid?.amount?.toString() ?? '',
-    received_at: bid?.received_at ?? todayISO(),
+    // received_at defaults to today ONLY where "received just now" is the
+    // story: the Mark-received flow and a brand-new bid created directly
+    // as received. Editing an existing bid shows exactly what's stored —
+    // a null stays blank (and saves null) rather than being backfilled.
+    received_at: bid ? (bid.received_at ?? (markReceived ? todayISO() : '')) : todayISO(),
     valid_until: bid?.valid_until ?? '',
     scope_notes: bid?.scope_notes ?? '',
   })
@@ -300,8 +344,10 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
     if (!form.vendor_name.trim()) return
     setSaving(true)
 
-    let file_path = bid?.file_path ?? null
+    const oldPath = bid?.file_path ?? null
+    let file_path = oldPath
     let file_name = bid?.file_name ?? null
+    let uploadedPath: string | null = null
     if (file) {
       const path = `${project.property_id}/capex/${project.id}/bids/${Date.now()}-${file.name}`
       const { error } = await supabase.storage.from(BUCKET)
@@ -311,18 +357,30 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
         setSaving(false)
         return
       }
+      uploadedPath = path
       file_path = path
       file_name = file.name
     }
 
+    // received_at contract (see the form-state init): today is only ever
+    // a default for mark-received / created-as-received; an explicit
+    // blank on an edit stays null. Non-received statuses: 'requested'
+    // means nothing was ever in hand (dates cleared), while 'declined'
+    // keeps whatever the row already had — a vendor can withdraw after
+    // quoting, and the hidden date fields shouldn't wipe that history.
+    const defaultsToToday = markReceived || bid == null
     const fields = {
       vendor_name: form.vendor_name.trim(),
       vendor_email: form.vendor_email.trim() || null,
       vendor_phone: form.vendor_phone.trim() || null,
       status: effectiveStatus,
       amount: form.amount !== '' ? parseFloat(form.amount) : null,
-      received_at: received ? (form.received_at || todayISO()) : null,
-      valid_until: received && form.valid_until ? form.valid_until : null,
+      received_at: received
+        ? (form.received_at || (defaultsToToday ? todayISO() : null))
+        : effectiveStatus === 'declined' ? (bid?.received_at ?? null) : null,
+      valid_until: received
+        ? (form.valid_until || null)
+        : effectiveStatus === 'declined' ? (bid?.valid_until ?? null) : null,
       scope_notes: form.scope_notes.trim() || null,
       file_path, file_name,
     }
@@ -331,7 +389,16 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
           .update({ ...fields, updated_at: new Date().toISOString() }).eq('id', bid.id)
       : await supabase.from('capex_bids').insert({ ...fields, project_id: project.id })
     setSaving(false)
-    if (error) { toast(`Couldn't save bid — ${error.message}`, { tone: 'error' }); return }
+    if (error) {
+      // The row never pointed at the new upload — best-effort remove it so
+      // the failure doesn't leak a file. (Orphans are acceptable, lost
+      // rows are not — but don't create orphans on the known-failed path.)
+      if (uploadedPath) void removeFiles(supabase, [uploadedPath])
+      toast(`Couldn't save bid — ${error.message}`, { tone: 'error' })
+      return
+    }
+    // Row now points at the replacement — best-effort drop the old file.
+    if (uploadedPath && oldPath && oldPath !== uploadedPath) void removeFiles(supabase, [oldPath])
     onSaved()
   }
 
@@ -353,6 +420,7 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
                 <select value={form.status} onChange={set('status')} className="input">
                   <option value="requested">Requested</option>
                   <option value="received">Received</option>
+                  <option value="declined">Declined</option>
                 </select></div>
             )}
           </div>
