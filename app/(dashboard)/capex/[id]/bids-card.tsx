@@ -395,7 +395,7 @@ function BidFormModal({ project, bid, markReceived, onClose, onSaved }: {
 function SelectBidModal({ project, bid, others, onClose, onDone }: {
   project: ProjectLite
   bid: CapexBid
-  others: CapexBid[]   // every other non-declined bid → rejected
+  others: CapexBid[]   // display only — confirm() re-derives the reject set from server truth
   onClose: () => void
   onDone: () => void
 }) {
@@ -403,20 +403,63 @@ function SelectBidModal({ project, bid, others, onClose, onDone }: {
   const [applyToProject, setApplyToProject] = useState(true)
   const [saving, setSaving] = useState(false)
 
+  // Ordered for crash-safety around the partial unique index (0009):
+  // re-check server truth, write the WINNER first (a unique violation
+  // means a concurrent/duplicate select won), then reject the rest,
+  // then the optional project write. Each later step failing leaves an
+  // earlier, more important step intact.
   async function confirm() {
+    if (saving) return // double-click guard
     setSaving(true)
-    const { error } = await supabase.from('capex_bids')
-      .update({ status: 'selected' }).eq('id', bid.id)
-    if (error) {
-      toast(`Couldn't select bid — ${error.message}`, { tone: 'error' })
+
+    // 1. Server truth — the card's props may be stale (another tab/user).
+    const { data: current, error: fetchError } = await supabase.from('capex_bids')
+      .select('id, vendor_name, status').eq('project_id', project.id)
+    if (fetchError || !current) {
+      toast(`Couldn't check current bids — ${fetchError?.message ?? 'no data'}`, { tone: 'error' })
       setSaving(false)
       return
     }
-    if (others.length > 0) {
-      const { error: e } = await supabase.from('capex_bids')
-        .update({ status: 'rejected' }).in('id', others.map(o => o.id))
-      if (e) toast(`Winner selected, but couldn't reject other bids — ${e.message}`, { tone: 'error' })
+    const alreadySelected = current.find(b => b.status === 'selected')
+    if (alreadySelected) {
+      toast(`A bid is already selected (${alreadySelected.vendor_name}) — reopen the decision first`, { tone: 'error' })
+      onDone()
+      return
     }
+    if (!current.some(b => b.id === bid.id)) {
+      toast(`This bid no longer exists — it may have been deleted`, { tone: 'error' })
+      onDone()
+      return
+    }
+
+    // 2. Winner first — the unique index makes this the atomic "decision".
+    const { error } = await supabase.from('capex_bids')
+      .update({ status: 'selected' }).eq('id', bid.id)
+    if (error) {
+      // 23505 = unique violation: someone selected between our check and now.
+      if (error.code === '23505') {
+        toast(`A bid is already selected — reopen the decision first`, { tone: 'error' })
+        onDone()
+      } else {
+        toast(`Couldn't select bid — ${error.message}`, { tone: 'error' })
+        setSaving(false)
+      }
+      return
+    }
+
+    // 3. Reject the rest (from server truth, not props). A failure here is
+    // recoverable: reopen the decision and select again.
+    const toReject = current.filter(b =>
+      b.id !== bid.id && b.status !== 'declined' && b.status !== 'rejected')
+    if (toReject.length > 0) {
+      const { error: e } = await supabase.from('capex_bids')
+        .update({ status: 'rejected' }).in('id', toReject.map(o => o.id))
+      if (e) toast(
+        `Winner selected, but couldn't reject ${toReject.map(o => o.vendor_name).join(', ')} — ${e.message}. Reopen the decision and select again to retry.`,
+        { tone: 'error' })
+    }
+
+    // 4. Optional project write — its own error; the selection stands.
     if (applyToProject) {
       const { error: e } = await supabase.from('capex_projects')
         .update({

@@ -32,6 +32,12 @@ create table if not exists capex_bids (
 
 create index if not exists capex_bids_project_id_idx on capex_bids (project_id);
 
+-- At most ONE selected bid per project — the DB backstop for the select
+-- flow (two concurrent selects: the second gets a unique violation and
+-- the UI surfaces "a bid is already selected").
+create unique index if not exists capex_bids_one_selected_idx
+  on capex_bids (project_id) where status = 'selected';
+
 alter table capex_bids enable row level security;
 do $$ begin
   create policy "authenticated full access" on capex_bids
