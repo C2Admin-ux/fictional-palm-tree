@@ -34,7 +34,12 @@ export async function updateSession(request: NextRequest) {
   //    credential (session or Bearer CRON_SECRET), so middleware passing a
   //    request through never grants access by itself.
   const isApi = request.nextUrl.pathname.startsWith('/api')
-  if (!user && isApi && !request.headers.get('authorization')) {
+  // Webhook endpoints that authenticate with their own fail-closed scheme
+  // (svix signatures / shared-secret tokens) and whose callers cannot send
+  // an Authorization header. Passing through grants nothing: each route
+  // rejects unauthenticated requests itself.
+  const isSignedWebhook = request.nextUrl.pathname === '/api/calls/inbound'
+  if (!user && isApi && !isSignedWebhook && !request.headers.get('authorization')) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   if (!user && !isApi && !request.nextUrl.pathname.startsWith('/auth')) {
