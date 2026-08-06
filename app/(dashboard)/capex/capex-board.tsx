@@ -9,10 +9,18 @@ import {
 } from '@dnd-kit/core'
 import type { CapexProject } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT, CAPEX_STATUS_STYLES } from '@/lib/utils'
+import { type BidLike } from '@/lib/capex/bids'
+import { BidChip } from '@/components/capex/bid-chip'
 import { CAPEX_PRIORITY_OPTIONS, CAPEX_STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { CalendarDays, ChevronRight } from 'lucide-react'
 
-export type CapexWithProp = CapexProject & { properties?: { name: string } | null }
+// capex_bids is the lean embed from the list page fetch — only what
+// bidGlance needs. Optional so detail-page shapes still fit.
+export type CapexWithProp = CapexProject & {
+  properties?: { name: string } | null
+  capex_bids?: BidLike[] | null
+}
+
 export type CapexStatus = CapexProject['status']
 
 // Shared "% Used" bar logic — same numbers the list table shows.
@@ -177,6 +185,7 @@ export function ProjectCard({ project: p, showStatus = false, showChevron = fals
         <span className="truncate">{p.properties?.name ?? '—'}</span>
         {showChevron && <ChevronRight size={14} className="text-slate-300 ml-auto flex-shrink-0" />}
       </div>
+      <BidChip bids={p.capex_bids} target={p.bids_target} />
       {(p.budget != null || p.actual_spend != null) && (
         <div>
           <div className="flex items-center justify-between gap-2 text-xs mb-1">

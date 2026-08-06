@@ -71,7 +71,7 @@ export type Database = {
         Relationships: []
       }
       capex_projects: {
-        Row: { id: string; property_id: string; title: string; category: string | null; status: 'planning' | 'approved' | 'in_progress' | 'complete' | 'on_hold'; priority: 'low' | 'medium' | 'high'; budget: number | null; committed: number | null; actual_spend: number | null; vendor_name: string | null; vendor_contact: string | null; start_date: string | null; target_completion: string | null; actual_completion: string | null; notes: string | null; created_by: string | null; created_at: string; updated_at: string }
+        Row: { id: string; property_id: string; title: string; category: string | null; status: 'planning' | 'approved' | 'in_progress' | 'complete' | 'on_hold'; priority: 'low' | 'medium' | 'high'; budget: number | null; committed: number | null; actual_spend: number | null; vendor_name: string | null; vendor_contact: string | null; bids_target: number | null; start_date: string | null; target_completion: string | null; actual_completion: string | null; notes: string | null; created_by: string | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['capex_projects']['Row']> & { property_id: string; title: string }
         Update: Partial<Database['public']['Tables']['capex_projects']['Row']>
         Relationships: [{ foreignKeyName: 'capex_projects_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
@@ -81,6 +81,12 @@ export type Database = {
         Insert: Partial<Database['public']['Tables']['capex_line_items']['Row']> & { project_id: string; description: string; amount: number }
         Update: Partial<Database['public']['Tables']['capex_line_items']['Row']>
         Relationships: []
+      }
+      capex_bids: {
+        Row: { id: string; project_id: string; vendor_name: string; vendor_email: string | null; vendor_phone: string | null; status: 'requested' | 'received' | 'declined' | 'selected' | 'rejected'; amount: number | null; requested_at: string | null; received_at: string | null; valid_until: string | null; scope_notes: string | null; file_path: string | null; file_name: string | null; created_at: string; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['capex_bids']['Row']> & { project_id: string; vendor_name: string }
+        Update: Partial<Database['public']['Tables']['capex_bids']['Row']>
+        Relationships: [{ foreignKeyName: 'capex_bids_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
       pm_metrics: {
         Row: { id: string; property_id: string; period_month: string; occupancy_pct: number | null; leased_pct: number | null; delinquency_pct: number | null; delinquency_amount: number | null; noi_actual: number | null; noi_budget: number | null; gross_revenue_actual: number | null; gross_revenue_budget: number | null; work_orders_opened: number | null; work_orders_closed: number | null; avg_days_to_close: number | null; new_leases: number | null; renewals: number | null; move_ins: number | null; move_outs: number | null; response_time_hrs: number | null; notes: string | null; entered_by: string | null; created_at: string; updated_at: string }
@@ -198,6 +204,7 @@ export type TaskComment = Database['public']['Tables']['task_comments']['Row']
 export type TaskView = Database['public']['Tables']['task_views']['Row']
 export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
+export type CapexBid = Database['public']['Tables']['capex_bids']['Row']
 export type PmMetric = Database['public']['Tables']['pm_metrics']['Row']
 export type Document = Database['public']['Tables']['documents']['Row']
 export type InsurancePolicy = Database['public']['Tables']['insurance_policies']['Row']
