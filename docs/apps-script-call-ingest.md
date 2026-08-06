@@ -112,6 +112,10 @@ function postMessage_(endpoint, token, msg) {
   var res = UrlFetchApp.fetch(endpoint, {
     method: 'post',
     contentType: 'application/json',
+    // The Authorization header is REQUIRED: the app's middleware rejects any
+    // /api request without one before the route runs. The route itself
+    // validates the body token; the header carries the same secret.
+    headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true, // never throw on HTTP errors — log and retry next run
   });
