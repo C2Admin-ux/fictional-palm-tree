@@ -10,6 +10,9 @@ type SupabaseClient = ReturnType<typeof createClient>
 // server-side.
 export const BUCKET = 'c2-documents'
 export const SIGNED_URL_TTL_S = 3600
+// Long-lived URLs for links that leave the app (report-email photo links —
+// a PM opening the email a week later must not hit a 403).
+export const LONG_SIGNED_URL_TTL_S = 60 * 60 * 24 * 30 // 30 days
 
 // Signed URL for a single stored file (bid PDF, generated report, …) —
 // used by "View PDF"-style buttons to open a private-bucket file in a
@@ -21,6 +24,27 @@ export async function signedFileUrl(
   const { data, error } = await supabase.storage.from(BUCKET)
     .createSignedUrl(path, SIGNED_URL_TTL_S)
   return { url: data?.signedUrl ?? null, error: error?.message ?? null }
+}
+
+// Long-lived signed URLs for a batch of stored files, keyed by path —
+// built for links that outlive the app session (the email-body report's
+// photo hyperlinks). Total API failure surfaces as `error` so the caller
+// can fail loud instead of sending an email with silently dead links;
+// individually unsignable paths are simply absent from `urls` (the
+// caller counts and discloses them).
+export async function longSignedUrls(
+  supabase: Pick<SupabaseClient, 'storage'>,
+  paths: string[],
+): Promise<{ urls: Record<string, string>; error: string | null }> {
+  if (paths.length === 0) return { urls: {}, error: null }
+  const { data, error } = await supabase.storage.from(BUCKET)
+    .createSignedUrls(paths, LONG_SIGNED_URL_TTL_S)
+  if (error) return { urls: {}, error: error.message }
+  const urls: Record<string, string> = {}
+  for (const entry of data ?? []) {
+    if (entry.path && entry.signedUrl) urls[entry.path] = entry.signedUrl
+  }
+  return { urls, error: null }
 }
 
 // Best-effort storage cleanup (row deleted, file replaced, or an upload
