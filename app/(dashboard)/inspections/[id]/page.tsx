@@ -38,7 +38,8 @@ import { findingTaskInsertPayload, insertTask } from '@/lib/tasks/create'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
-  FileText, Send, ExternalLink, ListTodo, CheckSquare, UploadCloud,
+  FileText, Mail, ExternalLink, ListTodo, CheckSquare, UploadCloud,
+  Copy,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
@@ -185,7 +186,7 @@ export default function InspectionDetailPage() {
     }
     const { error } = await supabase.from('inspections').update(patch).eq('id', insp.id)
     if (error) {
-      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before sending.`)
+      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before emailing the PM.`)
       return
     }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
@@ -458,13 +459,15 @@ export default function InspectionDetailPage() {
         </div>
       </div>
 
-      {/* Report: generate/view/send — only once the walk is submitted, and
-          nothing is automatic; both actions are explicit buttons. */}
+      {/* Report: generate/view/draft the PM email — only once the walk is
+          submitted. Nothing is automatic and nothing is ever sent from the
+          app; even "sent" status is an explicit manual button. */}
       {!isDraft && (
         <ReportPanel
           inspection={inspection}
           pendingPhotoCount={inspectionUploads.length}
           onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
+          onPatch={patchInspection}
         />
       )}
 
@@ -602,26 +605,50 @@ export default function InspectionDetailPage() {
 
 // ── Report panel ─────────────────────────────────────────────
 // Generate (or regenerate) the PDF report, open it via a signed URL, and
-// email it to the PM. Everything is an explicit button — no auto-sends.
+// draft the PM email. The app never sends email — the modal only builds
+// draft content Nick opens in Gmail (or copies) and sends personally —
+// so "sent" is a status the app can't observe: it's recorded here by an
+// explicit "Mark as sent" button, and only by that button.
 
-function ReportPanel({ inspection, pendingPhotoCount, onUpdated }: {
+function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
   inspection: InspectionDetail
   // Photos for this inspection still in the background upload queue
   // (uploading, retrying, or failed) — a report generated now would
   // silently miss them.
   pendingPhotoCount: number
   onUpdated: (patch: Partial<Inspection>) => void
+  // The page's stall-protected inspection patch (timeout + retry, error
+  // on the page banner, state updated on success) — the sent-status
+  // buttons write through it.
+  onPatch: (patch: Partial<Inspection>) => Promise<boolean>
 }) {
   const supabase = createClient()
   const [generating, setGenerating] = useState(false)
   const [opening, setOpening] = useState(false)
-  const [showSend, setShowSend] = useState(false)
+  const [showDraft, setShowDraft] = useState(false)
+  // Inline confirm for "Mark as sent" — flipping the status is a manual
+  // claim ("I emailed this from Gmail"), so it gets a deliberate two-tap
+  // instead of firing on a stray click.
+  const [confirmingSent, setConfirmingSent] = useState(false)
+  const [savingSent, setSavingSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // The send route can succeed with a warning (email out, status update
-  // failed) — surface it instead of claiming an unqualified success.
-  const [sendWarning, setSendWarning] = useState<string | null>(null)
 
   const hasReport = !!inspection.report_file_path
+
+  async function markSent() {
+    setSavingSent(true)
+    const ok = await onPatch({ status: 'report_sent', report_sent_at: new Date().toISOString() })
+    setSavingSent(false)
+    if (ok) setConfirmingSent(false)
+  }
+
+  // Undo affordance for a mistaken claim — back to submitted, sent
+  // timestamp cleared.
+  async function markNotSent() {
+    setSavingSent(true)
+    await onPatch({ status: 'submitted', report_sent_at: null })
+    setSavingSent(false)
+  }
 
   async function generate() {
     // A report without the queued photos would be silently incomplete —
@@ -666,11 +693,16 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated }: {
         <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
           <FileText size={13} className="text-blue-600" />Report
         </span>
-        {/* Invalidation + regeneration both clear report_sent_at, so this
+        {/* Invalidation + regeneration both revert sent status, so this
             only ever describes the PDF currently behind "View PDF". */}
-        {hasReport && inspection.report_sent_at && (
-          <span className="text-xs text-slate-400">
-            Sent to PM {formatDate(inspection.report_sent_at)}
+        {inspection.status === 'report_sent' && (
+          <span className="text-xs text-slate-400 flex items-center gap-2">
+            Sent to PM{inspection.report_sent_at ? ` ${formatDate(inspection.report_sent_at)}` : ''}
+            <button onClick={markNotSent} disabled={savingSent}
+              title="Revert — this report has not actually been emailed"
+              className="underline hover:text-slate-600 disabled:opacity-50">
+              {savingSent ? 'Reverting…' : 'Mark not sent'}
+            </button>
           </span>
         )}
         <div className="flex items-center gap-2 ml-auto flex-wrap">
@@ -679,15 +711,38 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated }: {
             {generating ? 'Generating…' : hasReport ? 'Regenerate report' : 'Generate report'}
           </button>
           {hasReport && (
-            <>
-              <button onClick={viewPdf} disabled={opening} className="btn-secondary">
-                <ExternalLink size={14} />{opening ? 'Opening…' : 'View PDF'}
-              </button>
-              <button onClick={() => setShowSend(true)} className="btn-primary">
-                <Send size={14} />Send to PM
-              </button>
-            </>
+            <button onClick={viewPdf} disabled={opening} className="btn-secondary">
+              <ExternalLink size={14} />{opening ? 'Opening…' : 'View PDF'}
+            </button>
           )}
+          {/* Records that Nick emailed the report from Gmail — the app
+              can't observe that send, so the status flip is manual. */}
+          {inspection.status === 'submitted' && (
+            confirmingSent ? (
+              <span className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-500">Emailed from Gmail?</span>
+                <button onClick={markSent} disabled={savingSent} className="btn-secondary text-xs py-1.5">
+                  <Check size={13} />{savingSent ? 'Saving…' : 'Yes, mark sent'}
+                </button>
+                <button onClick={() => setConfirmingSent(false)} disabled={savingSent}
+                  className="btn-ghost text-xs py-1.5">
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button onClick={() => setConfirmingSent(true)}
+                title="Record that you emailed this report from Gmail"
+                className="btn-secondary">
+                <Check size={14} />Mark as sent
+              </button>
+            )
+          )}
+          {/* Drafting doesn't require a generated PDF — the findings
+              format builds the email body from live findings (the modal
+              disables the PDF-link format until a PDF exists). */}
+          <button onClick={() => setShowDraft(true)} className="btn-primary">
+            <Mail size={14} />Email PM…
+          </button>
         </div>
       </div>
       {pendingPhotoCount > 0 && (
@@ -701,132 +756,190 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated }: {
           <AlertTriangle size={12} className="flex-shrink-0" />{error}
         </p>
       )}
-      {sendWarning && (
-        <p className="text-xs text-amber-600 flex items-center gap-1.5">
-          <AlertTriangle size={12} className="flex-shrink-0" />
-          <span className="flex-1">{sendWarning}</span>
-          <button onClick={() => setSendWarning(null)} aria-label="Dismiss warning"
-            className="text-amber-400 hover:text-amber-600 flex-shrink-0">
-            <X size={12} />
-          </button>
-        </p>
-      )}
-      {showSend && (
-        <SendReportModal
+      {showDraft && (
+        <EmailDraftModal
           inspection={inspection}
-          onClose={() => setShowSend(false)}
-          onSent={(patch, warning) => { setShowSend(false); setSendWarning(warning); onUpdated(patch) }}
+          hasReport={hasReport}
+          onClose={() => setShowDraft(false)}
         />
       )}
     </div>
   )
 }
 
-// ── Send-to-PM modal ─────────────────────────────────────────
-// Pre-fills the property's PMC primary contact; PMC-linked contacts with
-// emails surface as one-tap add chips. Recipients stay fully editable
-// (comma-separated) — the server only falls back to the PMC contact when
-// the list is empty.
+// ── Email-PM drafting modal ──────────────────────────────────
+// A drafting surface, not a send form — the app NEVER sends email. The
+// server builds the draft (subject + Gmail-pasteable HTML + plain text)
+// and this modal hands it to Nick two ways: a prefilled Gmail compose
+// window, or a formatted clipboard copy. He types the recipients and
+// sends personally — no recipient is collected or preloaded anywhere, so
+// Gmail's To field always starts empty.
 
-function SendReportModal({ inspection, onClose, onSent }: {
+type DraftFormat = 'findings' | 'summary'
+
+const DRAFT_FORMAT_OPTIONS: { value: DraftFormat; label: string; needsPdf: boolean }[] = [
+  { value: 'findings', label: 'Bulleted findings', needsPdf: false },
+  { value: 'summary', label: 'Short note + PDF link', needsPdf: true },
+]
+
+const DRAFT_FORMAT_HINTS: Record<DraftFormat, string> = {
+  findings: 'Findings bulleted by section with hyperlinked photos — the report in the email body. Links stay valid for 30 days.',
+  summary: 'A short note with the score and a link to the PDF report. The link stays valid for 30 days.',
+}
+
+// Gmail's compose URL is a GET request — an over-long &body= gets the
+// whole URL rejected. Budget is for the ENCODED body; past it, the text
+// is cut at a paragraph boundary and the full formatted draft goes onto
+// the clipboard first, so pasting over the stub completes the email.
+const GMAIL_BODY_ENCODED_BUDGET = 6000
+
+function EmailDraftModal({ inspection, hasReport, onClose }: {
   inspection: InspectionDetail
+  hasReport: boolean
   onClose: () => void
-  onSent: (patch: Partial<Inspection>, warning: string | null) => void
 }) {
-  const supabase = createClient()
-  const [to, setTo] = useState('')
-  const [candidates, setCandidates] = useState<{ name: string; email: string }[]>([])
-  const [loadingRecipients, setLoadingRecipients] = useState(true)
+  const [format, setFormat] = useState<DraftFormat>('findings')
   const [message, setMessage] = useState('')
-  const [sending, setSending] = useState(false)
+  // Debounced mirror of the message — the live preview refetches on it,
+  // and a draft build (which signs photo URLs) per keystroke would
+  // hammer the storage API.
+  const [debouncedMessage, setDebouncedMessage] = useState('')
+  const [draft, setDraft] = useState<{ subject: string; html: string; text: string } | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    const t = setTimeout(() => setDebouncedMessage(message.trim()), 400)
+    return () => clearTimeout(t)
+  }, [message])
+
+  // Live preview: fetch the server-built draft on open and whenever the
+  // format or debounced message changes. The action buttons always use
+  // the LATEST fetched draft — they're disabled while a fetch is in
+  // flight so a stale draft can't be opened or copied.
+  useEffect(() => {
     let cancelled = false
+    setLoading(true)
+    setError(null)
     ;(async () => {
-      const { data } = await supabase.from('properties')
-        .select('pmc_id, pmcs(primary_contact_name, primary_contact_email)')
-        .eq('id', inspection.property_id).single()
-      if (cancelled) return
-      const prop = data as unknown as {
-        pmc_id: string | null
-        pmcs: { primary_contact_name: string | null; primary_contact_email: string | null } | null
-      } | null
-      const primaryEmail = prop?.pmcs?.primary_contact_email ?? null
-      // Prefill only if the user hasn't already typed a recipient — the
-      // fetch races against typing and must never overwrite it.
-      if (primaryEmail) setTo(prev => prev || primaryEmail)
-      if (prop?.pmc_id) {
-        const { data: contacts } = await supabase.from('contacts')
-          .select('full_name, email').eq('pmc_id', prop.pmc_id).not('email', 'is', null).order('full_name')
-        if (!cancelled) {
-          setCandidates((contacts ?? [])
-            .filter(c => c.email && c.email !== primaryEmail)
-            .map(c => ({ name: c.full_name, email: c.email as string })))
+      try {
+        const res = await fetch(`/api/inspections/${inspection.id}/draft`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ format, message: debouncedMessage || undefined }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok || !json.success || typeof json.subject !== 'string'
+          || typeof json.html !== 'string' || typeof json.text !== 'string') {
+          throw new Error(json.error ?? `Could not build the email draft (${res.status})`)
         }
+        if (!cancelled) setDraft({ subject: json.subject, html: json.html, text: json.text })
+      } catch (err) {
+        if (!cancelled) {
+          // Clear the draft too — keeping one that no longer matches the
+          // chosen format/message would let the buttons hand out stale
+          // content.
+          setDraft(null)
+          setError(err instanceof Error ? err.message : 'Could not build the email draft.')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-      if (!cancelled) setLoadingRecipients(false)
     })()
     return () => { cancelled = true }
-  }, [inspection.property_id])
+  }, [inspection.id, format, debouncedMessage])
 
-  const recipients = to.split(',').map(s => s.trim()).filter(Boolean)
+  const ready = !!draft && !loading
 
-  function addCandidate(email: string) {
-    if (recipients.includes(email)) return
-    setTo(prev => prev.trim() ? `${prev.trim().replace(/,\s*$/, '')}, ${email}` : email)
+  // Copy with text/html + text/plain flavors so Gmail pastes it fully
+  // formatted; falls back to plain text where ClipboardItem isn't
+  // available. Returns whether the rich flavor made it on. Throws only
+  // when even the plain-text write fails.
+  async function copyToClipboard(current: { html: string; text: string }): Promise<boolean> {
+    let rich = false
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/html': new Blob([current.html], { type: 'text/html' }),
+          'text/plain': new Blob([current.text], { type: 'text/plain' }),
+        })])
+        rich = true
+      } catch { /* fall through to plain text */ }
+    }
+    if (!rich) await navigator.clipboard.writeText(current.text)
+    return rich
   }
 
-  async function send(e: React.FormEvent) {
-    e.preventDefault()
-    if (recipients.length === 0) { setError('Add at least one recipient.'); return }
-    setSending(true)
+  async function handleCopy() {
+    if (!ready || !draft) return
     setError(null)
     try {
-      const res = await fetch(`/api/inspections/${inspection.id}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: recipients, message: message.trim() || undefined }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok || !json.success) throw new Error(json.error ?? `Send failed (${res.status})`)
-      onSent(
-        { status: 'report_sent', report_sent_at: json.sent_at ?? new Date().toISOString() },
-        typeof json.warning === 'string' ? json.warning : null,
-      )
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Send failed — check connection and try again.')
-      setSending(false)
+      const rich = await copyToClipboard(draft)
+      toast(rich ? 'Formatted draft copied — paste into Gmail' : 'Draft copied as plain text')
+    } catch {
+      setError('Could not copy the draft — your browser may be blocking clipboard access.')
     }
   }
 
+  // Open a Gmail compose window prefilled with subject + plain-text body.
+  // Deliberately NO `to` parameter — the To field starts empty for Nick
+  // to fill in. A body past the URL budget is truncated at a paragraph
+  // boundary, with the full formatted draft copied to the clipboard
+  // FIRST so pasting over the stub completes the email.
+  async function openGmail() {
+    if (!ready || !draft) return
+    setError(null)
+    let body = draft.text
+    if (encodeURIComponent(body).length > GMAIL_BODY_ENCODED_BUDGET) {
+      const marker = '\n\n[Full formatted version is on your clipboard — paste it here]'
+      try {
+        await copyToClipboard(draft)
+      } catch {
+        setError('This draft is too long for a Gmail compose link, and the clipboard copy failed — use "Copy formatted draft" and paste into a blank Gmail message instead.')
+        return
+      }
+      let cut = body
+      while (cut.length > 0 && encodeURIComponent(cut + marker).length > GMAIL_BODY_ENCODED_BUDGET) {
+        const at = cut.lastIndexOf('\n\n')
+        cut = at > 0 ? cut.slice(0, at) : cut.slice(0, cut.length - 400)
+      }
+      body = cut + marker
+      toast('Long draft — Gmail opens truncated; the full version is on your clipboard')
+    }
+    window.open(
+      `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(body)}`,
+      '_blank',
+    )
+  }
+
   return (
-    <Modal title="Send Report to PM" onClose={onClose} maxWidth="md">
-      <form onSubmit={send} className="px-6 py-5 space-y-4">
+    <Modal title="Draft Email to PM" onClose={onClose} maxWidth="md">
+      <div className="px-6 py-5 space-y-4">
+        <p className="text-xs text-slate-400">
+          Nothing sends from here — open the draft in Gmail (you type the recipients) or copy it, and send it yourself.
+        </p>
         <div>
-          <label className="label">To (comma-separated)</label>
-          <input
-            value={to}
-            onChange={e => setTo(e.target.value)}
-            placeholder={loadingRecipients ? 'Loading PMC contact…' : 'pm@example.com'}
-            className="input"
-          />
-          {candidates.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {candidates.map(c => (
-                <button key={c.email} type="button" onClick={() => addCandidate(c.email)}
-                  disabled={recipients.includes(c.email)}
-                  className={cn(
-                    'text-xs border rounded-full px-2.5 py-1 transition-colors',
-                    recipients.includes(c.email)
-                      ? 'border-slate-100 text-slate-300'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  )}>
-                  + {c.name}
-                </button>
-              ))}
-            </div>
-          )}
+          <label className="label">Format</label>
+          <div className="space-y-1.5">
+            {DRAFT_FORMAT_OPTIONS.map(opt => {
+              const disabled = opt.needsPdf && !hasReport
+              return (
+                <label key={opt.value}
+                  title={disabled ? 'Generate the PDF report first' : undefined}
+                  className={cn('flex items-center gap-2 text-sm',
+                    disabled ? 'text-slate-300' : 'text-slate-700 cursor-pointer')}>
+                  <input type="radio" name="draft-format" value={opt.value}
+                    checked={format === opt.value}
+                    disabled={disabled}
+                    onChange={() => setFormat(opt.value)}
+                    className="accent-blue-600" />
+                  {opt.label}
+                  {disabled && <span className="text-xs text-slate-300">— generate the PDF report first</span>}
+                </label>
+              )
+            })}
+          </div>
+          <p className="text-xs text-slate-400 mt-1.5">{DRAFT_FORMAT_HINTS[format]}</p>
         </div>
         <div>
           <label className="label">Message (optional)</label>
@@ -834,21 +947,41 @@ function SendReportModal({ inspection, onClose, onSent }: {
             className="input min-h-[70px] resize-none"
             placeholder="Short note to include above the summary…" />
         </div>
-        <p className="text-xs text-slate-400">
-          Sends the generated PDF as an attachment with a short summary (score, findings, action items).
-        </p>
+        <div>
+          <label className="label">Preview</label>
+          <div className="relative border border-slate-200 rounded-lg overflow-hidden">
+            {draft ? (
+              // Full HTML document in an isolated frame (it carries its own
+              // inline styles); the frame scrolls within the bordered box.
+              <iframe srcDoc={draft.html} sandbox="" title="Email draft preview"
+                className={cn('w-full h-72 bg-white', loading && 'opacity-50')} />
+            ) : (
+              <div className="h-72 bg-slate-50 flex items-center justify-center text-xs text-slate-400">
+                {loading ? 'Building draft…' : 'Draft unavailable'}
+              </div>
+            )}
+            {loading && draft && (
+              <span className="absolute top-2 right-2 text-xs text-slate-400 bg-white/90 border border-slate-200 rounded-full px-2 py-0.5">
+                Updating…
+              </span>
+            )}
+          </div>
+        </div>
         {error && (
           <p className="text-xs text-red-600 flex items-center gap-1.5">
             <AlertTriangle size={12} className="flex-shrink-0" />{error}
           </p>
         )}
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-          <button type="submit" disabled={sending || recipients.length === 0} className="btn-primary">
-            <Send size={14} />{sending ? 'Sending…' : 'Send report'}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" onClick={openGmail} disabled={!ready} className="btn-primary">
+            <ExternalLink size={14} />Open Gmail draft
           </button>
+          <button type="button" onClick={handleCopy} disabled={!ready} className="btn-secondary">
+            <Copy size={14} />Copy formatted draft
+          </button>
+          <button type="button" onClick={onClose} className="btn-ghost ml-auto">Close</button>
         </div>
-      </form>
+      </div>
     </Modal>
   )
 }
