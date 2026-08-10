@@ -9,6 +9,7 @@ import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType }
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
 import { cancelInspectionUploads } from '@/lib/inspections/upload-queue'
 import { inspectionScore } from '@/lib/inspections/score'
+import { normalizeDisposition } from '@/lib/inspections/dispositions'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -27,7 +28,7 @@ type InspectionRow = {
   notes: string | null
   created_at: string
   properties: { name: string } | null
-  inspection_items: { requires_action: boolean; action_priority: string | null }[]
+  inspection_items: { requires_action: boolean; action_priority: string | null; disposition: string }[]
 }
 
 export default function InspectionsPage() {
@@ -46,7 +47,7 @@ export default function InspectionsPage() {
 
   const fetchInspections = useCallback(async () => {
     let q = supabase.from('inspections')
-      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action, action_priority)')
+      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action, action_priority, disposition)')
     if (filterProp) q = q.eq('property_id', filterProp)
     if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
     if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
@@ -77,7 +78,10 @@ export default function InspectionsPage() {
       ...i,
       property_name: i.properties?.name ?? '',
       item_count: i.inspection_items.length,
-      open_findings: i.inspection_items.filter(it => it.requires_action).length,
+      // "Open" excludes settled dispositions — accepted/resolved findings
+      // stay reviewable but no longer count as outstanding follow-ups.
+      open_findings: i.inspection_items.filter(it => it.requires_action
+        && !['accepted', 'resolved'].includes(normalizeDisposition(it.disposition))).length,
       score: i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
     .sort(sortFn),

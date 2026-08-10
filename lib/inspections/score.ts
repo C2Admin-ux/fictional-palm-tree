@@ -1,12 +1,20 @@
 import type { ActionPriority } from '@/lib/inspections/templates'
+import { normalizeDisposition, type Disposition } from '@/lib/inspections/dispositions'
 
 // Inspection scoring — pure functions, importable server-side (PDF report,
-// send email) and client-side (list/property pages) so a score can never
+// email drafts) and client-side (list/property pages) so a score can never
 // disagree with itself across surfaces.
 //
 // Score = 100 minus a deduction per finding flagged requires_action,
-// weighted by priority, floored at 0. Findings without a follow-up flag
-// cost nothing — they're observations, not problems.
+// weighted by priority AND by disposition, floored at 0. Findings without
+// a follow-up flag cost nothing — they're observations, not problems.
+//
+// The disposition weight makes the score measure UNMANAGED risk:
+//   open / flagged / task / capex — full deduction (the issue still exists;
+//     task/capex are being worked but the risk hasn't left the property)
+//   watch — half (deliberate deferral, rounded up so it never reads free)
+//   accepted / resolved — zero (a settled decision or a fixed issue is
+//     managed risk, not a mark against the walk)
 
 export const SCORE_DEDUCTIONS: Record<ActionPriority, number> = {
   urgent: 15,
@@ -18,14 +26,32 @@ export const SCORE_DEDUCTIONS: Record<ActionPriority, number> = {
 // A requires_action item with an unknown/null priority deducts as medium.
 export const DEFAULT_DEDUCTION = SCORE_DEDUCTIONS.medium
 
+export const DISPOSITION_WEIGHTS: Record<Disposition, number> = {
+  open: 1,
+  flagged: 1,
+  task: 1,
+  capex: 1,
+  watch: 0.5,
+  accepted: 0,
+  resolved: 0,
+}
+
 // Minimal item shape — satisfied by InspectionItem and the lighter
-// embedded selects list pages fetch.
-export type ScorableItem = { requires_action: boolean; action_priority: string | null }
+// embedded selects list pages fetch. `disposition` is optional so legacy
+// call sites compile; absent/unknown values weigh as 'open' (full).
+export type ScorableItem = {
+  requires_action: boolean
+  action_priority: string | null
+  disposition?: string | null
+}
 
 export function inspectionScore(items: ScorableItem[]): number {
   const deducted = items.reduce((sum, it) => {
     if (!it.requires_action) return sum
-    return sum + (SCORE_DEDUCTIONS[it.action_priority as ActionPriority] ?? DEFAULT_DEDUCTION)
+    const base = SCORE_DEDUCTIONS[it.action_priority as ActionPriority] ?? DEFAULT_DEDUCTION
+    const weight = DISPOSITION_WEIGHTS[normalizeDisposition(it.disposition)]
+    // Round each item up — a watched urgent must still cost real points.
+    return sum + Math.ceil(base * weight)
   }, 0)
   return Math.max(0, 100 - deducted)
 }

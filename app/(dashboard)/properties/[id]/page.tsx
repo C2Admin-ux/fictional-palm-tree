@@ -69,7 +69,7 @@ export default async function PropertyPage({
     supabase.from('inspections').select('id', { count: 'exact', head: true }).eq('property_id', params.id),
     tab === 'inspections'
       ? supabase.from('inspections')
-          .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority)')
+          .select('id, inspection_type, inspection_date, status, report_file_path, inspection_items(requires_action, action_priority, disposition)')
           .eq('property_id', params.id).order('inspection_date', { ascending: false })
       : Promise.resolve({ data: null }),
     // Trash-contract coverage check — only contracts affirmatively covering

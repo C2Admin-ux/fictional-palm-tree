@@ -11,6 +11,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, formatDateShort, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { inspectionScore } from '@/lib/inspections/score'
+import { normalizeDisposition } from '@/lib/inspections/dispositions'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { signedFileUrl } from '@/lib/inspections/photos'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -22,7 +23,7 @@ export type InspectionTabRow = {
   inspection_date: string
   status: 'draft' | 'submitted' | 'report_sent'
   report_file_path: string | null
-  inspection_items: { requires_action: boolean; action_priority: string | null }[]
+  inspection_items: { requires_action: boolean; action_priority: string | null; disposition: string }[]
 }
 
 export default function InspectionsTab({ inspections }: { inspections: InspectionTabRow[] }) {
@@ -32,7 +33,10 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
   const rows = inspections.map(i => ({
     ...i,
     score: inspectionScore(i.inspection_items),
-    open: i.inspection_items.filter(it => it.requires_action).length,
+    // "Open" excludes settled dispositions — accepted/resolved findings
+    // stay reviewable but no longer count as outstanding follow-ups.
+    open: i.inspection_items.filter(it => it.requires_action
+      && !['accepted', 'resolved'].includes(normalizeDisposition(it.disposition))).length,
   }))
 
   // Trend uses completed walks only — a draft mid-walk has partial
