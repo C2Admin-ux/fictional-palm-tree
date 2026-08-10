@@ -139,6 +139,27 @@ const VIEW_TABS: { key: ViewMode; label: string }[] = [
   { key: 'review', label: 'Review' },
 ]
 
+// URL → landing state, used for the initial render AND re-applied when
+// searchParams change (client-side navigations to /tasks?view=… after
+// the page is already mounted — e.g. the dashboard's "Plan my week →"
+// while sitting on /tasks). An explicit ?view= wins; otherwise a
+// property/capex deep link lands on the All list where those filters
+// live; plain /tasks restores the Agenda default.
+// Filters are seeded ONLY when the landing view is 'all': under
+// Agenda/Review the filter bar isn't visible, so seeding would
+// invisibly narrow the All list the next time the user switches to it.
+function paramsToNav(searchParams: URLSearchParams): {
+  view: ViewMode; property: string; capex: string
+} {
+  const v = searchParams.get('view')
+  const property = searchParams.get('property') ?? ''
+  const capex = searchParams.get('capex') ?? ''
+  const view: ViewMode = v === 'agenda' || v === 'all' || v === 'review' ? v
+    : property || capex ? 'all' : 'agenda'
+  const seed = view === 'all'
+  return { view, property: seed ? property : '', capex: seed ? capex : '' }
+}
+
 // Handlers every task list needs, bundled so the three views share
 // one prop shape.
 type RowHandlers = {
@@ -229,8 +250,8 @@ function TasksInner() {
   const [activeStatuses, setActiveStatuses] = useState<Set<StatusFilter>>(
     new Set<StatusFilter>(['inbox', 'next_action', 'waiting', 'blocked'])
   )
-  const [filterProp, setFilterProp] = useState(searchParams.get('property') ?? '')
-  const [filterCapex, setFilterCapex] = useState(searchParams.get('capex') ?? '')
+  const [filterProp, setFilterProp] = useState(() => paramsToNav(searchParams).property)
+  const [filterCapex, setFilterCapex] = useState(() => paramsToNav(searchParams).capex)
   const [filterContact, setFilterContact] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
   const [search, setSearch] = useState('')
@@ -239,15 +260,22 @@ function TasksInner() {
   // saved views.
   const [groupBy, setGroupBy] = useState<GroupByMode>('status')
 
-  // View mode. Agenda is the default; an explicit ?view= deep link wins
-  // (the dashboard's "Plan my week →" lands on Review), and deep links
-  // that carry a property/capex filter land on the list where those
-  // filters live.
-  const [view, setView] = useState<ViewMode>(() => {
-    const v = searchParams.get('view')
-    if (v === 'agenda' || v === 'all' || v === 'review') return v
-    return searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
-  })
+  // View mode + deep-link filters — see paramsToNav for the rules.
+  const [view, setView] = useState<ViewMode>(() => paramsToNav(searchParams).view)
+
+  // Later navigations must land the same way the initial one did: a
+  // /tasks?view=… link clicked while this page is already mounted only
+  // changes searchParams, so re-apply them here (plain /tasks restores
+  // the Agenda default; filters seed only on an 'all' landing —
+  // paramsToNav explains why).
+  useEffect(() => {
+    const nav = paramsToNav(searchParams)
+    setView(nav.view)
+    if (nav.view === 'all') {
+      setFilterProp(nav.property)
+      setFilterCapex(nav.capex)
+    }
+  }, [searchParams])
 
   // Collapsed sections (All tasks view) — keyed per grouping so a
   // collapse in one group-by doesn't leak into another.
