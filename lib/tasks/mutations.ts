@@ -117,6 +117,19 @@ export async function toggleDoneOptimistic(
 
   if (wasDone) return
 
+  // Completing a task resolves the inspection findings it was spawned
+  // from (disposition 'task' only — a manually re-triaged finding is left
+  // alone). Best-effort and fire-and-forget: a failure is logged, never
+  // surfaced, and never blocks the completion. The finding stays fully
+  // reviewable — 'resolved' is a state change, not a closure.
+  void supabase.from('inspection_items')
+    .update({ disposition: 'resolved', disposition_note: 'Linked task completed', disposition_at: now })
+    .eq('task_id', task.id)
+    .eq('disposition', 'task')
+    .then(({ error: findingError }) => {
+      if (findingError) console.warn('Could not resolve linked inspection findings:', findingError.message)
+    })
+
   // Spawn failures NEVER walk back the completion (it already committed
   // and is what the user asked for) — but they must not be silent either,
   // or the series would quietly die. Collect and surface below.
@@ -191,6 +204,15 @@ export async function toggleDoneOptimistic(
               failed.push(`next occurrence “${s.title}”`)
             }
           }
+          // Walk back the finding auto-resolve too — only rows this
+          // completion stamped (matched by our exact note), best-effort
+          // and silent-logged like the stamp itself.
+          const { error: findingUndoError } = await supabase.from('inspection_items')
+            .update({ disposition: 'task', disposition_note: null, disposition_at: new Date().toISOString() })
+            .eq('task_id', task.id)
+            .eq('disposition', 'resolved')
+            .eq('disposition_note', 'Linked task completed')
+          if (findingUndoError) console.warn('Could not restore linked inspection findings:', findingUndoError.message)
           if (failed.length > 0) {
             toast(`Could not undo: ${failed.join(', ')}`, { tone: 'error' })
           }
