@@ -20,6 +20,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { Task } from '@/lib/supabase/types'
+import { isEditableTarget, isRepeatedActionKey } from '@/lib/ui/keyboard'
 
 export type TaskShortcutActions = {
   enabled: boolean            // false while a modal is open or the list is loading
@@ -35,13 +36,6 @@ export type TaskShortcutActions = {
 
 const PRIORITY_KEYS: Record<string, Task['priority']> = {
   '1': 'urgent', '2': 'high', '3': 'medium', '4': 'low',
-}
-
-function isEditableTarget(): boolean {
-  const el = document.activeElement as HTMLElement | null
-  if (!el) return false
-  const tag = el.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
 }
 
 export function useTaskListShortcuts(actions: TaskShortcutActions) {
@@ -64,9 +58,8 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
       }
 
       // Held-down keys only repeat navigation — a repeating Delete or c
-      // would mow through the list.
-      const isNav = e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp'
-      if (e.repeat && !isNav) return
+      // would mow through the list (shared guard, lib/ui/keyboard).
+      if (isRepeatedActionKey(e)) return
 
       // Visual order from the DOM, deduped (the Review view can render
       // the same task in several sections — navigation uses the first

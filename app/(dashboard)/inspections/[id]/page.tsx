@@ -20,7 +20,8 @@ import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
   ACTION_PRIORITIES, PRIORITY_LABELS, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { signedPhotoUrls, removeInspectionPhotos, signedFileUrl, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { invalidateInspectionReports } from '@/lib/inspections/invalidate'
 import { compressImage } from '@/lib/inspections/compress'
 import {
   enqueueInspectionPhotos, cancelItemUploads, resumePendingUploads,
@@ -31,18 +32,35 @@ import {
   instanceKey, instanceLabel, buildSectionInstances, countItemsByInstance,
   groupItemsByInstance, type SectionInstance,
 } from '@/lib/inspections/sections'
+import {
+  DISPOSITIONS, DISPOSITION_LABELS, isSettled, normalizeDisposition, type Disposition,
+} from '@/lib/inspections/dispositions'
+import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import { toast } from '@/components/ui/toast'
+import { isOverlayOpen } from '@/lib/ui/overlay'
+import { isEditableTarget, isNavKey, isRepeatedActionKey } from '@/lib/ui/keyboard'
 import { findingTaskInsertPayload, insertTask } from '@/lib/tasks/create'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
   ImagePlus, Check, AlertTriangle, ClipboardCheck, RotateCcw,
   FileText, Mail, ExternalLink, ListTodo, CheckSquare, UploadCloud,
-  Copy,
+  Copy, Eye, HardHat, Keyboard,
 } from 'lucide-react'
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
+
+// A prior inspection's watch-listed finding, with its walk date embedded.
+// Lean shape — exactly the columns the watch loop reads/carries (see
+// WATCH_ROW_SELECT), not the full row.
+type WatchRow = Pick<InspectionItem,
+  'id' | 'inspection_id' | 'section_name' | 'unit_number' | 'item_label'
+  | 'requires_action' | 'action_priority' | 'photo_paths'
+  | 'disposition' | 'disposition_note' | 'disposition_at' | 'watch_count'
+> & { inspections: { property_id: string; inspection_date: string } }
+
+const WATCH_ROW_SELECT = 'id, inspection_id, section_name, unit_number, item_label, requires_action, action_priority, photo_paths, disposition, disposition_note, disposition_at, watch_count, inspections!inner(property_id, inspection_date)'
 
 export default function InspectionDetailPage() {
   const params = useParams<{ id: string }>()
@@ -70,6 +88,10 @@ export default function InspectionDetailPage() {
   // Tasks. Retrying create would duplicate it — the button stays
   // disabled for these items this session.
   const [orphanedTaskItems, setOrphanedTaskItems] = useState<Set<string>>(new Set())
+  // Finding currently in the capex attach/create mini-modal (triage `b`)
+  const [capexItem, setCapexItem] = useState<InspectionItem | null>(null)
+  // capex project id → title, for the CapEx chips on findings
+  const [capexNames, setCapexNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
     // getSession reads the local session — no network round-trip.
@@ -108,13 +130,46 @@ export default function InspectionDetailPage() {
 
   useEffect(() => { fetchInspection(); fetchItems() }, [fetchInspection, fetchItems])
 
+  // ── Watch loop ───────────────────────────────────────────────
+  // While capturing (draft), prior inspections' 'watch' findings on this
+  // property surface at the top of the screen: re-confirm ("Still an
+  // issue" — clones into THIS inspection and re-enters triage), verify
+  // resolved, or skip for next time. Deliberately mobile-friendly — this
+  // is an onsite ritual, unlike the desk-only triage sweep.
+  const [watchItems, setWatchItems] = useState<WatchRow[]>([])
+
+  const propertyId = inspection?.property_id
+  const isDraftStatus = inspection?.status === 'draft'
+  useEffect(() => {
+    if (!propertyId || !isDraftStatus) { setWatchItems([]); return }
+    let cancelled = false
+    supabase.from('inspection_items')
+      .select(WATCH_ROW_SELECT)
+      .eq('inspections.property_id', propertyId)
+      .neq('inspection_id', inspectionId)
+      .eq('disposition', 'watch')
+      .order('created_at')
+      .then(({ data, error }) => {
+        if (cancelled) return
+        // Non-fatal: the walk works without the watch list.
+        if (error) { console.warn('Could not load the watch list:', error.message); return }
+        setWatchItems((data ?? []) as unknown as WatchRow[])
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId, isDraftStatus, inspectionId])
+
   // Sign URLs for photo paths that are missing or nearing expiry (private
   // bucket, 1hr TTL, re-signed 5min early). On failure/empty result, retry
   // once after a short delay — flaky onsite connectivity is the norm here.
+  // Watch-list rows sign their first photo alongside the findings' own.
   useEffect(() => {
     let cancelled = false
     const now = Date.now()
-    const stale = Array.from(new Set(items.flatMap(i => i.photo_paths)))
+    const stale = Array.from(new Set([
+      ...items.flatMap(i => i.photo_paths),
+      ...watchItems.map(w => w.photo_paths[0]).filter((p): p is string => !!p),
+    ]))
       .filter(p => { const e = photoUrls[p]; return !e || e.expiresAt <= now })
     if (stale.length === 0) return
     const sign = async (retry: boolean) => {
@@ -129,7 +184,7 @@ export default function InspectionDetailPage() {
     }
     sign(true)
     return () => { cancelled = true }
-  }, [items, signTick])
+  }, [items, watchItems, signTick])
 
   // While the page is open, periodically re-run the signing pass so URLs
   // are refreshed before their TTL lapses mid-walk.
@@ -170,27 +225,25 @@ export default function InspectionDetailPage() {
   }
 
   // Rule: an existing report is invalidated by ANY change to findings or to
-  // the inspection date — the stored PDF no longer reflects reality. Clear
-  // the path + sent state (reverting a report_sent status) so the panel
-  // returns to the fresh Generate state. Removing the orphaned PDF from
-  // storage is best-effort: orphaned files are acceptable, stale sent
-  // badges are not.
+  // the inspection date — the stored PDF no longer reflects reality. The
+  // shared helper (lib/inspections/invalidate) clears the path + sent
+  // state (reverting a report_sent status) so the panel returns to the
+  // fresh Generate state; this wrapper mirrors the change into local
+  // state and surfaces a failure on the page banner.
   const invalidateReport = useCallback(async () => {
     const insp = inspectionRef.current
     if (!insp?.report_file_path) return
-    const oldPath = insp.report_file_path
+    const { failed } = await invalidateInspectionReports(supabase, [insp.id])
+    if (failed.length > 0) {
+      setActionError('Change saved, but the now-outdated report could not be cleared — regenerate it before emailing the PM.')
+      return
+    }
     const patch: Partial<Inspection> = {
       report_file_path: null,
       report_sent_at: null,
       ...(insp.status === 'report_sent' ? { status: 'submitted' as const } : {}),
     }
-    const { error } = await supabase.from('inspections').update(patch).eq('id', insp.id)
-    if (error) {
-      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before emailing the PM.`)
-      return
-    }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
-    try { await supabase.storage.from(BUCKET).remove([oldPath]) } catch { /* non-fatal */ }
   }, [])
 
   // ── Background photo uploads ─────────────────────────────────
@@ -256,6 +309,233 @@ export default function InspectionDetailPage() {
 
   const countByInstance = useMemo(() => countItemsByInstance(items), [items])
 
+  // ── Dispositions (triage) ────────────────────────────────────
+
+  // CapEx chips show the linked project's name — resolve titles for any
+  // linked ids we haven't seen yet (best-effort; the chip renders bare
+  // "CapEx" until the title lands).
+  useEffect(() => {
+    const missing = Array.from(new Set(
+      items.map(i => i.capex_project_id).filter((id): id is string => !!id)
+    )).filter(id => !(id in capexNames))
+    if (missing.length === 0) return
+    let cancelled = false
+    supabase.from('capex_projects').select('id, title').in('id', missing)
+      .then(({ data }) => {
+        if (cancelled || !data?.length) return
+        setCapexNames(prev => {
+          const next = { ...prev }
+          for (const p of data) next[p.id] = p.title
+          return next
+        })
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items])
+
+  // One write path for every triage verb: optimistic, stamps
+  // disposition_at, undo toast restoring the exact prior values. The score
+  // and the report email both read dispositions, so any change invalidates
+  // a stored report. Findings are never hidden by a disposition — this
+  // only changes how the risk is accounted for.
+  async function applyDisposition(
+    item: InspectionItem,
+    disposition: Disposition,
+    note: string | null = null,
+    opts?: { capexProjectId?: string | null; toastMessage?: string },
+  ): Promise<boolean> {
+    const prior = {
+      disposition: item.disposition,
+      disposition_note: item.disposition_note,
+      disposition_at: item.disposition_at,
+      capex_project_id: item.capex_project_id,
+      communicated_at: item.communicated_at,
+    }
+    const patch = {
+      disposition,
+      disposition_note: note,
+      disposition_at: new Date().toISOString(),
+      capex_project_id: opts?.capexProjectId !== undefined ? opts.capexProjectId : item.capex_project_id,
+      // A fresh flag starts a fresh communication cycle — a stale
+      // "communicated Nd ago" from an earlier flag must not make a new
+      // ask look already-handled.
+      ...(disposition === 'flagged' ? { communicated_at: null } : {}),
+    }
+    const applyLocal = (fields: Partial<InspectionItem>) =>
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, ...fields } : i))
+    setActionError(null)
+    applyLocal(patch)
+    const { error } = await supabase.from('inspection_items').update(patch).eq('id', item.id)
+    if (error) {
+      applyLocal(prior)
+      toast(`Could not save — ${error.message}`, { tone: 'error' })
+      return false
+    }
+    invalidateReport()
+    toast(opts?.toastMessage ?? `Marked ${DISPOSITION_LABELS[disposition].toLowerCase()}`, {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          applyLocal(prior)
+          const { error: undoError } = await supabase.from('inspection_items')
+            .update(prior).eq('id', item.id)
+          if (undoError) {
+            applyLocal(patch)
+            toast('Could not undo', { tone: 'error' })
+            return
+          }
+          invalidateReport()
+        },
+      },
+    })
+    return true
+  }
+
+  // "Mark as sent" side-effect: flagged findings in the emailed report
+  // are now COMMUNICATED — stamp communicated_at on every currently-
+  // flagged item. Prior values are captured so "Mark not sent" can walk
+  // back exactly the stamps this session set (a reload forfeits the
+  // capture — best-effort by design; stamping never blocks the status
+  // flip either way).
+  const commStampPriorsRef = useRef<Record<string, string | null> | null>(null)
+
+  async function stampFlaggedCommunicated() {
+    // Server truth: read the currently-flagged rows from the DB rather
+    // than the local snapshot (another tab or a triage sweep elsewhere
+    // may have changed dispositions since this page loaded), stamp
+    // exactly those ids, and keep their prior values for Mark-not-sent.
+    const { data, error: selectError } = await supabase.from('inspection_items')
+      .select('id, communicated_at')
+      .eq('inspection_id', inspectionId)
+      .eq('disposition', 'flagged')
+    if (selectError) {
+      console.warn('Could not load flagged findings to stamp:', selectError.message)
+      return
+    }
+    const flagged = data ?? []
+    if (flagged.length === 0) { commStampPriorsRef.current = null; return }
+    const now = new Date().toISOString()
+    const ids = flagged.map(r => r.id)
+    const { error } = await supabase.from('inspection_items')
+      .update({ communicated_at: now })
+      .in('id', ids)
+    if (error) {
+      console.warn('Could not stamp communicated_at on flagged findings:', error.message)
+      return
+    }
+    commStampPriorsRef.current = Object.fromEntries(flagged.map(r => [r.id, r.communicated_at]))
+    setItems(prev => prev.map(i =>
+      ids.includes(i.id) ? { ...i, communicated_at: now } : i))
+  }
+
+  async function unstampFlaggedCommunicated() {
+    const priors = commStampPriorsRef.current
+    if (!priors) return
+    commStampPriorsRef.current = null
+    // Values differ per item — restore row by row, best-effort.
+    const results = await Promise.all(Object.entries(priors).map(([id, prior]) =>
+      supabase.from('inspection_items').update({ communicated_at: prior }).eq('id', id)))
+    if (results.some(r => r.error)) console.warn('Could not fully revert communicated stamps')
+    setItems(prev => prev.map(i =>
+      i.id in priors ? { ...i, communicated_at: priors[i.id] } : i))
+  }
+
+  // Triage `b`: the capex modal resolved a project (existing or freshly
+  // created) — link the finding and disposition it.
+  async function attachCapex(item: InspectionItem, projectId: string, projectTitle: string) {
+    setCapexNames(prev => ({ ...prev, [projectId]: projectTitle }))
+    setCapexItem(null)
+    await applyDisposition(item, 'capex', null, {
+      capexProjectId: projectId,
+      toastMessage: `Linked to CapEx — ${projectTitle}`,
+    })
+  }
+
+  // "Still an issue": clone the watched finding into THIS inspection —
+  // same section/description/priority, no photos (fresh ones get snapped
+  // onsite), carried_from_item_id pointing home, watch_count incremented,
+  // disposition 'open' so it re-enters triage. The original resolves with
+  // a carried-forward note. 3+ carries escalates: deferred decisions get
+  // priority high forced on.
+  async function carryWatchItem(w: WatchRow): Promise<void> {
+    if (!inspection) return
+    const newCount = (w.watch_count ?? 0) + 1
+    const escalate = newCount >= 3
+    const { data, error } = await supabase.from('inspection_items').insert({
+      id: randomUuid(),
+      inspection_id: inspection.id,
+      section_name: w.section_name,
+      unit_number: w.unit_number,
+      item_label: w.item_label,
+      requires_action: escalate ? true : w.requires_action,
+      action_priority: escalate ? 'high' : w.action_priority,
+      photo_paths: [],
+      disposition: 'open',
+      carried_from_item_id: w.id,
+      watch_count: newCount,
+    }).select().single()
+    if (error || !data) {
+      toast(`Could not carry the finding forward — ${error?.message ?? 'try again'}`, { tone: 'error' })
+      return
+    }
+    // The original leaves the watch loop as resolved-by-carry. A failure
+    // here is surfaced but doesn't undo the clone — worst case the item
+    // shows on the next walk's list once more.
+    const { error: oldError } = await supabase.from('inspection_items').update({
+      disposition: 'resolved',
+      disposition_note: `Carried forward to ${formatDate(inspection.inspection_date)} inspection`,
+      disposition_at: new Date().toISOString(),
+    }).eq('id', w.id)
+    if (oldError) {
+      toast(`Carried forward, but the original could not be marked resolved — ${oldError.message}`, { tone: 'error' })
+    } else {
+      // The ORIGINAL finding just changed — the PRIOR inspection's stored
+      // report (if any) no longer reflects reality.
+      void invalidateInspectionReports(supabase, [w.inspection_id])
+    }
+    setItems(prev => [...prev, data as InspectionItem])
+    setWatchItems(prev => prev.filter(x => x.id !== w.id))
+    invalidateReport()
+    toast(escalate
+      ? `Carried into this inspection — watched ${newCount} visits, priority raised to high`
+      : 'Carried into this inspection — it will re-enter triage')
+  }
+
+  // "Resolved": the watched issue is verified gone onsite.
+  async function resolveWatchItem(w: WatchRow): Promise<void> {
+    if (!inspection) return
+    const prior = {
+      disposition: w.disposition,
+      disposition_note: w.disposition_note,
+      disposition_at: w.disposition_at,
+    }
+    const { error } = await supabase.from('inspection_items').update({
+      disposition: 'resolved',
+      disposition_note: `Verified resolved onsite ${formatDate(inspection.inspection_date)}`,
+      disposition_at: new Date().toISOString(),
+    }).eq('id', w.id)
+    if (error) {
+      toast(`Could not mark resolved — ${error.message}`, { tone: 'error' })
+      return
+    }
+    // The finding lives in a PRIOR inspection — its stored report (if
+    // any) is stale now.
+    void invalidateInspectionReports(supabase, [w.inspection_id])
+    setWatchItems(prev => prev.filter(x => x.id !== w.id))
+    toast('Verified resolved', {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const { error: undoError } = await supabase.from('inspection_items')
+            .update(prior).eq('id', w.id)
+          if (undoError) { toast('Could not undo', { tone: 'error' }); return }
+          void invalidateInspectionReports(supabase, [w.inspection_id])
+          setWatchItems(prev => [...prev, { ...w, ...prior }])
+        },
+      },
+    })
+  }
+
   // ── Item mutations ───────────────────────────────────────────
 
   async function deleteItem(item: InspectionItem) {
@@ -273,14 +553,16 @@ export default function InspectionDetailPage() {
     invalidateReport()
   }
 
-  // One-tap task from a finding (card icon button + edit modal). The
-  // task is created via the shared creation layer, then the finding is
-  // linked through inspection_items.task_id. If the link write fails
+  // One-tap task from a finding (card icon button, edit modal, triage
+  // `t`). The task is created via the shared creation layer, then the
+  // finding is linked through inspection_items.task_id AND dispositioned
+  // 'task' — the task is its triage outcome. If the link write fails
   // the task is removed again — a spawned task the finding doesn't
   // know about would allow silent duplicates (and if even that delete
   // fails, the item is flagged so retrying can't duplicate). Undo
-  // deletes the task and clears the link. No report invalidation:
-  // task linkage isn't report content.
+  // deletes the task, clears the link and restores the prior
+  // disposition. Dispositions feed the score/report, so linking also
+  // invalidates a stored report.
   async function createTaskFromItem(item: InspectionItem) {
     if (!inspection || item.task_id || creatingTaskFor || orphanedTaskItems.has(item.id)) return
     // Failures surface as a toast (visible above the edit modal's
@@ -306,8 +588,19 @@ export default function InspectionDetailPage() {
       fail('Could not create the task — check connection and try again.')
       return
     }
+    const priorDisposition = {
+      disposition: item.disposition,
+      disposition_note: item.disposition_note,
+      disposition_at: item.disposition_at,
+    }
+    const linkPatch = {
+      task_id: created.id,
+      disposition: 'task' as const,
+      disposition_note: null,
+      disposition_at: new Date().toISOString(),
+    }
     const { error: linkError } = await supabase.from('inspection_items')
-      .update({ task_id: created.id }).eq('id', item.id)
+      .update(linkPatch).eq('id', item.id)
     if (linkError) {
       // Compensate: remove the task the finding doesn't know about. If
       // THAT also fails, an unlinked task really exists — saying
@@ -323,24 +616,27 @@ export default function InspectionDetailPage() {
       return
     }
     setCreatingTaskFor(null)
-    const setLink = (taskId: string | null) => {
-      setItems(prev => prev.map(i => i.id === item.id ? { ...i, task_id: taskId } : i))
-      setEditItem(prev => prev && prev.id === item.id ? { ...prev, task_id: taskId } : prev)
+    const applyFields = (fields: Partial<InspectionItem>) => {
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, ...fields } : i))
+      setEditItem(prev => prev && prev.id === item.id ? { ...prev, ...fields } : prev)
     }
-    setLink(created.id)
+    applyFields(linkPatch)
+    invalidateReport()
     toast('Task created', {
       action: {
         label: 'Undo',
         onClick: async () => {
           // Link first (a finding pointing at a deleted task is worse
-          // than an unlinked task), then the task row.
+          // than an unlinked task), then the task row. The prior
+          // disposition rides back with the unlink.
           const { error: unlinkError } = await supabase.from('inspection_items')
-            .update({ task_id: null }).eq('id', item.id)
+            .update({ task_id: null, ...priorDisposition }).eq('id', item.id)
           if (unlinkError) {
             toast('Could not undo task creation', { tone: 'error' })
             return
           }
-          setLink(null)
+          applyFields({ task_id: null, ...priorDisposition })
+          invalidateReport()
           const { error: deleteError } = await supabase.from('tasks').delete().eq('id', created.id)
           if (deleteError) toast('Task unlinked, but could not be deleted — remove it from Tasks', { tone: 'error' })
         },
@@ -468,6 +764,8 @@ export default function InspectionDetailPage() {
           pendingPhotoCount={inspectionUploads.length}
           onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
           onPatch={patchInspection}
+          onMarkedSent={stampFlaggedCommunicated}
+          onMarkedNotSent={unstampFlaggedCommunicated}
         />
       )}
 
@@ -481,6 +779,36 @@ export default function InspectionDetailPage() {
             <X size={12} />
           </button>
         </p>
+      )}
+
+      {/* Desk triage: one-key disposition sweep over untriaged findings.
+          Desktop-only — the day-after review happens at a desk, not onsite
+          (below md a one-line note points there). Findings never leave the
+          list below; triage only assigns their verb. */}
+      {!isDraft && items.length > 0 && (
+        <TriageSection
+          items={items}
+          photoUrls={photoUrls}
+          localPreviews={localPreviews}
+          onDisposition={applyDisposition}
+          onCreateTask={createTaskFromItem}
+          creatingTaskFor={creatingTaskFor}
+          orphanedTaskItems={orphanedTaskItems}
+          onCapex={setCapexItem}
+        />
+      )}
+
+      {/* Watch loop — prior walks' watched findings, checked while onsite.
+          Mobile-friendly (unlike the desk triage sweep). */}
+      {isDraft && watchItems.length > 0 && (
+        <WatchListSection
+          watchItems={watchItems}
+          photoUrls={photoUrls}
+          onView={setLightbox}
+          onCarry={carryWatchItem}
+          onResolve={resolveWatchItem}
+          onSkip={id => setWatchItems(prev => prev.filter(x => x.id !== id))}
+        />
       )}
 
       {/* Add-finding form — in normal flow right under the header, so it's
@@ -536,6 +864,7 @@ export default function InspectionDetailPage() {
                     onCreateTask={() => createTaskFromItem(item)}
                     creatingTask={creatingTaskFor === item.id}
                     createDisabled={orphanedTaskItems.has(item.id)}
+                    capexName={item.capex_project_id ? capexNames[item.capex_project_id] ?? null : null}
                   />
                 ))}
               </div>
@@ -599,7 +928,483 @@ export default function InspectionDetailPage() {
           createDisabled={orphanedTaskItems.has(editItem.id)}
         />
       )}
+
+      {/* CapEx attach/create mini-modal (triage `b` / row button) */}
+      {capexItem && (
+        <CapexAttachModal
+          item={capexItem}
+          propertyId={inspection.property_id}
+          onClose={() => setCapexItem(null)}
+          onDone={(projectId, title) => attachCapex(capexItem, projectId, title)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── Desk triage ──────────────────────────────────────────────
+// The day-after sweep: every untriaged finding gets a disposition verb,
+// one key each — w watch · f flag · t task · b capex · a accept (reason
+// required, inline) · r resolved. j/k moves the selection; buttons mirror
+// every key for mouse users. Desktop-only: below md the section collapses
+// to a one-line pointer (triage happens at a desk, not onsite). The
+// counter drains to "Fully triaged ✓". Keys are inert while any
+// input/select/modal has focus — the SAME shared guards as the tasks
+// page keyboard layer (lib/ui/keyboard).
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 font-mono text-[10px] text-slate-500 leading-none">
+      {children}
+    </kbd>
+  )
+}
+
+function TriageSection({ items, photoUrls, localPreviews, onDisposition, onCreateTask, creatingTaskFor, orphanedTaskItems, onCapex }: {
+  items: InspectionItem[]
+  photoUrls: Record<string, SignedPhotoUrl>
+  localPreviews: Record<string, string>
+  onDisposition: (item: InspectionItem, d: Disposition, note?: string | null) => Promise<boolean>
+  onCreateTask: (item: InspectionItem) => void
+  creatingTaskFor: string | null
+  orphanedTaskItems: Set<string>
+  onCapex: (item: InspectionItem) => void
+}) {
+  const untriaged = useMemo(
+    () => items.filter(i => normalizeDisposition(i.disposition) === 'open'), [items])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Row with the inline "accept reason" input open (`a`)
+  const [acceptingId, setAcceptingId] = useState<string | null>(null)
+  const [acceptReason, setAcceptReason] = useState('')
+
+  // Selection repair: the selected row was dispositioned away (or undone
+  // back in) — fall to the first remaining row rather than dangling.
+  useEffect(() => {
+    if (selectedId && !untriaged.some(i => i.id === selectedId)) {
+      setSelectedId(untriaged[0]?.id ?? null)
+    }
+    if (acceptingId && !untriaged.some(i => i.id === acceptingId)) {
+      setAcceptingId(null)
+      setAcceptReason('')
+    }
+  }, [untriaged, selectedId, acceptingId])
+
+  // Advance selection BEFORE the row leaves the list so the sweep flows
+  // straight to the next finding.
+  const advanceFrom = (id: string) => {
+    const ids = untriaged.map(i => i.id)
+    const idx = ids.indexOf(id)
+    setSelectedId(ids[idx + 1] ?? ids[idx - 1] ?? null)
+  }
+
+  const disposition = (item: InspectionItem, d: Disposition, note?: string | null) => {
+    advanceFrom(item.id)
+    void onDisposition(item, d, note ?? null)
+  }
+
+  const startAccept = (item: InspectionItem) => {
+    setSelectedId(item.id)
+    setAcceptingId(item.id)
+    setAcceptReason('')
+  }
+
+  const commitAccept = (item: InspectionItem) => {
+    const reason = acceptReason.trim()
+    if (!reason) return
+    setAcceptingId(null)
+    setAcceptReason('')
+    disposition(item, 'accepted', reason)
+  }
+
+  // Single stable keydown listener reading the latest state via a ref —
+  // the pattern from use-task-list-shortcuts.
+  const ref = useRef({ untriaged, selectedId, disposition, startAccept, onCreateTask, onCapex })
+  ref.current = { untriaged, selectedId, disposition, startAccept, onCreateTask, onCapex }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const s = ref.current
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      // Desktop-only ritual: no keyboard layer on touch, and none while
+      // the section itself is hidden below md.
+      if (window.matchMedia('(pointer: coarse)').matches) return
+      if (!window.matchMedia('(min-width: 768px)').matches) return
+      if (isOverlayOpen()) return
+      if (isEditableTarget()) {
+        // Inputs own their keys — Escape just backs out of the field.
+        if (e.key === 'Escape') (document.activeElement as HTMLElement | null)?.blur()
+        return
+      }
+      if (s.untriaged.length === 0) return
+      const ids = s.untriaged.map(i => i.id)
+      const idx = s.selectedId ? ids.indexOf(s.selectedId) : -1
+      // Held-down keys only repeat navigation — a repeating disposition
+      // key would mow through the queue (shared guard, lib/ui/keyboard).
+      if (isRepeatedActionKey(e)) return
+      if (isNavKey(e)) {
+        e.preventDefault()
+        const dir = e.key === 'j' || e.key === 'ArrowDown' ? 1 : -1
+        const next = idx === -1
+          ? (dir === 1 ? 0 : ids.length - 1)
+          : Math.min(Math.max(idx + dir, 0), ids.length - 1)
+        setSelectedId(ids[next])
+        document.querySelector(`[data-triage-id="${ids[next]}"]`)?.scrollIntoView({ block: 'nearest' })
+        return
+      }
+      if (e.key === 'Escape') { setSelectedId(null); return }
+      if (idx === -1) return
+      const item = s.untriaged[idx]
+      switch (e.key) {
+        case 'w': e.preventDefault(); s.disposition(item, 'watch'); return
+        case 'f': e.preventDefault(); s.disposition(item, 'flagged'); return
+        case 'r': e.preventDefault(); s.disposition(item, 'resolved'); return
+        case 'a': e.preventDefault(); s.startAccept(item); return
+        case 't': e.preventDefault(); s.onCreateTask(item); return
+        case 'b': e.preventDefault(); setSelectedId(item.id); s.onCapex(item); return
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  if (untriaged.length === 0) {
+    return (
+      <div className="hidden md:flex card px-4 py-3 text-sm font-medium text-emerald-700 items-center gap-2">
+        <Check size={15} />Fully triaged ✓
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {/* Below md: a pointer, not the sweep — triage happens on desktop */}
+      <div className="md:hidden card px-4 py-3 text-xs text-slate-400 flex items-center gap-2">
+        <Keyboard size={14} className="text-slate-300 flex-shrink-0" />
+        {untriaged.length} finding{untriaged.length === 1 ? '' : 's'} to triage — triage happens on desktop.
+      </div>
+
+      <div className="hidden md:block card overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 flex-wrap">
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            Triage ({untriaged.length} untriaged)
+          </span>
+          {/* kbd hint strip */}
+          <span className="text-xs text-slate-400 flex items-center gap-1.5 ml-auto flex-wrap">
+            <Keyboard size={13} className="text-slate-300" />
+            <Kbd>j</Kbd><Kbd>k</Kbd> move
+            <span className="text-slate-200">·</span><Kbd>w</Kbd> watch
+            <span className="text-slate-200">·</span><Kbd>f</Kbd> flag
+            <span className="text-slate-200">·</span><Kbd>t</Kbd> task
+            <span className="text-slate-200">·</span><Kbd>b</Kbd> capex
+            <span className="text-slate-200">·</span><Kbd>a</Kbd> accept
+            <span className="text-slate-200">·</span><Kbd>r</Kbd> resolved
+          </span>
+        </div>
+        <div>
+          {untriaged.map(item => {
+            const selected = item.id === selectedId
+            const firstPhoto = item.photo_paths[0]
+            const src = firstPhoto ? photoUrls[firstPhoto]?.url ?? localPreviews[firstPhoto] : undefined
+            const taskBlocked = creatingTaskFor === item.id || orphanedTaskItems.has(item.id)
+            const btn = (title: string, onClick: () => void, icon: React.ReactNode, hover: string, disabled = false) => (
+              <button
+                onClick={e => { e.stopPropagation(); onClick() }}
+                disabled={disabled}
+                title={title}
+                className={cn('p-1.5 text-slate-300 transition-colors', hover, disabled && 'opacity-40 pointer-events-none')}>
+                {icon}
+              </button>
+            )
+            return (
+              <div key={item.id}>
+                <div
+                  data-triage-id={item.id}
+                  onClick={() => setSelectedId(item.id)}
+                  className={cn(
+                    'group px-4 py-2 flex items-center gap-3 border-b border-slate-100 last:border-0',
+                    selected ? 'bg-blue-50/70 ring-1 ring-inset ring-blue-200' : 'hover:bg-slate-50'
+                  )}>
+                  {src ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={src} alt="" className="w-9 h-9 rounded object-cover border border-slate-200 flex-shrink-0" />
+                  ) : (
+                    <div className="w-9 h-9 rounded bg-slate-100 flex items-center justify-center flex-shrink-0">
+                      <Camera size={12} className="text-slate-300" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className={cn('text-sm truncate', item.item_label ? 'text-slate-800' : 'text-slate-300 italic')}>
+                      {item.item_label || 'No description'}
+                    </p>
+                    <p className="text-xs text-slate-400 truncate flex items-center gap-1.5">
+                      {instanceLabel({ name: item.section_name, unit: item.unit_number })}
+                      {item.requires_action && (
+                        <span className={cn('badge', PRIORITY_STYLES[item.action_priority ?? 'medium'] ?? 'text-slate-600 bg-slate-100 border-slate-200')}>
+                          {PRIORITY_LABELS[item.action_priority as ActionPriority] ?? item.action_priority ?? 'Medium'}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  {/* Buttons mirror the keys for mouse users */}
+                  <div className={cn('flex items-center flex-shrink-0 transition-opacity',
+                    selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}>
+                    {btn('Watch (w)', () => disposition(item, 'watch'), <Eye size={14} />, 'hover:text-amber-600')}
+                    {btn('Flag for the PM (f)', () => disposition(item, 'flagged'), <Flag size={14} />, 'hover:text-red-600')}
+                    {btn(orphanedTaskItems.has(item.id) ? 'Task exists in Tasks but is not linked to this finding' : 'Create task (t)',
+                      () => onCreateTask(item), <ListTodo size={14} />, 'hover:text-blue-600', taskBlocked)}
+                    {btn('Attach to CapEx (b)', () => { setSelectedId(item.id); onCapex(item) }, <HardHat size={14} />, 'hover:text-orange-600')}
+                    {btn('Accept with reason (a)', () => startAccept(item), <X size={14} />, 'hover:text-slate-600')}
+                    {btn('Resolved (r)', () => disposition(item, 'resolved'), <Check size={14} />, 'hover:text-emerald-600')}
+                  </div>
+                </div>
+                {/* Inline required reason for accept — Enter commits, Esc backs out */}
+                {acceptingId === item.id && (
+                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 flex items-center gap-2">
+                    <span className="text-xs text-slate-500 flex-shrink-0">Accepting — why?</span>
+                    <input
+                      autoFocus
+                      value={acceptReason}
+                      onChange={e => setAcceptReason(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); commitAccept(item) }
+                        if (e.key === 'Escape') { setAcceptingId(null); setAcceptReason('') }
+                      }}
+                      placeholder="One-line reason (required)"
+                      className="input py-1.5 text-sm flex-1"
+                    />
+                    <button onClick={() => commitAccept(item)} disabled={!acceptReason.trim()}
+                      className="btn-secondary text-xs py-1.5">
+                      Accept
+                    </button>
+                    <button onClick={() => { setAcceptingId(null); setAcceptReason('') }}
+                      className="btn-ghost text-xs py-1.5">
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── Watch list (capture screen) ──────────────────────────────
+// Prior inspections' watched findings, re-checked while walking the
+// property. Three outcomes per row: Still an issue (clone into this
+// inspection), Resolved (verified gone), or Skip (stays watched for the
+// next walk — local dismiss only). Buttons stay big and wrap — this runs
+// one-handed on a phone.
+
+function WatchListSection({ watchItems, photoUrls, onView, onCarry, onResolve, onSkip }: {
+  watchItems: WatchRow[]
+  photoUrls: Record<string, SignedPhotoUrl>
+  onView: (path: string) => void
+  onCarry: (w: WatchRow) => Promise<void>
+  onResolve: (w: WatchRow) => Promise<void>
+  onSkip: (id: string) => void
+}) {
+  // Row with a write in flight — its buttons lock to prevent double-fires.
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const run = async (w: WatchRow, action: (w: WatchRow) => Promise<void>) => {
+    if (busyId) return
+    setBusyId(w.id)
+    try { await action(w) } finally { setBusyId(null) }
+  }
+
+  return (
+    <div className="card overflow-hidden border-amber-200">
+      <div className="px-4 py-3 border-b border-amber-100 bg-amber-50/60 flex items-center gap-2 flex-wrap">
+        <Eye size={14} className="text-amber-600 flex-shrink-0" />
+        <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide">
+          Watch list ({watchItems.length})
+        </span>
+        <span className="text-xs text-amber-700/70">from earlier walks — check these while you&apos;re here</span>
+      </div>
+      {watchItems.map(w => {
+        const firstPhoto = w.photo_paths[0]
+        const src = firstPhoto ? photoUrls[firstPhoto]?.url : undefined
+        const busy = busyId === w.id
+        return (
+          <div key={w.id} className="px-4 py-3 border-b border-slate-100 last:border-0 flex gap-3">
+            {firstPhoto ? (
+              src ? (
+                <button onClick={() => onView(firstPhoto)} className="flex-shrink-0" title="View photo">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt="Watched finding"
+                    className="w-14 h-14 rounded-lg object-cover border border-slate-200" />
+                </button>
+              ) : (
+                <div className="w-14 h-14 rounded-lg bg-slate-100 animate-pulse flex-shrink-0" />
+              )
+            ) : (
+              <div className="w-14 h-14 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                <Camera size={14} className="text-slate-300" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <p className={cn('text-sm', w.item_label ? 'text-slate-800' : 'text-slate-300 italic')}>
+                {w.item_label || 'No description'}
+              </p>
+              <p className="text-xs text-slate-400">
+                {instanceLabel({ name: w.section_name, unit: w.unit_number })}
+                {' · '}watched {formatDate(w.inspections.inspection_date)}
+                {(w.watch_count ?? 0) > 0 && ` · carried ${w.watch_count}×`}
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={() => run(w, onCarry)} disabled={busy}
+                  className="btn-secondary text-xs py-1.5 border-amber-300 text-amber-700 hover:bg-amber-50">
+                  <RotateCcw size={12} />{busy ? 'Saving…' : 'Still an issue'}
+                </button>
+                <button onClick={() => run(w, onResolve)} disabled={busy}
+                  className="btn-secondary text-xs py-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50">
+                  <Check size={12} />Resolved
+                </button>
+                <button onClick={() => onSkip(w.id)} disabled={busy}
+                  title="Leave on the watch list for the next walk"
+                  className="btn-ghost text-xs py-1.5">
+                  Skip
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── CapEx attach/create mini-modal ───────────────────────────
+// Triage `b`: attach the finding to an existing open capex project on the
+// property, or create a new one (title prefilled from the finding,
+// category 'other', status planning). The parent links the finding +
+// sets its disposition once a project is resolved.
+
+function CapexAttachModal({ item, propertyId, onClose, onDone }: {
+  item: InspectionItem
+  propertyId: string
+  onClose: () => void
+  onDone: (projectId: string, projectTitle: string) => void
+}) {
+  const supabase = createClient()
+  // null = still loading the property's open projects
+  const [projects, setProjects] = useState<{ id: string; title: string; status: string }[] | null>(null)
+  const [mode, setMode] = useState<'existing' | 'new'>('new')
+  const [projectId, setProjectId] = useState('')
+  const [title, setTitle] = useState(item.item_label.trim() || 'Inspection finding')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.from('capex_projects')
+      .select('id, title, status')
+      .eq('property_id', propertyId)
+      .neq('status', 'complete')
+      .order('created_at', { ascending: false })
+      .then(({ data, error: fetchError }) => {
+        if (cancelled) return
+        if (fetchError) {
+          // Creation still works without the list — surface, don't block.
+          setError(`Could not load existing projects — ${fetchError.message}`)
+          setProjects([])
+          return
+        }
+        const rows = data ?? []
+        setProjects(rows)
+        if (rows.length > 0) {
+          setMode('existing')
+          setProjectId(rows[0].id)
+        }
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId])
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (mode === 'existing') {
+      const project = projects?.find(p => p.id === projectId)
+      if (!project) { setError('Pick a project to attach to.'); return }
+      onDone(project.id, project.title)
+      return
+    }
+    if (!title.trim()) { setError('Give the new project a title.'); return }
+    setSaving(true)
+    const { data, error: insertError } = await supabase.from('capex_projects')
+      .insert({ property_id: propertyId, title: title.trim(), category: 'other', status: 'planning' })
+      .select('id, title')
+      .single()
+    setSaving(false)
+    if (insertError || !data) {
+      setError(`Could not create the project — ${insertError?.message ?? 'try again'}`)
+      return
+    }
+    onDone(data.id, data.title)
+  }
+
+  return (
+    <Modal title="Attach Finding to CapEx" onClose={onClose} maxWidth="md">
+      <form onSubmit={submit} className="px-6 py-5 space-y-4">
+        <p className="text-sm text-slate-600 line-clamp-2">
+          {item.item_label.trim() || <span className="text-slate-300 italic">No description</span>}
+        </p>
+        {projects === null ? (
+          <p className="text-xs text-slate-400">Loading projects…</p>
+        ) : (
+          <div className="space-y-3">
+            {projects.length > 0 && (
+              <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+                <input type="radio" name="capex-mode" checked={mode === 'existing'}
+                  onChange={() => setMode('existing')} className="accent-blue-600 mt-1" />
+                <span className="flex-1">
+                  Attach to an open project
+                  {mode === 'existing' && (
+                    <select value={projectId} onChange={e => setProjectId(e.target.value)}
+                      className="input mt-1.5" aria-label="CapEx project">
+                      {projects.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.title} ({p.status.replace('_', ' ')})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </span>
+              </label>
+            )}
+            <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="radio" name="capex-mode" checked={mode === 'new'}
+                onChange={() => setMode('new')} className="accent-blue-600 mt-1" />
+              <span className="flex-1">
+                Create a new project{projects.length === 0 && <span className="text-xs text-slate-400"> — none open on this property</span>}
+                {mode === 'new' && (
+                  <>
+                    <input value={title} onChange={e => setTitle(e.target.value)}
+                      className="input mt-1.5" placeholder="Project title" aria-label="New project title" />
+                    <span className="block text-xs text-slate-400 mt-1">Category “other”, status “planning” — refine it on the CapEx page.</span>
+                  </>
+                )}
+              </span>
+            </label>
+          </div>
+        )}
+        {error && (
+          <p className="text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle size={12} className="flex-shrink-0" />{error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="submit" disabled={saving || projects === null} className="btn-primary">
+            {saving ? 'Saving…' : mode === 'existing' ? 'Attach' : 'Create & attach'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -610,7 +1415,7 @@ export default function InspectionDetailPage() {
 // so "sent" is a status the app can't observe: it's recorded here by an
 // explicit "Mark as sent" button, and only by that button.
 
-function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
+function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMarkedSent, onMarkedNotSent }: {
   inspection: InspectionDetail
   // Photos for this inspection still in the background upload queue
   // (uploading, retrying, or failed) — a report generated now would
@@ -621,6 +1426,11 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
   // on the page banner, state updated on success) — the sent-status
   // buttons write through it.
   onPatch: (patch: Partial<Inspection>) => Promise<boolean>
+  // Marking sent means the flagged findings in that email were
+  // communicated — the page stamps/unstamps communicated_at on them
+  // (best-effort, after the status flip lands).
+  onMarkedSent: () => void
+  onMarkedNotSent: () => void
 }) {
   const supabase = createClient()
   const [generating, setGenerating] = useState(false)
@@ -639,15 +1449,19 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
     setSavingSent(true)
     const ok = await onPatch({ status: 'report_sent', report_sent_at: new Date().toISOString() })
     setSavingSent(false)
-    if (ok) setConfirmingSent(false)
+    if (ok) {
+      setConfirmingSent(false)
+      onMarkedSent()
+    }
   }
 
   // Undo affordance for a mistaken claim — back to submitted, sent
-  // timestamp cleared.
+  // timestamp cleared (and the communicated stamps walked back).
   async function markNotSent() {
     setSavingSent(true)
-    await onPatch({ status: 'submitted', report_sent_at: null })
+    const ok = await onPatch({ status: 'submitted', report_sent_at: null })
     setSavingSent(false)
+    if (ok) onMarkedNotSent()
   }
 
   async function generate() {
@@ -988,7 +1802,7 @@ function EmailDraftModal({ inspection, hasReport, onClose }: {
 
 // ── Finding card ─────────────────────────────────────────────
 
-function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUpload, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask, createDisabled }: {
+function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUpload, onView, onEdit, onDelete, onAppendPhotos, onPhotoError, onCreateTask, creatingTask, createDisabled, capexName }: {
   item: InspectionItem
   photoUrls: Record<string, SignedPhotoUrl>
   // Local object URLs for freshly uploaded photos without a signed URL yet.
@@ -1004,9 +1818,14 @@ function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUp
   onCreateTask: () => void
   creatingTask: boolean
   createDisabled: boolean  // orphaned unlinked task exists — retry would duplicate
+  capexName: string | null // linked capex project title (when resolved)
 }) {
   // Only covers local compression now — uploads continue in the background.
   const [uploading, setUploading] = useState(false)
+
+  // Settled findings stay fully visible and reviewable — never filtered
+  // away — just visually quieter than the live ones.
+  const settled = isSettled(item.disposition)
 
   async function handleAdd(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
@@ -1018,7 +1837,7 @@ function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUp
   }
 
   return (
-    <div className="card p-3">
+    <div className={cn('card p-3', settled && 'opacity-70')}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className={cn('text-sm', item.item_label ? 'text-slate-800' : 'text-slate-300 italic')}>
@@ -1031,11 +1850,21 @@ function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUp
                 Follow up{item.action_priority ? ` · ${PRIORITY_LABELS[item.action_priority as ActionPriority] ?? item.action_priority}` : ''}
               </span>
             )}
-            {item.task_id && (
+            <DispositionChip item={item} capexName={capexName} className="mt-1.5" />
+            {/* Legacy safety: a linked task on a non-'task' disposition
+                (e.g. after a manual edit) keeps its pointer visible. */}
+            {item.task_id && normalizeDisposition(item.disposition) !== 'task' && (
               <Link href="/tasks"
-                className="badge mt-1.5 text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100 transition-colors">
+                className="badge mt-1.5 text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100 transition-colors">
                 <CheckSquare size={9} className="mr-1" />Task
               </Link>
+            )}
+            {/* Escalation badge from the watch loop — carried 3+ walks */}
+            {item.watch_count >= 3 && (
+              <span className="badge mt-1.5 text-amber-700 bg-amber-50 border-amber-200"
+                title="Carried forward from the watch list on 3+ inspections — priority auto-raised to high">
+                <Eye size={9} className="mr-1" />Watched {item.watch_count} visits
+              </span>
             )}
           </div>
         </div>
@@ -1395,6 +2224,8 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
     (ACTION_PRIORITIES as readonly string[]).includes(item.action_priority ?? '')
       ? item.action_priority as ActionPriority
       : 'medium')
+  const [disposition, setDisposition] = useState<Disposition>(normalizeDisposition(item.disposition))
+  const [dispositionNote, setDispositionNote] = useState(item.disposition_note ?? '')
   const [saving, setSaving] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1404,17 +2235,38 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
   // harmless repeat. Form state survives failure.
   async function save(e: React.FormEvent) {
     e.preventDefault()
+    const note = dispositionNote.trim() || null
+    // Accepting is a decision — it always carries the why.
+    if (disposition === 'accepted' && !note) {
+      setError('Add a one-line reason for accepting this finding.')
+      return
+    }
     setSaving(true)
     setError(null)
+    // Payload computed once so a retried write is a harmless repeat.
+    // disposition_at stamps only when the verb actually changed — editing
+    // the description or note must not reset "flagged Nd" aging. A change
+    // TO 'flagged' also clears communicated_at: a fresh flag starts a
+    // fresh communication cycle.
+    const payload = {
+      item_label: description.trim(),
+      section_name: sectionName,
+      unit_number: unitNumber.trim() || null,
+      requires_action: followUp,
+      action_priority: followUp ? priority : null,
+      disposition,
+      disposition_note: note,
+      ...(disposition !== normalizeDisposition(item.disposition)
+        ? {
+            disposition_at: new Date().toISOString(),
+            ...(disposition === 'flagged' ? { communicated_at: null } : {}),
+          }
+        : {}),
+    }
     try {
       const data = await withTimeoutRetry<InspectionItem>(async signal => {
-        const { data, error: updateError } = await supabase.from('inspection_items').update({
-          item_label: description.trim(),
-          section_name: sectionName,
-          unit_number: unitNumber.trim() || null,
-          requires_action: followUp,
-          action_priority: followUp ? priority : null,
-        }).eq('id', item.id).select().abortSignal(signal).single()
+        const { data, error: updateError } = await supabase.from('inspection_items')
+          .update(payload).eq('id', item.id).select().abortSignal(signal).single()
         if (updateError || !data) throw new Error(updateError?.message ?? 'Save failed')
         return data as InspectionItem
       }, { onRetry: () => setRetrying(true) })
@@ -1466,6 +2318,20 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
               {ACTION_PRIORITIES.map(p => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
             </select>
           )}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label">Disposition</label>
+            <select value={disposition} onChange={e => setDisposition(e.target.value as Disposition)}
+              className="input">
+              {DISPOSITIONS.map(d => <option key={d} value={d}>{DISPOSITION_LABELS[d]}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="label">Disposition note{disposition === 'accepted' ? ' (required)' : ''}</label>
+            <input value={dispositionNote} onChange={e => setDispositionNote(e.target.value)}
+              className="input" placeholder={disposition === 'accepted' ? 'Why is this acceptable?' : 'Optional note'} />
+          </div>
         </div>
         {/* Spawn a follow-up task (shared creation layer, undo on the
             toast); once linked, the chip points at the Tasks page */}

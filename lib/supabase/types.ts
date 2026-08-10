@@ -122,7 +122,7 @@ export type Database = {
         Relationships: []
       }
       inspection_items: {
-        Row: { id: string; inspection_id: string; section_name: string; unit_number: string | null; item_label: string; rating: number | null; condition: string | null; notes: string | null; requires_action: boolean; action_priority: string | null; photo_paths: string[]; task_id: string | null; created_at: string }
+        Row: { id: string; inspection_id: string; section_name: string; unit_number: string | null; item_label: string; rating: number | null; condition: string | null; notes: string | null; requires_action: boolean; action_priority: string | null; photo_paths: string[]; task_id: string | null; disposition: 'open' | 'watch' | 'flagged' | 'task' | 'capex' | 'accepted' | 'resolved'; disposition_note: string | null; disposition_at: string | null; communicated_at: string | null; capex_project_id: string | null; carried_from_item_id: string | null; watch_count: number; created_at: string }
         Insert: Partial<Database['public']['Tables']['inspection_items']['Row']> & { inspection_id: string; section_name: string; item_label: string }
         Update: Partial<Database['public']['Tables']['inspection_items']['Row']>
         Relationships: []

@@ -5,6 +5,8 @@ import {
 import { instanceLabel, type SectionInstance } from '@/lib/inspections/sections'
 import { GRADE_HEX, type ScoreGrade } from '@/lib/inspections/score'
 import { PRIORITY_LABELS, type ActionPriority } from '@/lib/inspections/templates'
+import { DISPOSITION_LABELS, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
+import { flaggedAgeLabel } from '@/lib/inspections/selectors'
 import { PRIORITY_DOT } from '@/lib/utils'
 
 // The inspection PDF report, rendered server-side (see
@@ -25,6 +27,10 @@ export type ReportItem = {
   requires_action: boolean
   action_priority: string | null
   photo_paths: string[]
+  // Triage fields (0011): drive the flagged lead section, the disposition
+  // tags, and the quieted rendering of settled findings.
+  disposition: string | null
+  disposition_at: string | null
 }
 
 export type ReportData = {
@@ -39,7 +45,11 @@ export type ReportData = {
   openFindings: number
   // Same grouping the app renders — built with lib/inspections/sections.
   groups: { inst: SectionInstance; items: ReportItem[] }[]
+  // Selected by the SHARED selectors (lib/inspections/selectors) — the
+  // same functions the email builder uses, so PDF and email can never
+  // disagree about what the PM is asked to act on.
   actionItems: ReportItem[]
+  flaggedItems: ReportItem[]
   photos: Record<string, ReportPhoto>
   // Photos skipped (non-JPEG/PNG format) or that failed to download — the
   // report discloses the gap rather than silently rendering without them.
@@ -56,6 +66,7 @@ const SLATE_200 = '#e2e8f0'
 const SLATE_100 = '#f1f5f9'
 const SLATE_50 = '#f8fafc'
 const BLUE_600 = '#2563eb'
+const RED_700 = '#b91c1c'
 
 const styles = StyleSheet.create({
   page: {
@@ -133,6 +144,25 @@ const styles = StyleSheet.create({
   colDescription: { width: '54%' },
   colPriority: { width: '18%' },
 
+  // Flagged lead section — mirrors the email's "Flagged for Your Action"
+  colFlagSection: { width: '26%' },
+  colFlagDescription: { width: '42%' },
+  colFlagPriority: { width: '14%' },
+  colFlagAge: { width: '18%' },
+  flaggedHeading: {
+    fontSize: 10,
+    fontFamily: 'Helvetica-Bold',
+    color: RED_700,
+    letterSpacing: 1,
+    marginBottom: 6,
+    marginTop: 4,
+  },
+  flaggedTable: { borderWidth: 1, borderColor: '#fecaca', borderRadius: 4, marginBottom: 18 },
+  flagAge: { fontSize: 8, color: SLATE_600 },
+
+  // Compact textual disposition tag next to a listed item
+  dispositionTag: { fontSize: 7.5, fontFamily: 'Helvetica-Bold' },
+
   // Findings
   groupHeading: {
     fontSize: 9,
@@ -153,9 +183,14 @@ const styles = StyleSheet.create({
     padding: 8,
     marginBottom: 8,
   },
+  // Settled (accepted/resolved) findings stay in the grouped listing —
+  // the record stays complete — but render visually quieted.
+  findingSettled: { borderColor: SLATE_100, backgroundColor: SLATE_50 },
   findingHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   findingLabel: { fontSize: 9.5, color: SLATE_900, flex: 1, paddingRight: 8 },
+  findingLabelSettled: { fontSize: 9.5, color: SLATE_400, flex: 1, paddingRight: 8 },
   findingLabelEmpty: { fontSize: 9.5, color: SLATE_400 },
+  findingTags: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   priorityBadge: {
     fontSize: 7.5,
     fontFamily: 'Helvetica-Bold',
@@ -206,17 +241,45 @@ function PriorityBadge({ priority }: { priority: string | null }) {
   )
 }
 
+// Compact textual disposition tag — the chip vocabulary of the app,
+// flattened to colored text for print. 'open' (untriaged) renders
+// nothing, exactly like the in-app chip.
+const DISPOSITION_TAG_HEX: Record<string, string> = {
+  watch: '#b45309',   // amber-700
+  flagged: RED_700,
+  task: '#1d4ed8',    // blue-700
+  capex: '#c2410c',   // orange-700
+  accepted: SLATE_400,
+  resolved: '#059669', // emerald-600
+}
+
+function DispositionTag({ disposition }: { disposition: string | null }) {
+  const d = normalizeDisposition(disposition)
+  if (d === 'open') return null
+  return (
+    <Text style={[styles.dispositionTag, { color: DISPOSITION_TAG_HEX[d] ?? SLATE_600 }]}>
+      [{DISPOSITION_LABELS[d].toUpperCase()}]
+    </Text>
+  )
+}
+
 function Finding({ item, photos }: { item: ReportItem; photos: Record<string, ReportPhoto> }) {
   const embeddable = item.photo_paths.filter(p => photos[p])
+  const settled = isSettled(item.disposition)
   return (
     // Keep a finding on one page unless it's so photo-heavy (3+ rows of the
     // 2-up grid) that forcing it unbroken could overflow a whole page.
-    <View style={styles.finding} wrap={embeddable.length > 4}>
+    <View style={[styles.finding, ...(settled ? [styles.findingSettled] : [])]} wrap={embeddable.length > 4}>
       <View style={styles.findingHead}>
-        <Text style={item.item_label ? styles.findingLabel : styles.findingLabelEmpty}>
+        <Text style={settled ? styles.findingLabelSettled : item.item_label ? styles.findingLabel : styles.findingLabelEmpty}>
           {item.item_label || 'No description'}
         </Text>
-        {item.requires_action && <PriorityBadge priority={item.action_priority} />}
+        <View style={styles.findingTags}>
+          {/* Settled findings trade the priority badge for their settled
+              label — a resolved item must not read as an open follow-up. */}
+          <DispositionTag disposition={item.disposition} />
+          {item.requires_action && !settled && <PriorityBadge priority={item.action_priority} />}
+        </View>
       </View>
       {embeddable.length > 0 && (
         <View style={styles.photoGrid}>
@@ -279,7 +342,39 @@ export function InspectionReport({ data }: { data: ReportData }) {
         {/* Inspection notes */}
         {data.notes && <Text style={styles.notes}>{data.notes}</Text>}
 
-        {/* Action items first — the part a PM acts on */}
+        {/* Flagged findings lead — mirrors the email's "Flagged for Your
+            Action" block (same shared selector, same ordering, same
+            aging), so the PDF can never contradict the email. */}
+        {data.flaggedItems.length > 0 && (
+          <>
+            <Text style={styles.flaggedHeading}>FLAGGED FOR YOUR ACTION ({data.flaggedItems.length})</Text>
+            <View style={styles.flaggedTable}>
+              <View style={styles.tableHeader}>
+                <Text style={[styles.th, styles.colFlagSection]}>Section / Unit</Text>
+                <Text style={[styles.th, styles.colFlagDescription]}>Description</Text>
+                <Text style={[styles.th, styles.colFlagPriority]}>Priority</Text>
+                <Text style={[styles.th, styles.colFlagAge]}>Flagged</Text>
+              </View>
+              {data.flaggedItems.map((item, i) => (
+                <View key={i} style={styles.tableRow} wrap={false}>
+                  <Text style={[styles.td, styles.colFlagSection]}>
+                    {instanceLabel({ name: item.section_name, unit: item.unit_number })}
+                  </Text>
+                  <Text style={[styles.td, styles.colFlagDescription]}>{item.item_label || '—'}</Text>
+                  <View style={[styles.td, styles.colFlagPriority, { flexDirection: 'row' }]}>
+                    {item.requires_action
+                      ? <PriorityBadge priority={item.action_priority} />
+                      : <Text style={styles.flagAge}>—</Text>}
+                  </View>
+                  <Text style={[styles.td, styles.colFlagAge, styles.flagAge]}>{flaggedAgeLabel(item)}</Text>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+
+        {/* Action items next — outstanding follow-ups (settled findings
+            excluded by the shared selector) */}
         <Text style={styles.sectionHeading}>ACTION ITEMS</Text>
         {data.actionItems.length === 0 ? (
           <Text style={styles.empty}>No action items — nothing flagged for follow-up.</Text>
@@ -295,7 +390,15 @@ export function InspectionReport({ data }: { data: ReportData }) {
                 <Text style={[styles.td, styles.colSection]}>
                   {instanceLabel({ name: item.section_name, unit: item.unit_number })}
                 </Text>
-                <Text style={[styles.td, styles.colDescription]}>{item.item_label || '—'}</Text>
+                <Text style={[styles.td, styles.colDescription]}>
+                  {item.item_label || '—'}
+                  {normalizeDisposition(item.disposition) !== 'open' && (
+                    <>
+                      {'  '}
+                      <DispositionTag disposition={item.disposition} />
+                    </>
+                  )}
+                </Text>
                 <View style={[styles.td, styles.colPriority, { flexDirection: 'row' }]}>
                   <PriorityBadge priority={item.action_priority} />
                 </View>

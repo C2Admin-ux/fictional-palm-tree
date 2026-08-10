@@ -11,6 +11,8 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, formatDateShort, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { inspectionScore } from '@/lib/inspections/score'
+import { isOpenFinding } from '@/lib/inspections/dispositions'
+import { PropertyFindingsList, type OpenFindingRow } from './open-findings'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { signedFileUrl } from '@/lib/inspections/photos'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -22,17 +24,24 @@ export type InspectionTabRow = {
   inspection_date: string
   status: 'draft' | 'submitted' | 'report_sent'
   report_file_path: string | null
-  inspection_items: { requires_action: boolean; action_priority: string | null }[]
+  inspection_items: { requires_action: boolean; action_priority: string | null; disposition: string }[]
 }
 
-export default function InspectionsTab({ inspections }: { inspections: InspectionTabRow[] }) {
+export default function InspectionsTab({ inspections, findings }: {
+  inspections: InspectionTabRow[]
+  // Every finding across the property's inspections (all dispositions) —
+  // rendered below the rollup table with opt-in filter chips.
+  findings: OpenFindingRow[]
+}) {
   const supabase = createClient()
   const [error, setError] = useState<string | null>(null)
 
   const rows = inspections.map(i => ({
     ...i,
     score: inspectionScore(i.inspection_items),
-    open: i.inspection_items.filter(it => it.requires_action).length,
+    // The canonical open-finding rule (lib/inspections/dispositions):
+    // not settled AND (requires_action OR triaged).
+    open: i.inspection_items.filter(isOpenFinding).length,
   }))
 
   // Trend uses completed walks only — a draft mid-walk has partial
@@ -146,6 +155,10 @@ export default function InspectionsTab({ inspections }: { inspections: Inspectio
           </tbody>
         </table>
       </div>
+
+      {/* Every finding across the property's walks — filter chips narrow
+          the view (All by default; nothing is hidden unasked). */}
+      <PropertyFindingsList rows={findings} />
     </div>
   )
 }

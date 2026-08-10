@@ -14,6 +14,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { CallItem, Task } from '@/lib/supabase/types'
 import { cn, formatDate, formatDateShort, todayISO } from '@/lib/utils'
 import { CALL_ITEM_KIND_LABELS, CALL_ITEM_KIND_STYLES } from '@/lib/calls/ui'
+import { daysSince, isOpenFinding } from '@/lib/inspections/dispositions'
+import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { OBLIGATION_SOURCES, OPEN_STATUSES } from '@/lib/tasks/vocab'
 import { ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
@@ -22,7 +24,11 @@ import {
 } from 'lucide-react'
 
 type PropertyRef = { id: string; name: string }
-type FindingRef = { id: string; item_label: string; section_name: string; property_id: string; inspection_date: string }
+type FindingRef = {
+  id: string; item_label: string; section_name: string; property_id: string
+  inspection_date: string; disposition: string; disposition_at: string | null
+  communicated_at: string | null
+}
 
 type AgendaData = {
   pmcName: string
@@ -111,9 +117,13 @@ function AgendaContent() {
               .in('status', OPEN_STATUSES)
               .lt('due_date', today)
               .order('due_date', { ascending: true }),
+            // Disposition-driven: what a call can move is flagged
+            // findings (ANY flagged — even observations; flagging IS the
+            // ask) plus untriaged open follow-ups. Watched/accepted/
+            // resolved/tasked/capex findings have owners already.
             supabase.from('inspection_items')
-              .select('id, item_label, section_name, task_id, tasks(status), inspections!inner(property_id, inspection_date)')
-              .eq('requires_action', true)
+              .select('id, item_label, section_name, requires_action, disposition, disposition_at, communicated_at, inspections!inner(property_id, inspection_date)')
+              .in('disposition', ['flagged', 'open'])
               .in('inspections.property_id', propertyIds),
           ])
           if (waitingRes.error) throw waitingRes.error
@@ -124,21 +134,30 @@ function AgendaContent() {
           obligations = (obligationsRes.data ?? []) as Task[]
           overdue = (overdueRes.data ?? []) as Task[]
 
-          // A finding stays on the agenda while it's not yet tasked OR its
-          // task is still open — resolved (done-task) findings drop off.
-          // The task status rides along in the embed (one round-trip).
+          // The canonical open-finding rule narrows the two fetched
+          // dispositions: flagged rows always count; open rows only when
+          // they require action (an untriaged pure observation isn't
+          // call material). Flagged findings lead, oldest flag first —
+          // those are the ones the PM owes an answer on.
           const rawFindings = (findingsRes.data ?? []) as unknown as {
-            id: string; item_label: string; section_name: string; task_id: string | null
-            tasks: { status: string } | null
+            id: string; item_label: string; section_name: string
+            requires_action: boolean
+            disposition: string; disposition_at: string | null
+            communicated_at: string | null
             inspections: { property_id: string; inspection_date: string }
           }[]
           findings = rawFindings
-            .filter(f => !f.task_id || f.tasks?.status !== 'done')
+            .filter(isOpenFinding)
             .map(f => ({
               id: f.id, item_label: f.item_label, section_name: f.section_name,
               property_id: f.inspections.property_id,
               inspection_date: f.inspections.inspection_date,
+              disposition: f.disposition, disposition_at: f.disposition_at,
+              communicated_at: f.communicated_at,
             }))
+            .sort((a, b) =>
+              (a.disposition === 'flagged' ? 0 : 1) - (b.disposition === 'flagged' ? 0 : 1)
+              || (a.disposition_at ?? '').localeCompare(b.disposition_at ?? ''))
         }
 
         // Last processed call for this PMC + its unresolved items.
@@ -223,8 +242,11 @@ function AgendaContent() {
         `- [${CALL_ITEM_KIND_LABELS[i.kind]}] ${i.description}${i.owner ? ` (${i.owner})` : ''}`))
       section('Deadlines ≤60 days', p.obligations.map(t =>
         `- ${t.title} — due ${formatDateShort(t.due_date)}`))
-      section('Open inspection findings', p.findings.map(f =>
-        `- ${f.item_label} (${f.section_name}, inspected ${formatDateShort(f.inspection_date)})`))
+      section('Flagged & untriaged findings', p.findings.map(f => {
+        const age = daysSince(f.disposition_at)
+        const flag = f.disposition === 'flagged' ? `[FLAGGED${age != null ? ` ${age}d` : ''}] ` : ''
+        return `- ${flag}${f.item_label} (${f.section_name}, inspected ${formatDateShort(f.inspection_date)})`
+      }))
       section('Overdue tasks', p.overdue.map(t =>
         `- ${t.title} — due ${formatDateShort(t.due_date)} (${overdueDays(t.due_date!)}d overdue)`))
     }
@@ -383,10 +405,14 @@ function PropertyAgendaCard({ data }: { data: PerProperty }) {
               </li>
             ))}
           </AgendaSection>
-          <AgendaSection title="Open inspection findings" show={data.findings.length > 0}>
+          <AgendaSection title="Flagged & untriaged findings" show={data.findings.length > 0}>
             {data.findings.map(f => (
-              <li key={f.id} className="text-sm text-slate-700">
-                {f.item_label} <span className="text-xs text-slate-400">({f.section_name}, inspected {formatDateShort(f.inspection_date)})</span>
+              <li key={f.id} className="text-sm text-slate-700 flex items-baseline gap-2">
+                {/* The shared chip renderer — flagged shows aging (and a
+                    communicated stamp when one exists); 'open' renders
+                    no chip, matching every other surface. */}
+                <DispositionChip item={f} className="flex-shrink-0" />
+                <span>{f.item_label} <span className="text-xs text-slate-400">({f.section_name}, inspected {formatDateShort(f.inspection_date)})</span></span>
               </li>
             ))}
           </AgendaSection>

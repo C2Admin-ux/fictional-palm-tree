@@ -5,6 +5,7 @@ import type { Inspection, InspectionItem } from '@/lib/supabase/types'
 import { TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS } from '@/lib/inspections/templates'
 import { buildSectionInstances, groupItemsByInstance } from '@/lib/inspections/sections'
 import { inspectionScore, scoreGrade } from '@/lib/inspections/score'
+import { selectActionItems, selectFlagged } from '@/lib/inspections/selectors'
 import { BUCKET } from '@/lib/inspections/photos'
 import { renderInspectionReport, type ReportData, type ReportPhoto } from '@/lib/inspections/report'
 import { formatDate } from '@/lib/utils'
@@ -100,7 +101,12 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     // ── Assemble + render ───────────────────────────────────────
     const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
     const instances = buildSectionInstances(template, items)
-    const actionItems = items.filter(i => i.requires_action)
+    // Shared selectors — the same functions the email builder uses, so
+    // the PDF and the email can never disagree about what the PM is
+    // asked to act on. Action items exclude settled (accepted/resolved)
+    // findings; flagged findings lead the report.
+    const actionItems = selectActionItems(items)
+    const flaggedItems = selectFlagged(items)
     const score = inspectionScore(items)
 
     const data: ReportData = {
@@ -115,6 +121,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       openFindings: actionItems.length,
       groups: groupItemsByInstance(instances, items),
       actionItems,
+      flaggedItems,
       photos,
       omittedPhotos,
     }
