@@ -71,8 +71,7 @@ export default async function PropertyPage({
     inspectionCountRes,
     { data: inspections },
     { data: trashContracts },
-    openFindingCountRes,
-    { data: openFindingRows },
+    openFindingsRes,
     { data: tabFindingRows },
   ] = await Promise.all([
     // Count feeds the Overview card only. The Tasks tab label carries
@@ -108,25 +107,19 @@ export default async function PropertyPage({
     supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`),
     // Open findings rollup (Overview card): the canonical open-finding
     // rule (lib/inspections/dispositions.isOpenFinding) pushed into the
-    // query — unsettled dispositions, minus untriaged pure observations
-    // — count for the header, a lean 8-row preview (first photo only
-    // ships to the client).
+    // query — unsettled dispositions, minus untriaged pure observations.
+    // ONE query serves both the header count (exact, over the full
+    // filtered set) and the lean 8-row preview (first photo only ships
+    // to the client).
     tab === 'overview'
       ? supabase.from('inspection_items')
-          .select('id, inspections!inner(property_id)', { count: 'exact', head: true })
-          .eq('inspections.property_id', params.id)
-          .in('disposition', [...UNSETTLED_DISPOSITIONS])
-          .or('requires_action.eq.true,disposition.neq.open')
-      : Promise.resolve({ count: null }),
-    tab === 'overview'
-      ? supabase.from('inspection_items')
-          .select(FINDING_ROW_SELECT)
+          .select(FINDING_ROW_SELECT, { count: 'exact' })
           .eq('inspections.property_id', params.id)
           .in('disposition', [...UNSETTLED_DISPOSITIONS])
           .or('requires_action.eq.true,disposition.neq.open')
           .order('created_at', { ascending: false })
           .limit(8)
-      : Promise.resolve({ data: null }),
+      : Promise.resolve({ data: null, count: null }),
     // The Inspections tab's full findings list carries EVERY disposition —
     // the client filter chips narrow it, never the fetch.
     tab === 'inspections'
@@ -157,8 +150,8 @@ export default async function PropertyPage({
   const propPermits = permits ?? []
   const inspectionCount = inspectionCountRes.count ?? 0
   const propInspections = (inspections ?? []) as unknown as InspectionTabRow[]
-  const openFindingCount = openFindingCountRes.count ?? 0
-  const openFindings = ((openFindingRows ?? []) as any[]).map(toFindingRow)
+  const openFindingCount = openFindingsRes.count ?? 0
+  const openFindings = ((openFindingsRes.data ?? []) as any[]).map(toFindingRow)
   const tabFindings = ((tabFindingRows ?? []) as any[]).map(toFindingRow)
   const latestMetric = propMetrics[0]
   const p = property as any

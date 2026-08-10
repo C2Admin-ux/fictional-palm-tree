@@ -40,6 +40,7 @@ import { Modal } from '@/components/ui/modal'
 import { InlineText, InlineDate } from '@/components/ui/inline-edit'
 import { toast } from '@/components/ui/toast'
 import { isOverlayOpen } from '@/lib/ui/overlay'
+import { isEditableTarget, isNavKey, isRepeatedActionKey } from '@/lib/ui/keyboard'
 import { findingTaskInsertPayload, insertTask } from '@/lib/tasks/create'
 import {
   ArrowLeft, Camera, X, Flag, Trash2, Pencil,
@@ -51,7 +52,15 @@ import {
 type InspectionDetail = Inspection & { properties: { name: string } | null }
 
 // A prior inspection's watch-listed finding, with its walk date embedded.
-type WatchRow = InspectionItem & { inspections: { property_id: string; inspection_date: string } }
+// Lean shape — exactly the columns the watch loop reads/carries (see
+// WATCH_ROW_SELECT), not the full row.
+type WatchRow = Pick<InspectionItem,
+  'id' | 'inspection_id' | 'section_name' | 'unit_number' | 'item_label'
+  | 'requires_action' | 'action_priority' | 'photo_paths'
+  | 'disposition' | 'disposition_note' | 'disposition_at' | 'watch_count'
+> & { inspections: { property_id: string; inspection_date: string } }
+
+const WATCH_ROW_SELECT = 'id, inspection_id, section_name, unit_number, item_label, requires_action, action_priority, photo_paths, disposition, disposition_note, disposition_at, watch_count, inspections!inner(property_id, inspection_date)'
 
 export default function InspectionDetailPage() {
   const params = useParams<{ id: string }>()
@@ -135,7 +144,7 @@ export default function InspectionDetailPage() {
     if (!propertyId || !isDraftStatus) { setWatchItems([]); return }
     let cancelled = false
     supabase.from('inspection_items')
-      .select('*, inspections!inner(property_id, inspection_date)')
+      .select(WATCH_ROW_SELECT)
       .eq('inspections.property_id', propertyId)
       .neq('inspection_id', inspectionId)
       .eq('disposition', 'watch')
@@ -940,15 +949,8 @@ export default function InspectionDetailPage() {
 // every key for mouse users. Desktop-only: below md the section collapses
 // to a one-line pointer (triage happens at a desk, not onsite). The
 // counter drains to "Fully triaged ✓". Keys are inert while any
-// input/select/modal has focus — same guards as the tasks page keyboard
-// layer (components/tasks/use-task-list-shortcuts).
-
-function isEditableTarget(): boolean {
-  const el = document.activeElement as HTMLElement | null
-  if (!el) return false
-  const tag = el.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
-}
+// input/select/modal has focus — the SAME shared guards as the tasks
+// page keyboard layer (lib/ui/keyboard).
 
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
@@ -1036,11 +1038,10 @@ function TriageSection({ items, photoUrls, localPreviews, onDisposition, onCreat
       if (s.untriaged.length === 0) return
       const ids = s.untriaged.map(i => i.id)
       const idx = s.selectedId ? ids.indexOf(s.selectedId) : -1
-      const isNav = e.key === 'j' || e.key === 'k' || e.key === 'ArrowDown' || e.key === 'ArrowUp'
       // Held-down keys only repeat navigation — a repeating disposition
-      // key would mow through the queue.
-      if (e.repeat && !isNav) return
-      if (isNav) {
+      // key would mow through the queue (shared guard, lib/ui/keyboard).
+      if (isRepeatedActionKey(e)) return
+      if (isNavKey(e)) {
         e.preventDefault()
         const dir = e.key === 'j' || e.key === 'ArrowDown' ? 1 : -1
         const next = idx === -1

@@ -14,7 +14,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { CallItem, Task } from '@/lib/supabase/types'
 import { cn, formatDate, formatDateShort, todayISO } from '@/lib/utils'
 import { CALL_ITEM_KIND_LABELS, CALL_ITEM_KIND_STYLES } from '@/lib/calls/ui'
-import { daysSince } from '@/lib/inspections/dispositions'
+import { daysSince, isOpenFinding } from '@/lib/inspections/dispositions'
+import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { OBLIGATION_SOURCES, OPEN_STATUSES } from '@/lib/tasks/vocab'
 import { ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
@@ -26,6 +27,7 @@ type PropertyRef = { id: string; name: string }
 type FindingRef = {
   id: string; item_label: string; section_name: string; property_id: string
   inspection_date: string; disposition: string; disposition_at: string | null
+  communicated_at: string | null
 }
 
 type AgendaData = {
@@ -115,12 +117,12 @@ function AgendaContent() {
               .in('status', OPEN_STATUSES)
               .lt('due_date', today)
               .order('due_date', { ascending: true }),
-            // Triage narrowed this to what a call can move: findings the
-            // PM was flagged on, plus untriaged ones. Watched/accepted/
+            // Disposition-driven: what a call can move is flagged
+            // findings (ANY flagged — even observations; flagging IS the
+            // ask) plus untriaged open follow-ups. Watched/accepted/
             // resolved/tasked/capex findings have owners already.
             supabase.from('inspection_items')
-              .select('id, item_label, section_name, task_id, disposition, disposition_at, tasks(status), inspections!inner(property_id, inspection_date)')
-              .eq('requires_action', true)
+              .select('id, item_label, section_name, requires_action, disposition, disposition_at, communicated_at, inspections!inner(property_id, inspection_date)')
               .in('disposition', ['flagged', 'open'])
               .in('inspections.property_id', propertyIds),
           ])
@@ -132,24 +134,26 @@ function AgendaContent() {
           obligations = (obligationsRes.data ?? []) as Task[]
           overdue = (overdueRes.data ?? []) as Task[]
 
-          // A finding stays on the agenda while it's not yet tasked OR its
-          // task is still open — resolved (done-task) findings drop off.
-          // The task status rides along in the embed (one round-trip).
-          // Flagged findings lead, oldest flag first — those are the ones
-          // the PM owes an answer on.
+          // The canonical open-finding rule narrows the two fetched
+          // dispositions: flagged rows always count; open rows only when
+          // they require action (an untriaged pure observation isn't
+          // call material). Flagged findings lead, oldest flag first —
+          // those are the ones the PM owes an answer on.
           const rawFindings = (findingsRes.data ?? []) as unknown as {
-            id: string; item_label: string; section_name: string; task_id: string | null
+            id: string; item_label: string; section_name: string
+            requires_action: boolean
             disposition: string; disposition_at: string | null
-            tasks: { status: string } | null
+            communicated_at: string | null
             inspections: { property_id: string; inspection_date: string }
           }[]
           findings = rawFindings
-            .filter(f => !f.task_id || f.tasks?.status !== 'done')
+            .filter(isOpenFinding)
             .map(f => ({
               id: f.id, item_label: f.item_label, section_name: f.section_name,
               property_id: f.inspections.property_id,
               inspection_date: f.inspections.inspection_date,
               disposition: f.disposition, disposition_at: f.disposition_at,
+              communicated_at: f.communicated_at,
             }))
             .sort((a, b) =>
               (a.disposition === 'flagged' ? 0 : 1) - (b.disposition === 'flagged' ? 0 : 1)
@@ -402,19 +406,15 @@ function PropertyAgendaCard({ data }: { data: PerProperty }) {
             ))}
           </AgendaSection>
           <AgendaSection title="Flagged & untriaged findings" show={data.findings.length > 0}>
-            {data.findings.map(f => {
-              const age = daysSince(f.disposition_at)
-              return (
-                <li key={f.id} className="text-sm text-slate-700 flex items-baseline gap-2">
-                  {f.disposition === 'flagged' && (
-                    <span className="badge text-red-700 bg-white border-red-400 flex-shrink-0">
-                      flagged{age != null ? ` ${age}d` : ''}
-                    </span>
-                  )}
-                  <span>{f.item_label} <span className="text-xs text-slate-400">({f.section_name}, inspected {formatDateShort(f.inspection_date)})</span></span>
-                </li>
-              )
-            })}
+            {data.findings.map(f => (
+              <li key={f.id} className="text-sm text-slate-700 flex items-baseline gap-2">
+                {/* The shared chip renderer — flagged shows aging (and a
+                    communicated stamp when one exists); 'open' renders
+                    no chip, matching every other surface. */}
+                <DispositionChip item={f} className="flex-shrink-0" />
+                <span>{f.item_label} <span className="text-xs text-slate-400">({f.section_name}, inspected {formatDateShort(f.inspection_date)})</span></span>
+              </li>
+            ))}
           </AgendaSection>
           <AgendaSection title="Overdue tasks" show={data.overdue.length > 0}>
             {data.overdue.map(t => (
