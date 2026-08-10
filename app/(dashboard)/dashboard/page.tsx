@@ -15,8 +15,8 @@ import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import {
-  cn, todayISO, addDaysToDate, formatDate,
-  propertyColor, PRIORITY_DOT,
+  cn, todayISO, addDaysToDate, formatCurrency, formatDate,
+  propertyColor, propertyAbbr, PRIORITY_DOT,
 } from '@/lib/utils'
 import {
   assembleDecisions, selectWeekTasks, selectWaitingBids,
@@ -25,11 +25,15 @@ import {
   type CapexSignalRow, type DecisionSignal, type WeekdayGroup, type WaitingBidsSignal,
   type SeasonalWindowLine,
 } from '@/lib/dashboard/signals'
-import { daysSince } from '@/lib/inspections/dispositions'
+import { isMine } from '@/lib/tasks/agenda'
+import { topLevel } from '@/lib/tasks/subtasks'
+import { daysSince, isOpenFinding, UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
+import { inspectionScore, scoreGrade, GRADE_STYLES, type ScoreGrade } from '@/lib/inspections/score'
 import { SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY } from '@/lib/tasks/seasonal'
+import { StatTile } from '@/components/ui/stat-tile'
 import { DashboardLanes } from './lanes'
 import {
-  Scale, FileSignature, Shield, HardHat, CalendarRange, CalendarClock,
+  Scale, FileSignature, Shield, HardHat, CalendarRange, CheckSquare, Flag, CalendarClock,
 } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
@@ -57,6 +61,12 @@ type CapexRow = {
 }
 type ContractRow = { id: string; title: string; vendor_name: string; cancel_deadline: string }
 type PolicyRow = { id: string; carrier: string; policy_type: string; expiry_date: string }
+type CompletedInspectionRow = { id: string; property_id: string; inspection_date: string }
+type OpenFindingRow = {
+  requires_action: boolean; disposition: string
+  inspections: { property_id: string } | null
+}
+type GradeItemRow = { inspection_id: string; requires_action: boolean; action_priority: string | null; disposition: string }
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -76,6 +86,8 @@ export default async function DashboardPage() {
     capexRes,
     contractsRes,
     policiesRes,
+    completedInspRes,
+    openFindingsRes,
     seasonSettingsRes,
   ] = await Promise.all([
     supabase.auth.getUser(),
@@ -112,6 +124,16 @@ export default async function DashboardPage() {
       .select('id, carrier, policy_type, expiry_date')
       .eq('status', 'active')
       .lte('expiry_date', in90),
+    supabase.from('inspections')
+      .select('id, property_id, inspection_date')
+      .in('status', ['submitted', 'report_sent'])
+      .order('inspection_date', { ascending: false }),
+    // Canonical open-finding candidates (dispositions.ts): unsettled,
+    // completed client-side with isOpenFinding.
+    supabase.from('inspection_items')
+      .select('requires_action, disposition, inspections!inner(property_id)')
+      .in('disposition', [...UNSETTLED_DISPOSITIONS])
+      .or('requires_action.eq.true,disposition.neq.open'),
     supabase.from('alert_settings')
       .select('setting_key, value')
       .is('property_id', null)
@@ -189,6 +211,51 @@ export default async function DashboardPage() {
       .map(s => [s.setting_key, s.value])
   ))
 
+  // ── PORTFOLIO PULSE ────────────────────────────────────────
+  // Latest completed walk per property → grade (one dependent fetch for
+  // just those inspections' items).
+  const latestInspByProp = new Map<string, string>()
+  for (const i of ((completedInspRes.data ?? []) as CompletedInspectionRow[])) {
+    if (!latestInspByProp.has(i.property_id)) latestInspByProp.set(i.property_id, i.id)
+  }
+  const latestIds = Array.from(latestInspByProp.values())
+  const gradeItemsRes = latestIds.length > 0
+    ? await supabase.from('inspection_items')
+        .select('inspection_id, requires_action, action_priority, disposition')
+        .in('inspection_id', latestIds)
+    : { data: [] as GradeItemRow[], error: null }
+  const itemsByInspection = new Map<string, GradeItemRow[]>()
+  for (const it of ((gradeItemsRes.data ?? []) as GradeItemRow[])) {
+    const arr = itemsByInspection.get(it.inspection_id)
+    if (arr) arr.push(it)
+    else itemsByInspection.set(it.inspection_id, [it])
+  }
+
+  const openFindingRows = (openFindingsRes.data ?? []) as unknown as OpenFindingRow[]
+  const openByProperty = new Map<string, number>()
+  let openFlagCount = 0
+  for (const row of openFindingRows) {
+    if (!isOpenFinding(row)) continue
+    const pid = row.inspections?.property_id
+    if (pid) openByProperty.set(pid, (openByProperty.get(pid) ?? 0) + 1)
+    if (row.disposition === 'flagged') openFlagCount++
+  }
+
+  const pulseChips = properties.map(p => {
+    const inspId = latestInspByProp.get(p.id)
+    const items = inspId ? itemsByInspection.get(inspId) ?? [] : null
+    return {
+      id: p.id, name: p.name,
+      grade: items != null ? scoreGrade(inspectionScore(items)) : null,
+      openFindings: openByProperty.get(p.id) ?? 0,
+    }
+  })
+
+  const myOpenTasks = topLevel(tasks).filter(t => isMine(t, userId))
+  const myOverdue = myOpenTasks.filter(t => t.due_date != null && t.due_date < today).length
+  const capexBudget = capexRows.reduce((s, p) => s + (p.budget ?? 0), 0)
+  const capexSpent = capexRows.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
+
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
       <div>
@@ -208,7 +275,10 @@ export default async function DashboardPage() {
         propertyNames={propertyNames}
         decisions={<DecisionsLane signals={decisions} />}
         week={<WeekLane groups={weekGroups} waitingBids={waitingBids} seasons={seasons} />}
-        pulse={null}
+        pulse={<PulseStrip chips={pulseChips}
+          openTasks={myOpenTasks.length} overdue={myOverdue}
+          capexCount={capexRows.length} capexBudget={capexBudget} capexSpent={capexSpent}
+          openFlags={openFlagCount} />}
       />
     </div>
   )
@@ -336,6 +406,53 @@ function WeekLane({ groups, waitingBids, seasons }: {
           {s.label}
         </div>
       ))}
+    </section>
+  )
+}
+
+// ── 4 · PORTFOLIO PULSE (server-rendered) ────────────────────
+
+function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexSpent, openFlags }: {
+  chips: { id: string; name: string; grade: ScoreGrade | null; openFindings: number }[]
+  openTasks: number
+  overdue: number
+  capexCount: number
+  capexBudget: number
+  capexSpent: number
+  openFlags: number
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="card px-3 py-2 flex flex-wrap items-center gap-2">
+        {chips.length === 0 && <span className="text-sm text-slate-400 px-1">No active properties</span>}
+        {chips.map(c => (
+          <Link key={c.id} href={`/properties/${c.id}`} title={c.name}
+            className="flex items-center gap-1.5 border border-slate-200 rounded-full pl-2 pr-2.5 py-1 hover:border-blue-300 hover:bg-slate-50 transition-colors">
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: propertyColor(c.name) }} />
+            <span className="text-xs font-semibold text-slate-700">{propertyAbbr(c.name)}</span>
+            {c.grade != null && (
+              <span className={cn('text-[10px] font-bold px-1 rounded border leading-4', GRADE_STYLES[c.grade])}>
+                {c.grade}
+              </span>
+            )}
+            <span className={cn('text-xs', c.openFindings > 0 ? 'text-amber-600 font-medium' : 'text-slate-400')}>
+              {c.openFindings} open
+            </span>
+          </Link>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <StatTile label="Open Tasks" value={String(openTasks)}
+          sub={overdue > 0 ? `${overdue} overdue` : 'none overdue'}
+          icon={<CheckSquare size={15} />} alert={overdue > 0} href="/tasks" />
+        <StatTile label="Active CapEx" value={String(capexCount)}
+          sub={`${formatCurrency(capexSpent, true)} spent of ${formatCurrency(capexBudget, true)}`}
+          icon={<HardHat size={15} />} href="/capex" />
+        <StatTile label="Open Flags" value={String(openFlags)}
+          sub="flagged findings in play"
+          icon={<Flag size={15} />} alert={openFlags > 0} href="/inspections" />
+      </div>
     </section>
   )
 }
