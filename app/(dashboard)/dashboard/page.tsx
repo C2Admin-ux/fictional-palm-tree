@@ -1,227 +1,352 @@
+// Dashboard — a GENERATED daily guide, not a KPI wall. Four lanes:
+//   1 TODAY            ranked actionable list (interactive task rows)
+//   2 DECISIONS        the executive queue (bids ready, closing windows)
+//   3 THIS WEEK        the 7-day forecast + waiting-on + open seasons
+//   4 PORTFOLIO PULSE  one slim strip of property chips + three tiles
+//
+// Server component does every read in parallel with lean selects; all
+// pure derivation lives in lib/dashboard/signals.ts (shared with the
+// client Today lane so re-ranking after a mutation can't drift). Each
+// non-core signal query is individually guarded: on error its rows go
+// null and the signal is simply omitted — one broken source never
+// blanks the whole guide.
+
 import { createClient } from '@/lib/supabase/server'
-import {
-  formatCurrency, formatPct, occupancyColor, delinquencyColor,
-  noiVarianceColor, TRAFFIC_LIGHT, propertyColor, daysUntil, PRIORITY_DOT,
-} from '@/lib/utils'
 import Link from 'next/link'
-import { AlertTriangle, CheckSquare, HardHat, TrendingUp, Building2, Shield } from 'lucide-react'
-import { StatTile } from '@/components/ui/stat-tile'
+import { format, parseISO } from 'date-fns'
+import {
+  cn, todayISO, addDaysToDate, formatDate,
+  propertyColor, PRIORITY_DOT,
+} from '@/lib/utils'
+import {
+  assembleDecisions, selectWeekTasks, selectWaitingBids,
+  seasonalWindows, daysBetween,
+  type DashboardTask, type TriageSignal, type DraftCallSignal, type StaleFlagSignal,
+  type CapexSignalRow, type DecisionSignal, type WeekdayGroup, type WaitingBidsSignal,
+  type SeasonalWindowLine,
+} from '@/lib/dashboard/signals'
+import { daysSince } from '@/lib/inspections/dispositions'
+import { SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY } from '@/lib/tasks/seasonal'
+import { DashboardLanes } from './lanes'
+import {
+  Scale, FileSignature, Shield, HardHat, CalendarRange, CalendarClock,
+} from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
 
+// ── Raw query-row shapes (lean selects below) ────────────────
+type TriageRow = {
+  id: string; inspection_date: string
+  properties: { name: string } | null
+  inspection_items: { disposition: string }[]
+}
+type DraftCallRow = {
+  id: string; title: string; created_at: string
+  pmcs: { name: string } | null
+  call_items: { kind: string }[]
+}
+type FlagRow = {
+  id: string; inspection_id: string; disposition_at: string | null
+  inspections: { properties: { name: string } | null } | null
+}
+type CapexRow = {
+  id: string; title: string; status: string
+  budget: number | null; actual_spend: number | null; bids_target: number | null
+  properties: { name: string } | null
+  capex_bids: { vendor_name: string; status: 'requested' | 'received' | 'declined' | 'selected' | 'rejected'; amount: number | null; requested_at: string | null }[]
+}
+type ContractRow = { id: string; title: string; vendor_name: string; cancel_deadline: string }
+type PolicyRow = { id: string; carrier: string; policy_type: string; expiry_date: string }
+
 export default async function DashboardPage() {
   const supabase = await createClient()
+  const today = todayISO()
+  const in30 = addDaysToDate(today, 30)
+  const in90 = addDaysToDate(today, 90)
+  const draftCallCutoff = new Date(Date.now() - 1 * 86400000).toISOString()
+  const staleFlagCutoff = new Date(Date.now() - 3 * 86400000).toISOString()
 
   const [
-    { data: properties },
-    { data: allMetrics },
-    { data: tasks },
-    { data: capexProjects },
-    { data: policies },
-    { data: claims },
+    { data: auth },
+    propertiesRes,
+    tasksRes,
+    triageRes,
+    callsRes,
+    flagsRes,
+    capexRes,
+    contractsRes,
+    policiesRes,
+    seasonSettingsRes,
   ] = await Promise.all([
-    supabase.from('properties').select('*, pmcs(name)').eq('status', 'active').order('name'),
-    supabase.from('pm_metrics').select('*').order('period_month', { ascending: false }),
-    // Top-level tasks only: subtasks never render outside their
-    // parent's drill-down, so the KPI count, overdue count, per-property
-    // counts, and the Top Open Tasks list all exclude them.
-    supabase.from('tasks').select('id, status, priority, property_id, title, due_date')
-      .neq('status', 'done').is('parent_task_id', null),
-    supabase.from('capex_projects').select('id, property_id, title, status, budget, actual_spend').in('status', ['planning', 'approved', 'in_progress']),
-    supabase.from('insurance_policies').select('id, property_id, policy_type, carrier, expiry_date, status').eq('status', 'active'),
-    supabase.from('insurance_claims').select('id, property_id, status, amount_claimed').neq('status', 'closed').neq('status', 'denied'),
+    supabase.auth.getUser(),
+    supabase.from('properties').select('id, name').eq('status', 'active').order('name'),
+    // ALL my open tasks including subtasks — the Today lane needs the
+    // children so completing a parent sweeps them (openSubtasksOf),
+    // and every list derivation starts from topLevel().
+    supabase.from('tasks').select('*, properties(name)').neq('status', 'done'),
+    // Submitted walks with untriaged findings: the embed is filtered to
+    // disposition='open' so only the untriaged rows ride along.
+    supabase.from('inspections')
+      .select('id, inspection_date, properties(name), inspection_items(disposition)')
+      .eq('status', 'submitted')
+      .eq('inspection_items.disposition', 'open'),
+    supabase.from('calls')
+      .select('id, title, created_at, pmcs(name), call_items(kind)')
+      .eq('status', 'draft')
+      .lte('created_at', draftCallCutoff),
+    supabase.from('inspection_items')
+      .select('id, inspection_id, disposition_at, inspections!inner(properties(name))')
+      .eq('disposition', 'flagged')
+      .is('communicated_at', null)
+      .lte('disposition_at', staleFlagCutoff),
+    supabase.from('capex_projects')
+      .select('id, title, status, budget, actual_spend, bids_target, properties(name), capex_bids(vendor_name, status, amount, requested_at)')
+      .in('status', ['planning', 'approved', 'in_progress']),
+    supabase.from('contracts')
+      .select('id, title, vendor_name, cancel_deadline')
+      .eq('status', 'active')
+      .gte('cancel_deadline', today)
+      .lte('cancel_deadline', in30),
+    // The old expiring-policies banner, folded into Decisions rows.
+    supabase.from('insurance_policies')
+      .select('id, carrier, policy_type, expiry_date')
+      .eq('status', 'active')
+      .lte('expiry_date', in90),
+    supabase.from('alert_settings')
+      .select('setting_key, value')
+      .is('property_id', null)
+      .in('setting_key', [SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY]),
   ])
 
-  const latestMetric: Record<string, any> = {}
-  for (const m of (allMetrics ?? [])) {
-    if (!latestMetric[m.property_id]) latestMetric[m.property_id] = m
-  }
+  const userId = auth.user?.id ?? null
+  const properties = (propertiesRes.data ?? []) as { id: string; name: string }[]
+  const tasks = (tasksRes.data ?? []) as unknown as DashboardTask[]
+  const propertyNames = Object.fromEntries(properties.map(p => [p.id, p.name]))
 
-  const props = (properties ?? []) as any[]
-  const openTasks = (tasks ?? []) as any[]
-  const capex = (capexProjects ?? []) as any[]
-  const allPolicies = (policies ?? []) as any[]
-  const openClaims = (claims ?? []) as any[]
+  // ── TODAY link signals (each source individually guarded) ──
+  const triage: TriageSignal[] | null = triageRes.error ? null
+    : ((triageRes.data ?? []) as unknown as TriageRow[])
+        .filter(i => i.inspection_items.length > 0)
+        .map(i => {
+          const n = i.inspection_items.length
+          return {
+            kind: 'inspection_triage' as const, id: `triage:${i.id}`, href: `/inspections/${i.id}`,
+            title: `Triage inspection — ${n} untriaged finding${n === 1 ? '' : 's'}`,
+            propertyName: i.properties?.name ?? null,
+            untriaged: n,
+            ageDays: Math.max(0, daysBetween(i.inspection_date, today)),
+          }
+        })
 
-  const propsWithMetrics = props.filter(p => latestMetric[p.id]?.occupancy_pct != null)
-  const avgOccupancy = propsWithMetrics.length
-    ? propsWithMetrics.reduce((s, p) => s + latestMetric[p.id].occupancy_pct, 0) / propsWithMetrics.length
-    : null
+  const draftCalls: DraftCallSignal[] | null = callsRes.error ? null
+    : ((callsRes.data ?? []) as unknown as DraftCallRow[]).map(c => {
+        const n = c.call_items.filter(i => i.kind === 'action').length
+        return {
+          kind: 'draft_call' as const, id: `call:${c.id}`, href: `/calls/${c.id}`,
+          title: `Review call: ${c.title || c.pmcs?.name || 'Untitled call'} · ${n} proposed item${n === 1 ? '' : 's'}`,
+          proposedItems: n,
+          ageDays: daysSince(c.created_at) ?? 0,
+        }
+      })
 
-  const overdueCount = openTasks.filter(t => t.due_date && new Date(t.due_date) < new Date()).length
-  const totalCapexBudget = capex.reduce((s, p) => s + (p.budget ?? 0), 0)
-  const expiringPolicies = allPolicies.filter(p => { const d = daysUntil(p.expiry_date); return d != null && d <= 90 })
-  const totalClaimed = openClaims.reduce((s, c) => s + (c.amount_claimed ?? 0), 0)
+  const staleFlags: StaleFlagSignal[] | null = flagsRes.error ? null
+    : Array.from(
+        ((flagsRes.data ?? []) as unknown as FlagRow[])
+          .reduce((acc, row) => {
+            const entry = acc.get(row.inspection_id) ?? {
+              count: 0, oldestDays: 0,
+              propertyName: row.inspections?.properties?.name ?? null,
+            }
+            entry.count += 1
+            entry.oldestDays = Math.max(entry.oldestDays, daysSince(row.disposition_at) ?? 0)
+            return acc.set(row.inspection_id, entry)
+          }, new Map<string, { count: number; oldestDays: number; propertyName: string | null }>())
+          .entries()
+      ).map(([inspectionId, g]) => ({
+        kind: 'stale_flags' as const, id: `flags:${inspectionId}`, href: `/inspections/${inspectionId}`,
+        title: `${g.count} flagged finding${g.count === 1 ? '' : 's'} not yet communicated`,
+        propertyName: g.propertyName, count: g.count, oldestDays: g.oldestDays,
+      }))
 
-  const propMap = Object.fromEntries(props.map(p => [p.id, p.name]))
+  // ── DECISIONS + THIS WEEK inputs ───────────────────────────
+  const capexRows = (capexRes.data ?? []) as unknown as CapexRow[]
+  const capexSignals: CapexSignalRow[] | null = capexRes.error ? null
+    : capexRows.map(p => ({
+        id: p.id, title: p.title, propertyName: p.properties?.name ?? null,
+        bids_target: p.bids_target, bids: p.capex_bids,
+      }))
 
-  const topTasks = [...openTasks]
-    .sort((a, b) => {
-      const pri: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
-      return (pri[a.priority] ?? 2) - (pri[b.priority] ?? 2)
-    })
-    .slice(0, 6)
+  const decisions = assembleDecisions({
+    capex: capexSignals,
+    contracts: contractsRes.error ? null : ((contractsRes.data ?? []) as ContractRow[]),
+    policies: policiesRes.error ? null : ((policiesRes.data ?? []) as PolicyRow[]),
+  }, today)
+
+  const weekGroups = selectWeekTasks(tasks, userId, today)
+  const waitingBids = selectWaitingBids(capexSignals, today)
+  const seasons = seasonalWindows(today, Object.fromEntries(
+    ((seasonSettingsRes.data ?? []) as { setting_key: string; value: unknown }[])
+      .map(s => [s.setting_key, s.value])
+  ))
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
       <div>
-        <h1 className="page-title">Portfolio Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-0.5">{props.length} active properties</p>
+        <h1 className="page-title">{format(parseISO(today), 'EEEE, MMMM d')}</h1>
+        <p className="text-sm text-slate-500 mt-0.5">
+          Your day, generated — edit it as you go. {properties.length} active properties.
+        </p>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <StatTile label="Portfolio Occupancy" value={avgOccupancy != null ? formatPct(avgOccupancy) : '—'} sub={`${propsWithMetrics.length}/${props.length} reporting`} icon={<Building2 size={15} />} />
-        <StatTile label="Open Tasks" value={String(openTasks.length)} sub={overdueCount > 0 ? `${overdueCount} overdue` : 'none overdue'} icon={<CheckSquare size={15} />} alert={overdueCount > 0} href="/tasks" />
-        <StatTile label="Active CapEx" value={String(capex.length)} sub={formatCurrency(totalCapexBudget, true) + ' budget'} icon={<HardHat size={15} />} href="/capex" />
-        <StatTile label="Insurance Expiring" value={String(expiringPolicies.length)} sub="Within 90 days" icon={<Shield size={15} />} alert={expiringPolicies.length > 0} href="/insurance/policies" />
-        <StatTile label="Open Claims" value={String(openClaims.length)} sub={formatCurrency(totalClaimed, true) + ' claimed'} icon={<TrendingUp size={15} />} href="/insurance/claims" />
-      </div>
-
-      {/* Property cards */}
-      <div>
-        <h2 className="section-title mb-3">Properties</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {props.map(property => {
-            const metric = latestMetric[property.id]
-            const propTasks = openTasks.filter(t => t.property_id === property.id)
-            const propCapex = capex.filter(p => p.property_id === property.id)
-            const propExpiring = allPolicies.filter(p => p.property_id === property.id && (daysUntil(p.expiry_date) ?? 999) <= 90)
-            const pc = propertyColor(property.name)
-            const overdueProp = propTasks.filter(t => t.due_date && new Date(t.due_date) < new Date()).length
-
-            return (
-              <Link key={property.id} href={`/properties/${property.id}`} className="card-hover p-4 block">
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: pc }} />
-                      <span className="font-medium text-slate-900 text-sm">{property.name}</span>
-                    </div>
-                    <div className="text-xs text-slate-400 ml-4.5">
-                      {property.city}, {property.state}
-                      {property.units_total ? ` · ${property.units_total} units` : ''}
-                      {' · '}{(property as any).pmcs?.name ?? 'No PMC'}
-                    </div>
-                  </div>
-                  {metric && (
-                    <span className="text-xs text-slate-400 flex-shrink-0 ml-2">
-                      {new Date(metric.period_month + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
-                    </span>
-                  )}
-                </div>
-
-                {metric ? (
-                  <div className="grid grid-cols-3 gap-2 mb-3">
-                    <MetricCell label="Occupancy" value={formatPct(metric.occupancy_pct)} color={occupancyColor(metric.occupancy_pct)} />
-                    <MetricCell label="Delinquency" value={formatPct(metric.delinquency_pct)} color={delinquencyColor(metric.delinquency_pct)} />
-                    <MetricCell label="NOI vs Bud" value={metric.noi_actual && metric.noi_budget ? `${Math.round((metric.noi_actual - metric.noi_budget) / Math.abs(metric.noi_budget) * 100)}%` : '—'} color={noiVarianceColor(metric.noi_actual, metric.noi_budget)} />
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400 italic mb-3 py-1.5">No metrics entered yet</p>
-                )}
-
-                <div className="flex items-center gap-4 pt-2.5 border-t border-slate-100 text-xs text-slate-500">
-                  <span className={overdueProp > 0 ? 'text-red-500 font-medium' : ''}>
-                    <CheckSquare size={11} className="inline mr-1" />{propTasks.length} task{propTasks.length !== 1 ? 's' : ''}
-                    {overdueProp > 0 && ` (${overdueProp} overdue)`}
-                  </span>
-                  <span><HardHat size={11} className="inline mr-1" />{propCapex.length} CapEx</span>
-                  {propExpiring.length > 0 && (
-                    <span className="text-amber-600 font-medium">
-                      <Shield size={11} className="inline mr-1" />{propExpiring.length} expiring
-                    </span>
-                  )}
-                </div>
-              </Link>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Bottom row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-slate-700">Top Open Tasks</h2>
-            <Link href="/tasks" className="text-xs text-blue-600 hover:underline">View all →</Link>
-          </div>
-          {topTasks.length === 0
-            ? <p className="text-sm text-slate-400 italic py-2">No open tasks</p>
-            : topTasks.map(task => {
-              const overdue = task.due_date && new Date(task.due_date) < new Date()
-              return (
-                <div key={task.id} className="flex items-center gap-2.5 py-2 border-b border-slate-200/70 last:border-0">
-                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    style={{ background: PRIORITY_DOT[task.priority] ?? '#94a3b8' }} />
-                  <span className="text-sm text-slate-700 flex-1 truncate">{task.title}</span>
-                  {task.property_id && <span className="text-xs text-slate-400 truncate max-w-[90px] flex-shrink-0">{propMap[task.property_id]}</span>}
-                  {overdue && <AlertTriangle size={12} className="text-red-400 flex-shrink-0" />}
-                </div>
-              )
-            })}
-        </div>
-
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-slate-700">Active CapEx Projects</h2>
-            <Link href="/capex" className="text-xs text-blue-600 hover:underline">View all →</Link>
-          </div>
-          {capex.length === 0
-            ? <p className="text-sm text-slate-400 italic py-2">No active projects</p>
-            : capex.slice(0, 5).map(project => {
-              const pct = project.budget && project.budget > 0 ? Math.min(Math.round((project.actual_spend ?? 0) / project.budget * 100), 100) : 0
-              const over = (project.actual_spend ?? 0) > (project.budget ?? Infinity)
-              return (
-                <div key={project.id} className="mb-3 last:mb-0">
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <Link href={`/capex/${project.id}`} className="text-slate-700 hover:text-blue-600 font-medium truncate max-w-[200px]">{project.title}</Link>
-                    <span className="text-slate-400 ml-2 flex-shrink-0">{formatCurrency(project.actual_spend, true)} / {formatCurrency(project.budget, true)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-slate-100 rounded-full h-1.5">
-                      <div className={`h-1.5 rounded-full ${over ? 'bg-red-400' : 'bg-blue-500'}`} style={{ width: `${pct}%` }} />
-                    </div>
-                    <span className={`text-xs ${over ? 'text-red-500' : 'text-slate-400'}`}>{pct}%</span>
-                  </div>
-                </div>
-              )
-            })}
-        </div>
-      </div>
-
-      {expiringPolicies.length > 0 && (
-        <div className="p-4 border border-amber-200 bg-amber-50 rounded-xl">
-          <div className="flex items-center gap-2 mb-2">
-            <AlertTriangle size={14} className="text-amber-600" />
-            <h2 className="text-sm font-semibold text-amber-800">{expiringPolicies.length} insurance polic{expiringPolicies.length === 1 ? 'y' : 'ies'} expiring within 90 days</h2>
-            <Link href="/insurance/policies" className="ml-auto text-xs text-amber-700 hover:underline">View all →</Link>
-          </div>
-          <div className="divide-y divide-amber-200/70">
-            {expiringPolicies.slice(0, 3).map(p => {
-              const days = daysUntil(p.expiry_date)
-              return (
-                <div key={p.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(days ?? 0) <= 30 ? 'bg-red-500' : 'bg-amber-400'}`} />
-                  <span className="font-medium">{p.carrier}</span>
-                  <span className="text-amber-400">·</span>
-                  <span>{p.policy_type.toUpperCase()}</span>
-                  <span className="ml-auto font-medium">{(days ?? 0) <= 0 ? 'EXPIRED' : `${days}d left`}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      <DashboardLanes
+        initialTasks={tasks}
+        triage={triage}
+        draftCalls={draftCalls}
+        staleFlags={staleFlags}
+        userId={userId}
+        today={today}
+        propertyNames={propertyNames}
+        decisions={<DecisionsLane signals={decisions} />}
+        week={<WeekLane groups={weekGroups} waitingBids={waitingBids} seasons={seasons} />}
+        pulse={null}
+      />
     </div>
   )
 }
 
-function MetricCell({ label, value, color }: { label: string; value: string; color: string }) {
+// ── 2 · DECISIONS WAITING (server-rendered) ──────────────────
+
+function DecisionsLane({ signals }: { signals: DecisionSignal[] }) {
   return (
-    <div className={`rounded-lg px-2 py-1.5 border text-center ${TRAFFIC_LIGHT[color as keyof typeof TRAFFIC_LIGHT] ?? 'text-slate-500 bg-slate-50 border-slate-200'}`}>
-      <div className="text-xs font-semibold leading-none mb-0.5">{value}</div>
-      <div className="text-xs opacity-70">{label}</div>
-    </div>
+    <section className="card">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200">
+        <Scale size={14} className="text-blue-500" />
+        <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Decisions waiting</h2>
+        <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">{signals.length}</span>
+      </div>
+      {signals.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-emerald-600">No decisions waiting ✓</p>
+      ) : signals.map(s => <DecisionRow key={s.id} signal={s} />)}
+    </section>
+  )
+}
+
+function DecisionRow({ signal }: { signal: DecisionSignal }) {
+  const inner = signal.kind === 'bids_ready' ? (
+    <>
+      <HardHat size={14} className="text-emerald-500 flex-shrink-0" />
+      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
+        <span className="font-medium">{signal.project}</span>
+        {': '}{signal.received} bid{signal.received === 1 ? '' : 's'} in — <span className="text-emerald-700 font-medium">decide</span>
+      </span>
+      {signal.propertyName && <ChipSpan name={signal.propertyName} />}
+    </>
+  ) : signal.kind === 'cancel_window' ? (
+    <>
+      <FileSignature size={14} className="text-amber-500 flex-shrink-0" />
+      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
+        Cancel window closes <span className="font-medium">{formatDate(signal.deadline)}</span>
+        {': '}{signal.vendor} — {signal.title}
+      </span>
+      <DaysBadge date={signal.deadline} />
+    </>
+  ) : (
+    <>
+      <Shield size={14} className="text-amber-500 flex-shrink-0" />
+      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
+        Policy renewal: <span className="font-medium">{signal.carrier}</span> · {signal.policyType.toUpperCase()}
+        {' — '}{signal.daysLeft < 0 ? 'expired' : 'expires'} {formatDate(signal.expiry)}
+      </span>
+      <DaysBadge date={signal.expiry} />
+    </>
+  )
+  return (
+    <Link href={signal.href}
+      className="flex items-center gap-2 px-4 py-2 border-b border-slate-200/70 last:border-0 hover:bg-slate-50 transition-colors">
+      {inner}
+    </Link>
+  )
+}
+
+function DaysBadge({ date }: { date: string }) {
+  const days = daysBetween(todayISO(), date)
+  return (
+    <span className={cn('badge flex-shrink-0',
+      days < 0 ? 'text-red-700 bg-red-50 border-red-200'
+      : days <= 30 ? 'text-amber-700 bg-amber-50 border-amber-200'
+      : 'text-slate-500 bg-slate-50 border-slate-200')}>
+      {days < 0 ? 'EXPIRED' : `${days}d left`}
+    </span>
+  )
+}
+
+// ── 3 · THIS WEEK (server-rendered) ──────────────────────────
+
+function WeekLane({ groups, waitingBids, seasons }: {
+  groups: WeekdayGroup[]
+  waitingBids: WaitingBidsSignal[]
+  seasons: SeasonalWindowLine[]
+}) {
+  const taskCount = groups.reduce((s, g) => s + g.tasks.length, 0)
+  const empty = taskCount === 0 && waitingBids.length === 0 && seasons.length === 0
+  return (
+    <section className="card">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200">
+        <CalendarRange size={14} className="text-blue-500" />
+        <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wide">This week</h2>
+        <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">{taskCount}</span>
+        <Link href="/tasks?view=review" className="ml-auto text-xs text-blue-600 hover:underline">
+          Plan my week →
+        </Link>
+      </div>
+
+      {empty && <p className="px-4 py-4 text-sm text-slate-400">Nothing scheduled for the next 7 days.</p>}
+
+      {groups.map(g => (
+        <div key={g.date}>
+          <div className="px-4 py-1 bg-slate-50 border-b border-slate-200/70 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            {g.label}
+          </div>
+          {g.tasks.map(t => (
+            <div key={t.id} className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0">
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                style={{ background: PRIORITY_DOT[t.priority] ?? '#94a3b8' }} />
+              <span className="flex-1 min-w-0 truncate text-sm text-slate-700">{t.title}</span>
+              {t.properties?.name && <ChipSpan name={t.properties.name} />}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {waitingBids.map(w => (
+        <Link key={w.id} href={w.href}
+          className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0 hover:bg-slate-50 transition-colors">
+          <HardHat size={14} className="text-amber-500 flex-shrink-0" />
+          <span className="flex-1 min-w-0 truncate text-sm text-slate-700">
+            <span className="font-medium">{w.project}</span>: waiting on {w.vendors.join(', ')}
+            {w.oldestRequestDays != null && <span className="text-slate-400"> · {w.oldestRequestDays}d</span>}
+          </span>
+          {w.propertyName && <ChipSpan name={w.propertyName} />}
+        </Link>
+      ))}
+
+      {seasons.map(s => (
+        <div key={s.key} className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0 text-sm text-slate-600">
+          <CalendarClock size={14} className="text-sky-500 flex-shrink-0" />
+          {s.label}
+        </div>
+      ))}
+    </section>
+  )
+}
+
+// Property chip for server rows (the client lane has its own).
+function ChipSpan({ name }: { name: string }) {
+  const pc = propertyColor(name)
+  return (
+    <span className="hidden sm:inline-block flex-shrink-0 max-w-[13ch] truncate text-xs font-medium px-1.5 py-0.5 rounded"
+      style={{ background: `${pc}18`, color: pc }} title={name}>
+      {name}
+    </span>
   )
 }
