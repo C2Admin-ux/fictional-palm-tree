@@ -12,6 +12,7 @@ import {
   propertyColor, propertyAbbr,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
+import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
@@ -238,11 +239,15 @@ function TasksInner() {
   // saved views.
   const [groupBy, setGroupBy] = useState<GroupByMode>('status')
 
-  // View mode. Agenda is the default, but deep links that carry a
-  // property/capex filter land on the list where those filters live.
-  const [view, setView] = useState<ViewMode>(() =>
-    searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
-  )
+  // View mode. Agenda is the default; an explicit ?view= deep link wins
+  // (the dashboard's "Plan my week →" lands on Review), and deep links
+  // that carry a property/capex filter land on the list where those
+  // filters live.
+  const [view, setView] = useState<ViewMode>(() => {
+    const v = searchParams.get('view')
+    if (v === 'agenda' || v === 'all' || v === 'review') return v
+    return searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
+  })
 
   // Collapsed sections (All tasks view) — keyed per grouping so a
   // collapse in one group-by doesn't leak into another.
@@ -1105,26 +1110,22 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
-    // Actionable-now semantics. Subtasks never surface as top-level
-    // rows — they live in their parent's drill-down only (shared
-    // topLevel helper, lib/tasks/subtasks.ts).
+    // Actionable-now semantics — the shared MINE / AWAKE / UNBLOCKED
+    // predicates (lib/tasks/agenda.ts, also driving the dashboard Today
+    // lane). Subtasks never surface as top-level rows — they live in
+    // their parent's drill-down only (shared topLevel helper,
+    // lib/tasks/subtasks.ts).
     const tops = topLevel(tasks)
-    const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
-    const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
-    const isUnblocked = (t: TaskWithRelations) => {
-      if (!t.blocked_by_task_id) return true
-      const blocker = taskById.get(t.blocked_by_task_id)
-      return !blocker || blocker.status === 'done'
-    }
 
     // Personal inbox: things I captured that still need processing
     const myInbox = tops.filter(t =>
-      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t, today)
     )
     const inboxIds = new Set(myInbox.map(t => t.id))
 
     const actionable = tops.filter(t =>
-      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+      t.status !== 'done' && isMine(t, userId) && isAwake(t, today) &&
+      isUnblocked(t, taskById) && !inboxIds.has(t.id)
     )
 
     // Shared bucketing (same as the property Tasks tab) — 'Later' is
@@ -1133,7 +1134,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const hasDated = groups.some(g => g.tasks.length > 0)
 
     const snoozed = tops.filter(t =>
-      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+      t.status !== 'done' && isMine(t, userId) && t.snoozed_until != null && t.snoozed_until > today
     ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
     return { myInbox, groups, hasDated, snoozed }
