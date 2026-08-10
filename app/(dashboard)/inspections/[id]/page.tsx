@@ -20,7 +20,8 @@ import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
   ACTION_PRIORITIES, PRIORITY_LABELS, type ActionPriority, type TemplateSection,
 } from '@/lib/inspections/templates'
-import { signedPhotoUrls, removeInspectionPhotos, signedFileUrl, BUCKET, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { signedPhotoUrls, removeInspectionPhotos, signedFileUrl, type SignedPhotoUrl } from '@/lib/inspections/photos'
+import { invalidateInspectionReports } from '@/lib/inspections/invalidate'
 import { compressImage } from '@/lib/inspections/compress'
 import {
   enqueueInspectionPhotos, cancelItemUploads, resumePendingUploads,
@@ -215,27 +216,25 @@ export default function InspectionDetailPage() {
   }
 
   // Rule: an existing report is invalidated by ANY change to findings or to
-  // the inspection date — the stored PDF no longer reflects reality. Clear
-  // the path + sent state (reverting a report_sent status) so the panel
-  // returns to the fresh Generate state. Removing the orphaned PDF from
-  // storage is best-effort: orphaned files are acceptable, stale sent
-  // badges are not.
+  // the inspection date — the stored PDF no longer reflects reality. The
+  // shared helper (lib/inspections/invalidate) clears the path + sent
+  // state (reverting a report_sent status) so the panel returns to the
+  // fresh Generate state; this wrapper mirrors the change into local
+  // state and surfaces a failure on the page banner.
   const invalidateReport = useCallback(async () => {
     const insp = inspectionRef.current
     if (!insp?.report_file_path) return
-    const oldPath = insp.report_file_path
+    const { failed } = await invalidateInspectionReports(supabase, [insp.id])
+    if (failed.length > 0) {
+      setActionError('Change saved, but the now-outdated report could not be cleared — regenerate it before emailing the PM.')
+      return
+    }
     const patch: Partial<Inspection> = {
       report_file_path: null,
       report_sent_at: null,
       ...(insp.status === 'report_sent' ? { status: 'submitted' as const } : {}),
     }
-    const { error } = await supabase.from('inspections').update(patch).eq('id', insp.id)
-    if (error) {
-      setActionError(`Change saved, but the now-outdated report could not be cleared (${error.message}) — regenerate it before emailing the PM.`)
-      return
-    }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
-    try { await supabase.storage.from(BUCKET).remove([oldPath]) } catch { /* non-fatal */ }
   }, [])
 
   // ── Background photo uploads ─────────────────────────────────
@@ -464,6 +463,10 @@ export default function InspectionDetailPage() {
     }).eq('id', w.id)
     if (oldError) {
       toast(`Carried forward, but the original could not be marked resolved — ${oldError.message}`, { tone: 'error' })
+    } else {
+      // The ORIGINAL finding just changed — the PRIOR inspection's stored
+      // report (if any) no longer reflects reality.
+      void invalidateInspectionReports(supabase, [w.inspection_id])
     }
     setItems(prev => [...prev, data as InspectionItem])
     setWatchItems(prev => prev.filter(x => x.id !== w.id))
@@ -490,6 +493,9 @@ export default function InspectionDetailPage() {
       toast(`Could not mark resolved — ${error.message}`, { tone: 'error' })
       return
     }
+    // The finding lives in a PRIOR inspection — its stored report (if
+    // any) is stale now.
+    void invalidateInspectionReports(supabase, [w.inspection_id])
     setWatchItems(prev => prev.filter(x => x.id !== w.id))
     toast('Verified resolved', {
       action: {
@@ -498,6 +504,7 @@ export default function InspectionDetailPage() {
           const { error: undoError } = await supabase.from('inspection_items')
             .update(prior).eq('id', w.id)
           if (undoError) { toast('Could not undo', { tone: 'error' }); return }
+          void invalidateInspectionReports(supabase, [w.inspection_id])
           setWatchItems(prev => [...prev, { ...w, ...prior }])
         },
       },
