@@ -120,10 +120,16 @@ export default async function DashboardPage() {
       .eq('status', 'active')
       .gte('expiry_date', weekAgo)
       .lte('expiry_date', in90),
+    // Latest completed walk per property (first row per property_id
+    // below). created_at breaks same-day ties deterministically; the
+    // fetch is bounded — if walk history ever outgrows 200 rows, move
+    // this to a DISTINCT ON (property_id) RPC instead of a wider limit.
     supabase.from('inspections')
       .select('id, property_id, inspection_date')
       .in('status', ['submitted', 'report_sent'])
-      .order('inspection_date', { ascending: false }),
+      .order('inspection_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(200),
     // Canonical open-finding candidates (dispositions.ts): unsettled,
     // completed client-side with isOpenFinding.
     supabase.from('inspection_items')
@@ -177,6 +183,9 @@ export default async function DashboardPage() {
         .select('inspection_id, requires_action, action_priority, disposition')
         .in('inspection_id', latestIds)
     : { data: [] as GradeItemRow[], error: null }
+  // A failed walk or items query means grades are UNKNOWN — chips omit
+  // the grade badge rather than scoring an empty item list as an 'A'.
+  const gradesOk = !completedInspRes.error && !gradeItemsRes.error
   const itemsByInspection = new Map<string, GradeItemRow[]>()
   for (const it of ((gradeItemsRes.data ?? []) as GradeItemRow[])) {
     const arr = itemsByInspection.get(it.inspection_id)
@@ -184,6 +193,9 @@ export default async function DashboardPage() {
     else itemsByInspection.set(it.inspection_id, [it])
   }
 
+  // Same rule for open-finding counts: on a failed query the chips drop
+  // their count and the flags tile shows an em dash — never a zero.
+  const findingsOk = !openFindingsRes.error
   const openFindingRows = (openFindingsRes.data ?? []) as unknown as OpenFindingRow[]
   const openByProperty = new Map<string, number>()
   let openFlagCount = 0
@@ -196,11 +208,11 @@ export default async function DashboardPage() {
 
   const pulseChips = properties.map(p => {
     const inspId = latestInspByProp.get(p.id)
-    const items = inspId ? itemsByInspection.get(inspId) ?? [] : null
+    const items = gradesOk && inspId ? itemsByInspection.get(inspId) ?? [] : null
     return {
       id: p.id, name: p.name,
       grade: items != null ? scoreGrade(inspectionScore(items)) : null,
-      openFindings: openByProperty.get(p.id) ?? 0 as number | null,
+      openFindings: findingsOk ? openByProperty.get(p.id) ?? 0 : null,
     }
   })
 
@@ -234,7 +246,7 @@ export default async function DashboardPage() {
         pulse={<PulseStrip chips={pulseChips}
           openTasks={myOpenTasks.length} overdue={myOverdue}
           capexCount={capexRows.length} capexBudget={capexBudget} capexSpent={capexSpent}
-          openFlags={openFlagCount} />}
+          openFlags={findingsOk ? openFlagCount : null} />}
       />
     </div>
   )
