@@ -1,6 +1,7 @@
 import { PRIORITY_LABELS, type ActionPriority, type TemplateSection } from '@/lib/inspections/templates'
 import { buildSectionInstances, groupItemsByInstance, instanceLabel } from '@/lib/inspections/sections'
 import { inspectionScore, scoreGrade, GRADE_HEX } from '@/lib/inspections/score'
+import { daysSince, normalizeDisposition } from '@/lib/inspections/dispositions'
 import { escHtml } from '@/lib/utils'
 
 // Email-body inspection report drafts. NOTHING here (or anywhere in the
@@ -11,9 +12,11 @@ import { escHtml } from '@/lib/utils'
 //   buildInspectionEmail — the full report as an email body: findings as
 //     bullets grouped by section instance (same grouping functions as the
 //     app and the PDF, so "Vacant Unit · 204" reads the same everywhere),
-//     flagged items tagged by priority, photos as hyperlinks to long-lived
-//     signed URLs rather than embeds, and an action-items recap at the
-//     top — that's the block a PM works from.
+//     follow-ups tagged by priority, photos as hyperlinks to long-lived
+//     signed URLs rather than embeds, and two recap blocks at the top:
+//     "Flagged for Your Action" (findings triaged 'flagged', with aging)
+//     first, then the action-items recap — those are the blocks a PM
+//     works from.
 //   buildInspectionSummaryEmail — a short note: score card + a link to
 //     the stored PDF report, for when the full list doesn't belong
 //     in-body.
@@ -33,6 +36,10 @@ export type EmailFinding = {
   requires_action: boolean
   action_priority: string | null
   photo_paths: string[]
+  // Triage fields (0011): flagged findings surface in their own top
+  // section with aging; the score weights deductions by disposition.
+  disposition: string | null
+  disposition_at: string | null
 }
 
 export type InspectionEmailData = {
@@ -136,11 +143,12 @@ function greetingHtml(contactName: string | null, message: string | null): strin
   return `${contactName ? `  <p style="font-size:13px;color:#475569;margin:0 0 12px;">Hi ${escHtml(contactName)},</p>\n` : ''}${message ? `  <p style="font-size:13px;color:#475569;margin:0 0 16px;white-space:pre-line;">${escHtml(message)}</p>\n` : ''}`
 }
 
-function scoreCardHtml({ score, grade, findingsCount, actionCount, inspectionNotes, pdfUrl }: {
+function scoreCardHtml({ score, grade, findingsCount, actionCount, flaggedCount, inspectionNotes, pdfUrl }: {
   score: number
   grade: string
   findingsCount: number
   actionCount: number
+  flaggedCount: number
   inspectionNotes: string | null
   pdfUrl: string | null
 }): string {
@@ -155,7 +163,8 @@ function scoreCardHtml({ score, grade, findingsCount, actionCount, inspectionNot
     </div>
     <div style="border-top:1px solid ${DIVIDER};padding:10px 20px;font-size:13px;color:#475569;">
       <strong style="color:${INK};">${findingsCount}</strong> finding${findingsCount === 1 ? '' : 's'} recorded ·
-      <strong style="color:${INK};">${actionCount}</strong> action item${actionCount === 1 ? '' : 's'} requiring follow-up
+      <strong style="color:${INK};">${actionCount}</strong> action item${actionCount === 1 ? '' : 's'} requiring follow-up${flaggedCount > 0 ? ` ·
+      <strong style="color:#b91c1c;">${flaggedCount}</strong> flagged for your action` : ''}
     </div>
     ${inspectionNotes ? `<div style="border-top:1px solid ${DIVIDER};padding:10px 20px;font-size:13px;color:#475569;white-space:pre-line;"><strong style="color:${INK};">Inspection notes:</strong> ${escHtml(inspectionNotes)}</div>` : ''}
     ${pdfUrl ? `<div style="border-top:1px solid ${DIVIDER};padding:10px 20px;font-size:13px;">📄 <a href="${escHtml(pdfUrl)}" style="color:${LINK};text-decoration:underline;">Full PDF report</a> <span style="font-size:11px;color:#94a3b8;">(link valid for 30 days)</span></div>` : ''}
@@ -168,12 +177,13 @@ const FOOTER_LINE = 'C2 Capital · Property Inspection Report'
 function textHeaderLines(data: {
   propertyName: string; typeLabel: string; dateLabel: string
   contactName: string | null; message: string | null; inspectionNotes: string | null
-  score: number; grade: string; findingsCount: number; actionCount: number; pdfUrl: string | null
+  score: number; grade: string; findingsCount: number; actionCount: number
+  flaggedCount: number; pdfUrl: string | null
 }): string[] {
   const lines: string[] = []
   lines.push('PROPERTY INSPECTION REPORT')
   lines.push(`${data.propertyName} · ${data.typeLabel} · ${data.dateLabel}`)
-  lines.push(`Score: ${data.score}/100 (${data.grade}) · ${data.findingsCount} finding${data.findingsCount === 1 ? '' : 's'} · ${data.actionCount} action item${data.actionCount === 1 ? '' : 's'}`)
+  lines.push(`Score: ${data.score}/100 (${data.grade}) · ${data.findingsCount} finding${data.findingsCount === 1 ? '' : 's'} · ${data.actionCount} action item${data.actionCount === 1 ? '' : 's'}${data.flaggedCount > 0 ? ` · ${data.flaggedCount} flagged for your action` : ''}`)
   lines.push('')
   if (data.contactName) { lines.push(`Hi ${data.contactName},`); lines.push('') }
   if (data.message) { lines.push(data.message); lines.push('') }
@@ -195,6 +205,18 @@ export function buildInspectionEmail(data: InspectionEmailData): { html: string;
   const actionItems = items
     .filter(i => i.requires_action)
     .sort((a, b) => PRIORITY_ORDER[itemPriority(a)] - PRIORITY_ORDER[itemPriority(b)])
+  // Flagged findings lead the email — they're the triage verb for "the PM
+  // must act on this". Priority first, then oldest flag first (the ones
+  // waiting longest deserve the top).
+  const flaggedItems = items
+    .filter(i => normalizeDisposition(i.disposition) === 'flagged')
+    .sort((a, b) =>
+      (PRIORITY_ORDER[itemPriority(a)] - PRIORITY_ORDER[itemPriority(b)])
+      || ((daysSince(b.disposition_at) ?? 0) - (daysSince(a.disposition_at) ?? 0)))
+  const flaggedAge = (item: EmailFinding) => {
+    const d = daysSince(item.disposition_at)
+    return d == null ? 'flagged' : d === 0 ? 'flagged today' : `flagged ${d}d ago`
+  }
   const groups = groupItemsByInstance(buildSectionInstances(template, items), items)
   const linkedPhotoCount = items.flatMap(i => i.photo_paths).filter(p => photoUrls[p]).length
   const omittedPhotoLinks = items.flatMap(i => i.photo_paths).filter(p => !photoUrls[p]).length
@@ -203,7 +225,18 @@ export function buildInspectionEmail(data: InspectionEmailData): { html: string;
   const html = docHtml(`${headerHtml(propertyName, typeLabel, dateLabel)}
 
 ${greetingHtml(contactName, message)}
-${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: actionItems.length, inspectionNotes, pdfUrl })}
+${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: actionItems.length, flaggedCount: flaggedItems.length, inspectionNotes, pdfUrl })}
+
+  ${flaggedItems.length > 0 ? `
+  <div style="background:#ffffff;border:1px solid #fecaca;border-radius:12px;margin-bottom:16px;">
+    <div style="padding:12px 20px;border-bottom:1px solid #fee2e2;font-size:12px;font-weight:600;color:#b91c1c;text-transform:uppercase;letter-spacing:0.05em;">Flagged for Your Action (${flaggedItems.length})</div>
+    <ul style="margin:0;padding:14px 20px 6px 38px;">
+      ${flaggedItems.map(item => `<li style="margin:0 0 8px;font-size:13px;color:${INK};line-height:1.5;">
+        ${priorityTagHtml(itemPriority(item))} ${item.item_label.trim() ? escHtml(item.item_label.trim()) : `<span style="color:#94a3b8;font-style:italic;">No description</span>`}
+        <span style="font-size:12px;color:${MUTED};"> — ${escHtml(instanceLabel({ name: item.section_name, unit: item.unit_number }))} · ${flaggedAge(item)}</span>
+      </li>`).join('')}
+    </ul>
+  </div>` : ''}
 
   ${actionItems.length > 0 ? `
   <div style="${cardStyle}">
@@ -237,8 +270,17 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: action
   const tag = (item: EmailFinding) => `[${PRIORITY_LABELS[itemPriority(item)].toUpperCase()}]`
   const lines = textHeaderLines({
     propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes,
-    score, grade, findingsCount: items.length, actionCount: actionItems.length, pdfUrl,
+    score, grade, findingsCount: items.length, actionCount: actionItems.length,
+    flaggedCount: flaggedItems.length, pdfUrl,
   })
+  if (flaggedItems.length > 0) {
+    lines.push(`FLAGGED FOR YOUR ACTION (${flaggedItems.length})`)
+    for (const item of flaggedItems) {
+      const label = item.item_label.trim() || 'No description'
+      lines.push(`- ${tag(item)} ${label} — ${instanceLabel({ name: item.section_name, unit: item.unit_number })} · ${flaggedAge(item)}`)
+    }
+    lines.push('')
+  }
   if (actionItems.length > 0) {
     lines.push(`ACTION ITEMS (${actionItems.length})`)
     for (const item of actionItems) {
@@ -282,11 +324,12 @@ export function buildInspectionSummaryEmail(data: InspectionSummaryEmailData): {
   const score = inspectionScore(items)
   const grade = scoreGrade(score)
   const actionCount = items.filter(i => i.requires_action).length
+  const flaggedCount = items.filter(i => normalizeDisposition(i.disposition) === 'flagged').length
 
   const html = docHtml(`${headerHtml(propertyName, typeLabel, dateLabel)}
 
 ${greetingHtml(contactName, message)}
-${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount, inspectionNotes, pdfUrl })}
+${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount, flaggedCount, inspectionNotes, pdfUrl })}
 
   <div style="text-align:center;padding:16px 0;font-size:11px;color:#94a3b8;">
     ${FOOTER_LINE}
@@ -294,7 +337,7 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount, inspec
 
   const lines = textHeaderLines({
     propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes,
-    score, grade, findingsCount: items.length, actionCount, pdfUrl,
+    score, grade, findingsCount: items.length, actionCount, flaggedCount, pdfUrl,
   })
   lines.push(FOOTER_LINE)
 

@@ -342,6 +342,44 @@ export default function InspectionDetailPage() {
     return true
   }
 
+  // "Mark as sent" side-effect: flagged findings in the emailed report
+  // are now COMMUNICATED — stamp communicated_at on every currently-
+  // flagged item. Prior values are captured so "Mark not sent" can walk
+  // back exactly the stamps this session set (a reload forfeits the
+  // capture — best-effort by design; stamping never blocks the status
+  // flip either way).
+  const commStampPriorsRef = useRef<Record<string, string | null> | null>(null)
+
+  async function stampFlaggedCommunicated() {
+    const flagged = items.filter(i => normalizeDisposition(i.disposition) === 'flagged')
+    if (flagged.length === 0) return
+    const now = new Date().toISOString()
+    const priors = Object.fromEntries(flagged.map(i => [i.id, i.communicated_at]))
+    const { error } = await supabase.from('inspection_items')
+      .update({ communicated_at: now })
+      .eq('inspection_id', inspectionId)
+      .eq('disposition', 'flagged')
+    if (error) {
+      console.warn('Could not stamp communicated_at on flagged findings:', error.message)
+      return
+    }
+    commStampPriorsRef.current = priors
+    setItems(prev => prev.map(i =>
+      normalizeDisposition(i.disposition) === 'flagged' ? { ...i, communicated_at: now } : i))
+  }
+
+  async function unstampFlaggedCommunicated() {
+    const priors = commStampPriorsRef.current
+    if (!priors) return
+    commStampPriorsRef.current = null
+    // Values differ per item — restore row by row, best-effort.
+    const results = await Promise.all(Object.entries(priors).map(([id, prior]) =>
+      supabase.from('inspection_items').update({ communicated_at: prior }).eq('id', id)))
+    if (results.some(r => r.error)) console.warn('Could not fully revert communicated stamps')
+    setItems(prev => prev.map(i =>
+      i.id in priors ? { ...i, communicated_at: priors[i.id] } : i))
+  }
+
   // Triage `b`: the capex modal resolved a project (existing or freshly
   // created) — link the finding and disposition it.
   async function attachCapex(item: InspectionItem, projectId: string, projectTitle: string) {
@@ -581,6 +619,8 @@ export default function InspectionDetailPage() {
           pendingPhotoCount={inspectionUploads.length}
           onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
           onPatch={patchInspection}
+          onMarkedSent={stampFlaggedCommunicated}
+          onMarkedNotSent={unstampFlaggedCommunicated}
         />
       )}
 
@@ -1139,7 +1179,7 @@ function CapexAttachModal({ item, propertyId, onClose, onDone }: {
 // so "sent" is a status the app can't observe: it's recorded here by an
 // explicit "Mark as sent" button, and only by that button.
 
-function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
+function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMarkedSent, onMarkedNotSent }: {
   inspection: InspectionDetail
   // Photos for this inspection still in the background upload queue
   // (uploading, retrying, or failed) — a report generated now would
@@ -1150,6 +1190,11 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
   // on the page banner, state updated on success) — the sent-status
   // buttons write through it.
   onPatch: (patch: Partial<Inspection>) => Promise<boolean>
+  // Marking sent means the flagged findings in that email were
+  // communicated — the page stamps/unstamps communicated_at on them
+  // (best-effort, after the status flip lands).
+  onMarkedSent: () => void
+  onMarkedNotSent: () => void
 }) {
   const supabase = createClient()
   const [generating, setGenerating] = useState(false)
@@ -1168,15 +1213,19 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch }: {
     setSavingSent(true)
     const ok = await onPatch({ status: 'report_sent', report_sent_at: new Date().toISOString() })
     setSavingSent(false)
-    if (ok) setConfirmingSent(false)
+    if (ok) {
+      setConfirmingSent(false)
+      onMarkedSent()
+    }
   }
 
   // Undo affordance for a mistaken claim — back to submitted, sent
-  // timestamp cleared.
+  // timestamp cleared (and the communicated stamps walked back).
   async function markNotSent() {
     setSavingSent(true)
-    await onPatch({ status: 'submitted', report_sent_at: null })
+    const ok = await onPatch({ status: 'submitted', report_sent_at: null })
     setSavingSent(false)
+    if (ok) onMarkedNotSent()
   }
 
   async function generate() {
