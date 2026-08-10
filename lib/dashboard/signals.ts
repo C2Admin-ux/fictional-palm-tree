@@ -272,6 +272,11 @@ export type DecisionSignal =
 // The Decisions lane renders at most this many rows ("+N more decisions").
 export const DECISIONS_CAP = 8
 
+// Raw decisions source rows as the server queries them — passed through
+// to the client so days-left labels derive from the client's today.
+export type DecisionContractRow = { id: string; title: string; vendor_name: string; cancel_deadline: string }
+export type DecisionPolicyRow = { id: string; carrier: string; policy_type: string; expiry_date: string }
+
 // Decisions assembly: bid decks ready to decide first (the money is
 // already gathered — deciding is pure upside), then the date-driven
 // windows (contract cancel deadlines, policy renewals) soonest first.
@@ -280,8 +285,8 @@ export const DECISIONS_CAP = 8
 // data-hygiene row instead of masquerading as N renewal decisions.
 export function assembleDecisions(input: {
   capex: CapexSignalRow[] | null
-  contracts: { id: string; vendor_name: string; title: string; cancel_deadline: string }[] | null
-  policies: { id: string; carrier: string; policy_type: string; expiry_date: string }[] | null
+  contracts: DecisionContractRow[] | null
+  policies: DecisionPolicyRow[] | null
 }, today: string): DecisionSignal[] {
   const bidsReady: BidsReadySignal[] = (input.capex ?? [])
     .map(p => ({ p, g: bidGlance(p.bids, p.bids_target) }))

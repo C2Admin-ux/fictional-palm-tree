@@ -4,63 +4,48 @@
 //   3 THIS WEEK        the 7-day forecast + waiting-on + open seasons
 //   4 PORTFOLIO PULSE  one slim strip of property chips + three tiles
 //
-// Server component does every read in parallel with lean selects; all
-// pure derivation lives in lib/dashboard/signals.ts (shared with the
-// client Today lane so re-ranking after a mutation can't drift). Each
+// Division of labor: this server component does every read in parallel
+// with lean selects and passes the RAW source rows through; the client
+// DashboardLanes owns "today" (computed locally, so a UTC server clock
+// can't shift the guide) and assembles lanes 1–3 via the pure selectors
+// in lib/dashboard/signals.ts, re-deriving on every client task
+// mutation or broadcast. Only Portfolio Pulse renders here. Each
 // non-core signal query is individually guarded: on error its rows go
 // null and the signal is simply omitted — one broken source never
 // blanks the whole guide.
 
 import { createClient } from '@/lib/supabase/server'
-import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import {
-  cn, todayISO, addDaysToDate, formatCurrency, formatDate,
-  propertyColor, propertyAbbr, PRIORITY_DOT,
+  cn, todayISO, addDaysToDate, formatCurrency,
+  propertyColor, propertyAbbr,
 } from '@/lib/utils'
 import {
-  assembleDecisions, selectWeekTasks, selectWaitingBids,
-  seasonalWindows, daysBetween,
-  type DashboardTask, type TriageSignal, type DraftCallSignal, type StaleFlagSignal,
-  type CapexSignalRow, type DecisionSignal, type WeekdayGroup, type WaitingBidsSignal,
-  type SeasonalWindowLine,
+  type DashboardTask, type TriageSourceRow, type DraftCallSourceRow,
+  type StaleFlagSourceRow, type CapexSignalRow, type DecisionContractRow,
+  type DecisionPolicyRow, type SeasonSettingRow,
 } from '@/lib/dashboard/signals'
 import { isMine } from '@/lib/tasks/agenda'
 import { topLevel } from '@/lib/tasks/subtasks'
-import { daysSince, isOpenFinding, UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
+import { isOpenFinding, UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
 import { inspectionScore, scoreGrade, GRADE_STYLES, type ScoreGrade } from '@/lib/inspections/score'
 import { SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY } from '@/lib/tasks/seasonal'
 import { StatTile } from '@/components/ui/stat-tile'
 import { DashboardLanes } from './lanes'
-import {
-  Scale, FileSignature, Shield, HardHat, CalendarRange, CheckSquare, Flag, CalendarClock,
-} from 'lucide-react'
+import Link from 'next/link'
+import { CheckSquare, Flag, HardHat } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
 
 // ── Raw query-row shapes (lean selects below) ────────────────
-type TriageRow = {
-  id: string; inspection_date: string
-  properties: { name: string } | null
-  inspection_items: { disposition: string }[]
-}
-type DraftCallRow = {
-  id: string; title: string; created_at: string
-  pmcs: { name: string } | null
-  call_items: { kind: string }[]
-}
-type FlagRow = {
-  id: string; inspection_id: string; disposition_at: string | null
-  inspections: { properties: { name: string } | null } | null
-}
+// The signal-source shapes live in lib/dashboard/signals.ts next to
+// their builders; only Pulse-specific shapes remain here.
 type CapexRow = {
   id: string; title: string; status: string
   budget: number | null; actual_spend: number | null; bids_target: number | null
   properties: { name: string } | null
   capex_bids: { vendor_name: string; status: 'requested' | 'received' | 'declined' | 'selected' | 'rejected'; amount: number | null; requested_at: string | null }[]
 }
-type ContractRow = { id: string; title: string; vendor_name: string; cancel_deadline: string }
-type PolicyRow = { id: string; carrier: string; policy_type: string; expiry_date: string }
 type CompletedInspectionRow = { id: string; property_id: string; inspection_date: string }
 type OpenFindingRow = {
   requires_action: boolean; disposition: string
@@ -73,6 +58,7 @@ export default async function DashboardPage() {
   const today = todayISO()
   const in30 = addDaysToDate(today, 30)
   const in90 = addDaysToDate(today, 90)
+  const weekAgo = addDaysToDate(today, -7)
   const draftCallCutoff = new Date(Date.now() - 1 * 86400000).toISOString()
   const staleFlagCutoff = new Date(Date.now() - 3 * 86400000).toISOString()
 
@@ -95,6 +81,12 @@ export default async function DashboardPage() {
     // ALL my open tasks including subtasks — the Today lane needs the
     // children so completing a parent sweeps them (openSubtasksOf),
     // and every list derivation starts from topLevel().
+    // Horizon guard: the client re-buckets against ITS local today, so
+    // this fetch must cover the widest window it could need (overdue →
+    // +7d) regardless of server-vs-client clock skew. With no due-date
+    // bound at all that holds trivially — if a bound is ever added for
+    // volume, widen it by ±1 day beyond the client horizon to absorb
+    // timezone drift (and keep null-due rows: blockers and subtasks).
     supabase.from('tasks').select('*, properties(name)').neq('status', 'done'),
     // Submitted walks with untriaged findings: the embed is filtered to
     // disposition='open' so only the untriaged rows ride along.
@@ -120,9 +112,13 @@ export default async function DashboardPage() {
       .gte('cancel_deadline', today)
       .lte('cancel_deadline', in30),
     // The old expiring-policies banner, folded into Decisions rows.
+    // Lower bound: active policies expired more than a week ago are
+    // stale data, not decisions — the recent ones (≤7d) collapse into
+    // one hygiene row in assembleDecisions.
     supabase.from('insurance_policies')
       .select('id, carrier, policy_type, expiry_date')
       .eq('status', 'active')
+      .gte('expiry_date', weekAgo)
       .lte('expiry_date', in90),
     supabase.from('inspections')
       .select('id, property_id, inspection_date')
@@ -134,9 +130,11 @@ export default async function DashboardPage() {
       .select('requires_action, disposition, inspections!inner(property_id)')
       .in('disposition', [...UNSETTLED_DISPOSITIONS])
       .or('requires_action.eq.true,disposition.neq.open'),
+    // Global AND property-level season windows — the client resolves
+    // them per property in the engine's order (property → global →
+    // defaults).
     supabase.from('alert_settings')
-      .select('setting_key, value')
-      .is('property_id', null)
+      .select('property_id, setting_key, value')
       .in('setting_key', [SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY]),
   ])
 
@@ -145,52 +143,14 @@ export default async function DashboardPage() {
   const tasks = (tasksRes.data ?? []) as unknown as DashboardTask[]
   const propertyNames = Object.fromEntries(properties.map(p => [p.id, p.name]))
 
-  // ── TODAY link signals (each source individually guarded) ──
-  const triage: TriageSignal[] | null = triageRes.error ? null
-    : ((triageRes.data ?? []) as unknown as TriageRow[])
-        .filter(i => i.inspection_items.length > 0)
-        .map(i => {
-          const n = i.inspection_items.length
-          return {
-            kind: 'inspection_triage' as const, id: `triage:${i.id}`, href: `/inspections/${i.id}`,
-            title: `Triage inspection — ${n} untriaged finding${n === 1 ? '' : 's'}`,
-            propertyName: i.properties?.name ?? null,
-            untriaged: n,
-            ageDays: Math.max(0, daysBetween(i.inspection_date, today)),
-          }
-        })
+  // ── Raw signal sources (each individually guarded) ─────────
+  const triageRows = triageRes.error ? null
+    : ((triageRes.data ?? []) as unknown as TriageSourceRow[])
+  const callRows = callsRes.error ? null
+    : ((callsRes.data ?? []) as unknown as DraftCallSourceRow[])
+  const flagRows = flagsRes.error ? null
+    : ((flagsRes.data ?? []) as unknown as StaleFlagSourceRow[])
 
-  const draftCalls: DraftCallSignal[] | null = callsRes.error ? null
-    : ((callsRes.data ?? []) as unknown as DraftCallRow[]).map(c => {
-        const n = c.call_items.filter(i => i.kind === 'action').length
-        return {
-          kind: 'draft_call' as const, id: `call:${c.id}`, href: `/calls/${c.id}`,
-          title: `Review call: ${c.title || c.pmcs?.name || 'Untitled call'} · ${n} proposed item${n === 1 ? '' : 's'}`,
-          proposedItems: n,
-          ageDays: daysSince(c.created_at) ?? 0,
-        }
-      })
-
-  const staleFlags: StaleFlagSignal[] | null = flagsRes.error ? null
-    : Array.from(
-        ((flagsRes.data ?? []) as unknown as FlagRow[])
-          .reduce((acc, row) => {
-            const entry = acc.get(row.inspection_id) ?? {
-              count: 0, oldestDays: 0,
-              propertyName: row.inspections?.properties?.name ?? null,
-            }
-            entry.count += 1
-            entry.oldestDays = Math.max(entry.oldestDays, daysSince(row.disposition_at) ?? 0)
-            return acc.set(row.inspection_id, entry)
-          }, new Map<string, { count: number; oldestDays: number; propertyName: string | null }>())
-          .entries()
-      ).map(([inspectionId, g]) => ({
-        kind: 'stale_flags' as const, id: `flags:${inspectionId}`, href: `/inspections/${inspectionId}`,
-        title: `${g.count} flagged finding${g.count === 1 ? '' : 's'} not yet communicated`,
-        propertyName: g.propertyName, count: g.count, oldestDays: g.oldestDays,
-      }))
-
-  // ── DECISIONS + THIS WEEK inputs ───────────────────────────
   const capexRows = (capexRes.data ?? []) as unknown as CapexRow[]
   const capexSignals: CapexSignalRow[] | null = capexRes.error ? null
     : capexRows.map(p => ({
@@ -198,18 +158,11 @@ export default async function DashboardPage() {
         bids_target: p.bids_target, bids: p.capex_bids,
       }))
 
-  const decisions = assembleDecisions({
-    capex: capexSignals,
-    contracts: contractsRes.error ? null : ((contractsRes.data ?? []) as ContractRow[]),
-    policies: policiesRes.error ? null : ((policiesRes.data ?? []) as PolicyRow[]),
-  }, today)
-
-  const weekGroups = selectWeekTasks(tasks, userId, today)
-  const waitingBids = selectWaitingBids(capexSignals, today)
-  const seasons = seasonalWindows(today, Object.fromEntries(
-    ((seasonSettingsRes.data ?? []) as { setting_key: string; value: unknown }[])
-      .map(s => [s.setting_key, s.value])
-  ))
+  const contracts = contractsRes.error ? null
+    : ((contractsRes.data ?? []) as DecisionContractRow[])
+  const policies = policiesRes.error ? null
+    : ((policiesRes.data ?? []) as DecisionPolicyRow[])
+  const seasonSettings = (seasonSettingsRes.data ?? []) as SeasonSettingRow[]
 
   // ── PORTFOLIO PULSE ────────────────────────────────────────
   // Latest completed walk per property → grade (one dependent fetch for
@@ -247,7 +200,7 @@ export default async function DashboardPage() {
     return {
       id: p.id, name: p.name,
       grade: items != null ? scoreGrade(inspectionScore(items)) : null,
-      openFindings: openByProperty.get(p.id) ?? 0,
+      openFindings: openByProperty.get(p.id) ?? 0 as number | null,
     }
   })
 
@@ -267,14 +220,17 @@ export default async function DashboardPage() {
 
       <DashboardLanes
         initialTasks={tasks}
-        triage={triage}
-        draftCalls={draftCalls}
-        staleFlags={staleFlags}
+        triageRows={triageRows}
+        callRows={callRows}
+        flagRows={flagRows}
+        capexSignals={capexSignals}
+        contracts={contracts}
+        policies={policies}
+        seasonSettings={seasonSettings}
+        activePropertyIds={properties.map(p => p.id)}
         userId={userId}
-        today={today}
+        serverToday={today}
         propertyNames={propertyNames}
-        decisions={<DecisionsLane signals={decisions} />}
-        week={<WeekLane groups={weekGroups} waitingBids={waitingBids} seasons={seasons} />}
         pulse={<PulseStrip chips={pulseChips}
           openTasks={myOpenTasks.length} overdue={myOverdue}
           capexCount={capexRows.length} capexBudget={capexBudget} capexSpent={capexSpent}
@@ -284,142 +240,16 @@ export default async function DashboardPage() {
   )
 }
 
-// ── 2 · DECISIONS WAITING (server-rendered) ──────────────────
-
-function DecisionsLane({ signals }: { signals: DecisionSignal[] }) {
-  return (
-    <section className="card">
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200">
-        <Scale size={14} className="text-blue-500" />
-        <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Decisions waiting</h2>
-        <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">{signals.length}</span>
-      </div>
-      {signals.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-emerald-600">No decisions waiting ✓</p>
-      ) : signals.map(s => <DecisionRow key={s.id} signal={s} />)}
-    </section>
-  )
-}
-
-function DecisionRow({ signal }: { signal: DecisionSignal }) {
-  const inner = signal.kind === 'bids_ready' ? (
-    <>
-      <HardHat size={14} className="text-emerald-500 flex-shrink-0" />
-      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
-        <span className="font-medium">{signal.project}</span>
-        {': '}{signal.received} bid{signal.received === 1 ? '' : 's'} in — <span className="text-emerald-700 font-medium">decide</span>
-      </span>
-      {signal.propertyName && <ChipSpan name={signal.propertyName} />}
-    </>
-  ) : signal.kind === 'cancel_window' ? (
-    <>
-      <FileSignature size={14} className="text-amber-500 flex-shrink-0" />
-      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
-        Cancel window closes <span className="font-medium">{formatDate(signal.deadline)}</span>
-        {': '}{signal.vendor} — {signal.title}
-      </span>
-      <DaysBadge date={signal.deadline} />
-    </>
-  ) : (
-    <>
-      <Shield size={14} className="text-amber-500 flex-shrink-0" />
-      <span className="flex-1 min-w-0 truncate text-sm text-slate-800">
-        Policy renewal: <span className="font-medium">{signal.carrier}</span> · {signal.policyType.toUpperCase()}
-        {' — '}{signal.daysLeft < 0 ? 'expired' : 'expires'} {formatDate(signal.expiry)}
-      </span>
-      <DaysBadge date={signal.expiry} />
-    </>
-  )
-  return (
-    <Link href={signal.href}
-      className="flex items-center gap-2 px-4 py-2 border-b border-slate-200/70 last:border-0 hover:bg-slate-50 transition-colors">
-      {inner}
-    </Link>
-  )
-}
-
-function DaysBadge({ date }: { date: string }) {
-  const days = daysBetween(todayISO(), date)
-  return (
-    <span className={cn('badge flex-shrink-0',
-      days < 0 ? 'text-red-700 bg-red-50 border-red-200'
-      : days <= 30 ? 'text-amber-700 bg-amber-50 border-amber-200'
-      : 'text-slate-500 bg-slate-50 border-slate-200')}>
-      {days < 0 ? 'EXPIRED' : `${days}d left`}
-    </span>
-  )
-}
-
-// ── 3 · THIS WEEK (server-rendered) ──────────────────────────
-
-function WeekLane({ groups, waitingBids, seasons }: {
-  groups: WeekdayGroup[]
-  waitingBids: WaitingBidsSignal[]
-  seasons: SeasonalWindowLine[]
-}) {
-  const taskCount = groups.reduce((s, g) => s + g.tasks.length, 0)
-  const empty = taskCount === 0 && waitingBids.length === 0 && seasons.length === 0
-  return (
-    <section className="card">
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200">
-        <CalendarRange size={14} className="text-blue-500" />
-        <h2 className="text-xs font-semibold text-slate-700 uppercase tracking-wide">This week</h2>
-        <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">{taskCount}</span>
-        <Link href="/tasks?view=review" className="ml-auto text-xs text-blue-600 hover:underline">
-          Plan my week →
-        </Link>
-      </div>
-
-      {empty && <p className="px-4 py-4 text-sm text-slate-400">Nothing scheduled for the next 7 days.</p>}
-
-      {groups.map(g => (
-        <div key={g.date}>
-          <div className="px-4 py-1 bg-slate-50 border-b border-slate-200/70 text-xs font-semibold text-slate-500 uppercase tracking-wide">
-            {g.label}
-          </div>
-          {g.tasks.map(t => (
-            <div key={t.id} className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0">
-              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                style={{ background: PRIORITY_DOT[t.priority] ?? '#94a3b8' }} />
-              <span className="flex-1 min-w-0 truncate text-sm text-slate-700">{t.title}</span>
-              {t.properties?.name && <ChipSpan name={t.properties.name} />}
-            </div>
-          ))}
-        </div>
-      ))}
-
-      {waitingBids.map(w => (
-        <Link key={w.id} href={w.href}
-          className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0 hover:bg-slate-50 transition-colors">
-          <HardHat size={14} className="text-amber-500 flex-shrink-0" />
-          <span className="flex-1 min-w-0 truncate text-sm text-slate-700">
-            <span className="font-medium">{w.project}</span>: waiting on {w.vendors.join(', ')}
-            {w.oldestRequestDays != null && <span className="text-slate-400"> · {w.oldestRequestDays}d</span>}
-          </span>
-          {w.propertyName && <ChipSpan name={w.propertyName} />}
-        </Link>
-      ))}
-
-      {seasons.map(s => (
-        <div key={s.key} className="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200/70 last:border-0 text-sm text-slate-600">
-          <CalendarClock size={14} className="text-sky-500 flex-shrink-0" />
-          {s.label}
-        </div>
-      ))}
-    </section>
-  )
-}
-
 // ── 4 · PORTFOLIO PULSE (server-rendered) ────────────────────
 
 function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexSpent, openFlags }: {
-  chips: { id: string; name: string; grade: ScoreGrade | null; openFindings: number }[]
+  chips: { id: string; name: string; grade: ScoreGrade | null; openFindings: number | null }[]
   openTasks: number
   overdue: number
   capexCount: number
   capexBudget: number
   capexSpent: number
-  openFlags: number
+  openFlags: number | null
 }) {
   return (
     <section className="space-y-3">
@@ -435,9 +265,11 @@ function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexS
                 {c.grade}
               </span>
             )}
-            <span className={cn('text-xs', c.openFindings > 0 ? 'text-amber-600 font-medium' : 'text-slate-400')}>
-              {c.openFindings} open
-            </span>
+            {c.openFindings != null && (
+              <span className={cn('text-xs', c.openFindings > 0 ? 'text-amber-600 font-medium' : 'text-slate-400')}>
+                {c.openFindings} open
+              </span>
+            )}
           </Link>
         ))}
       </div>
@@ -449,21 +281,10 @@ function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexS
         <StatTile label="Active CapEx" value={String(capexCount)}
           sub={`${formatCurrency(capexSpent, true)} spent of ${formatCurrency(capexBudget, true)}`}
           icon={<HardHat size={15} />} href="/capex" />
-        <StatTile label="Open Flags" value={String(openFlags)}
-          sub="flagged findings in play"
-          icon={<Flag size={15} />} alert={openFlags > 0} href="/inspections" />
+        <StatTile label="Open Flags" value={openFlags != null ? String(openFlags) : '—'}
+          sub={openFlags != null ? 'flagged findings in play' : 'count unavailable'}
+          icon={<Flag size={15} />} alert={openFlags != null && openFlags > 0} href="/inspections" />
       </div>
     </section>
-  )
-}
-
-// Property chip for server rows (the client lane has its own).
-function ChipSpan({ name }: { name: string }) {
-  const pc = propertyColor(name)
-  return (
-    <span className="hidden sm:inline-block flex-shrink-0 max-w-[13ch] truncate text-xs font-medium px-1.5 py-0.5 rounded"
-      style={{ background: `${pc}18`, color: pc }} title={name}>
-      {name}
-    </span>
   )
 }
