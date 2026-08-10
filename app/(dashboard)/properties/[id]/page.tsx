@@ -11,10 +11,38 @@ import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '
 import BuildingTab from './building-tab'
 import EditProperty from './edit-property'
 import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
+import { OpenFindingsCard, type OpenFindingRow } from './open-findings'
+import { OPEN_FINDING_DISPOSITIONS } from '@/lib/inspections/dispositions'
 import TasksTab from './tasks-tab'
 import { StatusBadge } from '@/components/ui/badge'
 
 export const dynamic = 'force-dynamic'
+
+// Lean finding select for the property-level rollups (Overview card +
+// Inspections tab list): minimal inspection join, photo_paths trimmed to
+// the first path before it ships to the client.
+const FINDING_ROW_SELECT = 'id, inspection_id, item_label, section_name, unit_number, requires_action, action_priority, disposition, disposition_note, disposition_at, communicated_at, watch_count, capex_project_id, photo_paths, created_at, inspections!inner(property_id, inspection_date)'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toFindingRow(r: any): OpenFindingRow {
+  return {
+    id: r.id,
+    inspection_id: r.inspection_id,
+    inspection_date: r.inspections?.inspection_date ?? '',
+    item_label: r.item_label,
+    section_name: r.section_name,
+    unit_number: r.unit_number,
+    requires_action: r.requires_action,
+    action_priority: r.action_priority,
+    disposition: r.disposition,
+    disposition_note: r.disposition_note,
+    disposition_at: r.disposition_at,
+    communicated_at: r.communicated_at,
+    watch_count: r.watch_count ?? 0,
+    capex_project_id: r.capex_project_id,
+    thumb_path: Array.isArray(r.photo_paths) && r.photo_paths.length > 0 ? r.photo_paths[0] : null,
+  }
+}
 
 export default async function PropertyPage({
   params,
@@ -43,6 +71,9 @@ export default async function PropertyPage({
     inspectionCountRes,
     { data: inspections },
     { data: trashContracts },
+    openFindingCountRes,
+    { data: openFindingRows },
+    { data: tabFindingRows },
   ] = await Promise.all([
     // Count feeds the Overview card only. The Tasks tab label carries
     // no number: the interactive tab mutates its list client-side, so a
@@ -75,6 +106,31 @@ export default async function PropertyPage({
     // Trash-contract coverage check — only contracts affirmatively covering
     // this property (property_id link or covered_property_ids contains it).
     supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`),
+    // Open findings rollup (Overview card): unresolved dispositions across
+    // ALL the property's inspections — count for the header, a lean
+    // 8-row preview (first photo only ships to the client).
+    tab === 'overview'
+      ? supabase.from('inspection_items')
+          .select('id, inspections!inner(property_id)', { count: 'exact', head: true })
+          .eq('inspections.property_id', params.id)
+          .in('disposition', [...OPEN_FINDING_DISPOSITIONS])
+      : Promise.resolve({ count: null }),
+    tab === 'overview'
+      ? supabase.from('inspection_items')
+          .select(FINDING_ROW_SELECT)
+          .eq('inspections.property_id', params.id)
+          .in('disposition', [...OPEN_FINDING_DISPOSITIONS])
+          .order('created_at', { ascending: false })
+          .limit(8)
+      : Promise.resolve({ data: null }),
+    // The Inspections tab's full findings list carries EVERY disposition —
+    // the client filter chips narrow it, never the fetch.
+    tab === 'inspections'
+      ? supabase.from('inspection_items')
+          .select(FINDING_ROW_SELECT)
+          .eq('inspections.property_id', params.id)
+          .order('created_at', { ascending: false })
+      : Promise.resolve({ data: null }),
   ])
 
   const propTasks = (tasks ?? []) as any[]
@@ -97,6 +153,9 @@ export default async function PropertyPage({
   const propPermits = permits ?? []
   const inspectionCount = inspectionCountRes.count ?? 0
   const propInspections = (inspections ?? []) as unknown as InspectionTabRow[]
+  const openFindingCount = openFindingCountRes.count ?? 0
+  const openFindings = ((openFindingRows ?? []) as any[]).map(toFindingRow)
+  const tabFindings = ((tabFindingRows ?? []) as any[]).map(toFindingRow)
   const latestMetric = propMetrics[0]
   const p = property as any
   const pmc = p.pmcs
@@ -226,6 +285,13 @@ export default async function PropertyPage({
                   ))
                 }
               </div>
+
+              {/* Open findings — unresolved across all inspections */}
+              <OpenFindingsCard
+                propertyId={params.id}
+                count={openFindingCount}
+                rows={openFindings}
+              />
 
               {/* CapEx */}
               <div className="card p-4">
@@ -435,7 +501,7 @@ export default async function PropertyPage({
           </div>
         )}
 
-        {tab === 'inspections' && <InspectionsTab inspections={propInspections} />}
+        {tab === 'inspections' && <InspectionsTab inspections={propInspections} findings={tabFindings} />}
 
         {tab === 'building' && (
           <BuildingTab
