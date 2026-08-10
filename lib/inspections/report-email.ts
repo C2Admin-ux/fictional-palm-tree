@@ -1,7 +1,7 @@
 import { PRIORITY_LABELS, type ActionPriority, type TemplateSection } from '@/lib/inspections/templates'
 import { buildSectionInstances, groupItemsByInstance, instanceLabel } from '@/lib/inspections/sections'
 import { inspectionScore, scoreGrade, GRADE_HEX } from '@/lib/inspections/score'
-import { daysSince, normalizeDisposition } from '@/lib/inspections/dispositions'
+import { selectActionItems, selectFlagged, flaggedAgeLabel, itemPriority } from '@/lib/inspections/selectors'
 import { escHtml } from '@/lib/utils'
 
 // Email-body inspection report drafts. NOTHING here (or anywhere in the
@@ -71,14 +71,6 @@ const PRIORITY_TAG_HEX: Record<ActionPriority, string> = {
   high: '#c2410c',
   medium: '#1d4ed8',
   low: '#64748b',
-}
-const PRIORITY_ORDER: Record<ActionPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
-
-// A requires_action item with an unknown/null priority reads as medium —
-// the same default the score deduction uses.
-function itemPriority(item: EmailFinding): ActionPriority {
-  const p = item.action_priority
-  return p && p in PRIORITY_LABELS ? p as ActionPriority : 'medium'
 }
 
 const MUTED = '#64748b'
@@ -202,21 +194,12 @@ export function buildInspectionEmail(data: InspectionEmailData): { html: string;
 
   const score = inspectionScore(items)
   const grade = scoreGrade(score)
-  const actionItems = items
-    .filter(i => i.requires_action)
-    .sort((a, b) => PRIORITY_ORDER[itemPriority(a)] - PRIORITY_ORDER[itemPriority(b)])
-  // Flagged findings lead the email — they're the triage verb for "the PM
-  // must act on this". Priority first, then oldest flag first (the ones
-  // waiting longest deserve the top).
-  const flaggedItems = items
-    .filter(i => normalizeDisposition(i.disposition) === 'flagged')
-    .sort((a, b) =>
-      (PRIORITY_ORDER[itemPriority(a)] - PRIORITY_ORDER[itemPriority(b)])
-      || ((daysSince(b.disposition_at) ?? 0) - (daysSince(a.disposition_at) ?? 0)))
-  const flaggedAge = (item: EmailFinding) => {
-    const d = daysSince(item.disposition_at)
-    return d == null ? 'flagged' : d === 0 ? 'flagged today' : `flagged ${d}d ago`
-  }
+  // Shared selectors (lib/inspections/selectors) — the PDF report pulls
+  // its lead blocks from the SAME functions, so email and PDF can never
+  // disagree about what the PM is asked to act on. Action items exclude
+  // settled findings; flagged findings lead the email.
+  const actionItems = selectActionItems(items)
+  const flaggedItems = selectFlagged(items)
   const groups = groupItemsByInstance(buildSectionInstances(template, items), items)
   const linkedPhotoCount = items.flatMap(i => i.photo_paths).filter(p => photoUrls[p]).length
   const omittedPhotoLinks = items.flatMap(i => i.photo_paths).filter(p => !photoUrls[p]).length
@@ -233,7 +216,7 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: action
     <ul style="margin:0;padding:14px 20px 6px 38px;">
       ${flaggedItems.map(item => `<li style="margin:0 0 8px;font-size:13px;color:${INK};line-height:1.5;">
         ${priorityTagHtml(itemPriority(item))} ${item.item_label.trim() ? escHtml(item.item_label.trim()) : `<span style="color:#94a3b8;font-style:italic;">No description</span>`}
-        <span style="font-size:12px;color:${MUTED};"> — ${escHtml(instanceLabel({ name: item.section_name, unit: item.unit_number }))} · ${flaggedAge(item)}</span>
+        <span style="font-size:12px;color:${MUTED};"> — ${escHtml(instanceLabel({ name: item.section_name, unit: item.unit_number }))} · ${flaggedAgeLabel(item)}</span>
       </li>`).join('')}
     </ul>
   </div>` : ''}
@@ -277,7 +260,7 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: action
     lines.push(`FLAGGED FOR YOUR ACTION (${flaggedItems.length})`)
     for (const item of flaggedItems) {
       const label = item.item_label.trim() || 'No description'
-      lines.push(`- ${tag(item)} ${label} — ${instanceLabel({ name: item.section_name, unit: item.unit_number })} · ${flaggedAge(item)}`)
+      lines.push(`- ${tag(item)} ${label} — ${instanceLabel({ name: item.section_name, unit: item.unit_number })} · ${flaggedAgeLabel(item)}`)
     }
     lines.push('')
   }
@@ -323,8 +306,10 @@ export function buildInspectionSummaryEmail(data: InspectionSummaryEmailData): {
   const { propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes, items, pdfUrl } = data
   const score = inspectionScore(items)
   const grade = scoreGrade(score)
-  const actionCount = items.filter(i => i.requires_action).length
-  const flaggedCount = items.filter(i => normalizeDisposition(i.disposition) === 'flagged').length
+  // Same shared selectors as the full email and the PDF — the summary's
+  // counts must describe the same buckets those documents render.
+  const actionCount = selectActionItems(items).length
+  const flaggedCount = selectFlagged(items).length
 
   const html = docHtml(`${headerHtml(propertyName, typeLabel, dateLabel)}
 
