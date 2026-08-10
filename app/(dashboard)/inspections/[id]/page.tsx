@@ -49,6 +49,9 @@ import {
 
 type InspectionDetail = Inspection & { properties: { name: string } | null }
 
+// A prior inspection's watch-listed finding, with its walk date embedded.
+type WatchRow = InspectionItem & { inspections: { property_id: string; inspection_date: string } }
+
 export default function InspectionDetailPage() {
   const params = useParams<{ id: string }>()
   const inspectionId = params.id
@@ -117,13 +120,46 @@ export default function InspectionDetailPage() {
 
   useEffect(() => { fetchInspection(); fetchItems() }, [fetchInspection, fetchItems])
 
+  // ── Watch loop ───────────────────────────────────────────────
+  // While capturing (draft), prior inspections' 'watch' findings on this
+  // property surface at the top of the screen: re-confirm ("Still an
+  // issue" — clones into THIS inspection and re-enters triage), verify
+  // resolved, or skip for next time. Deliberately mobile-friendly — this
+  // is an onsite ritual, unlike the desk-only triage sweep.
+  const [watchItems, setWatchItems] = useState<WatchRow[]>([])
+
+  const propertyId = inspection?.property_id
+  const isDraftStatus = inspection?.status === 'draft'
+  useEffect(() => {
+    if (!propertyId || !isDraftStatus) { setWatchItems([]); return }
+    let cancelled = false
+    supabase.from('inspection_items')
+      .select('*, inspections!inner(property_id, inspection_date)')
+      .eq('inspections.property_id', propertyId)
+      .neq('inspection_id', inspectionId)
+      .eq('disposition', 'watch')
+      .order('created_at')
+      .then(({ data, error }) => {
+        if (cancelled) return
+        // Non-fatal: the walk works without the watch list.
+        if (error) { console.warn('Could not load the watch list:', error.message); return }
+        setWatchItems((data ?? []) as unknown as WatchRow[])
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyId, isDraftStatus, inspectionId])
+
   // Sign URLs for photo paths that are missing or nearing expiry (private
   // bucket, 1hr TTL, re-signed 5min early). On failure/empty result, retry
   // once after a short delay — flaky onsite connectivity is the norm here.
+  // Watch-list rows sign their first photo alongside the findings' own.
   useEffect(() => {
     let cancelled = false
     const now = Date.now()
-    const stale = Array.from(new Set(items.flatMap(i => i.photo_paths)))
+    const stale = Array.from(new Set([
+      ...items.flatMap(i => i.photo_paths),
+      ...watchItems.map(w => w.photo_paths[0]).filter((p): p is string => !!p),
+    ]))
       .filter(p => { const e = photoUrls[p]; return !e || e.expiresAt <= now })
     if (stale.length === 0) return
     const sign = async (retry: boolean) => {
@@ -138,7 +174,7 @@ export default function InspectionDetailPage() {
     }
     sign(true)
     return () => { cancelled = true }
-  }, [items, signTick])
+  }, [items, watchItems, signTick])
 
   // While the page is open, periodically re-run the signing pass so URLs
   // are refreshed before their TTL lapses mid-walk.
@@ -388,6 +424,83 @@ export default function InspectionDetailPage() {
     await applyDisposition(item, 'capex', null, {
       capexProjectId: projectId,
       toastMessage: `Linked to CapEx — ${projectTitle}`,
+    })
+  }
+
+  // "Still an issue": clone the watched finding into THIS inspection —
+  // same section/description/priority, no photos (fresh ones get snapped
+  // onsite), carried_from_item_id pointing home, watch_count incremented,
+  // disposition 'open' so it re-enters triage. The original resolves with
+  // a carried-forward note. 3+ carries escalates: deferred decisions get
+  // priority high forced on.
+  async function carryWatchItem(w: WatchRow): Promise<void> {
+    if (!inspection) return
+    const newCount = (w.watch_count ?? 0) + 1
+    const escalate = newCount >= 3
+    const { data, error } = await supabase.from('inspection_items').insert({
+      id: randomUuid(),
+      inspection_id: inspection.id,
+      section_name: w.section_name,
+      unit_number: w.unit_number,
+      item_label: w.item_label,
+      requires_action: escalate ? true : w.requires_action,
+      action_priority: escalate ? 'high' : w.action_priority,
+      photo_paths: [],
+      disposition: 'open',
+      carried_from_item_id: w.id,
+      watch_count: newCount,
+    }).select().single()
+    if (error || !data) {
+      toast(`Could not carry the finding forward — ${error?.message ?? 'try again'}`, { tone: 'error' })
+      return
+    }
+    // The original leaves the watch loop as resolved-by-carry. A failure
+    // here is surfaced but doesn't undo the clone — worst case the item
+    // shows on the next walk's list once more.
+    const { error: oldError } = await supabase.from('inspection_items').update({
+      disposition: 'resolved',
+      disposition_note: `Carried forward to ${formatDate(inspection.inspection_date)} inspection`,
+      disposition_at: new Date().toISOString(),
+    }).eq('id', w.id)
+    if (oldError) {
+      toast(`Carried forward, but the original could not be marked resolved — ${oldError.message}`, { tone: 'error' })
+    }
+    setItems(prev => [...prev, data as InspectionItem])
+    setWatchItems(prev => prev.filter(x => x.id !== w.id))
+    invalidateReport()
+    toast(escalate
+      ? `Carried into this inspection — watched ${newCount} visits, priority raised to high`
+      : 'Carried into this inspection — it will re-enter triage')
+  }
+
+  // "Resolved": the watched issue is verified gone onsite.
+  async function resolveWatchItem(w: WatchRow): Promise<void> {
+    if (!inspection) return
+    const prior = {
+      disposition: w.disposition,
+      disposition_note: w.disposition_note,
+      disposition_at: w.disposition_at,
+    }
+    const { error } = await supabase.from('inspection_items').update({
+      disposition: 'resolved',
+      disposition_note: `Verified resolved onsite ${formatDate(inspection.inspection_date)}`,
+      disposition_at: new Date().toISOString(),
+    }).eq('id', w.id)
+    if (error) {
+      toast(`Could not mark resolved — ${error.message}`, { tone: 'error' })
+      return
+    }
+    setWatchItems(prev => prev.filter(x => x.id !== w.id))
+    toast('Verified resolved', {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const { error: undoError } = await supabase.from('inspection_items')
+            .update(prior).eq('id', w.id)
+          if (undoError) { toast('Could not undo', { tone: 'error' }); return }
+          setWatchItems(prev => [...prev, { ...w, ...prior }])
+        },
+      },
     })
   }
 
@@ -650,6 +763,19 @@ export default function InspectionDetailPage() {
           creatingTaskFor={creatingTaskFor}
           orphanedTaskItems={orphanedTaskItems}
           onCapex={setCapexItem}
+        />
+      )}
+
+      {/* Watch loop — prior walks' watched findings, checked while onsite.
+          Mobile-friendly (unlike the desk triage sweep). */}
+      {isDraft && watchItems.length > 0 && (
+        <WatchListSection
+          watchItems={watchItems}
+          photoUrls={photoUrls}
+          onView={setLightbox}
+          onCarry={carryWatchItem}
+          onResolve={resolveWatchItem}
+          onSkip={id => setWatchItems(prev => prev.filter(x => x.id !== id))}
         />
       )}
 
@@ -1038,6 +1164,92 @@ function TriageSection({ items, photoUrls, localPreviews, onDisposition, onCreat
         </div>
       </div>
     </>
+  )
+}
+
+// ── Watch list (capture screen) ──────────────────────────────
+// Prior inspections' watched findings, re-checked while walking the
+// property. Three outcomes per row: Still an issue (clone into this
+// inspection), Resolved (verified gone), or Skip (stays watched for the
+// next walk — local dismiss only). Buttons stay big and wrap — this runs
+// one-handed on a phone.
+
+function WatchListSection({ watchItems, photoUrls, onView, onCarry, onResolve, onSkip }: {
+  watchItems: WatchRow[]
+  photoUrls: Record<string, SignedPhotoUrl>
+  onView: (path: string) => void
+  onCarry: (w: WatchRow) => Promise<void>
+  onResolve: (w: WatchRow) => Promise<void>
+  onSkip: (id: string) => void
+}) {
+  // Row with a write in flight — its buttons lock to prevent double-fires.
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const run = async (w: WatchRow, action: (w: WatchRow) => Promise<void>) => {
+    if (busyId) return
+    setBusyId(w.id)
+    try { await action(w) } finally { setBusyId(null) }
+  }
+
+  return (
+    <div className="card overflow-hidden border-amber-200">
+      <div className="px-4 py-3 border-b border-amber-100 bg-amber-50/60 flex items-center gap-2 flex-wrap">
+        <Eye size={14} className="text-amber-600 flex-shrink-0" />
+        <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide">
+          Watch list ({watchItems.length})
+        </span>
+        <span className="text-xs text-amber-700/70">from earlier walks — check these while you&apos;re here</span>
+      </div>
+      {watchItems.map(w => {
+        const firstPhoto = w.photo_paths[0]
+        const src = firstPhoto ? photoUrls[firstPhoto]?.url : undefined
+        const busy = busyId === w.id
+        return (
+          <div key={w.id} className="px-4 py-3 border-b border-slate-100 last:border-0 flex gap-3">
+            {firstPhoto ? (
+              src ? (
+                <button onClick={() => onView(firstPhoto)} className="flex-shrink-0" title="View photo">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt="Watched finding"
+                    className="w-14 h-14 rounded-lg object-cover border border-slate-200" />
+                </button>
+              ) : (
+                <div className="w-14 h-14 rounded-lg bg-slate-100 animate-pulse flex-shrink-0" />
+              )
+            ) : (
+              <div className="w-14 h-14 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                <Camera size={14} className="text-slate-300" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <p className={cn('text-sm', w.item_label ? 'text-slate-800' : 'text-slate-300 italic')}>
+                {w.item_label || 'No description'}
+              </p>
+              <p className="text-xs text-slate-400">
+                {instanceLabel({ name: w.section_name, unit: w.unit_number })}
+                {' · '}watched {formatDate(w.inspections.inspection_date)}
+                {(w.watch_count ?? 0) > 0 && ` · carried ${w.watch_count}×`}
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={() => run(w, onCarry)} disabled={busy}
+                  className="btn-secondary text-xs py-1.5 border-amber-300 text-amber-700 hover:bg-amber-50">
+                  <RotateCcw size={12} />{busy ? 'Saving…' : 'Still an issue'}
+                </button>
+                <button onClick={() => run(w, onResolve)} disabled={busy}
+                  className="btn-secondary text-xs py-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50">
+                  <Check size={12} />Resolved
+                </button>
+                <button onClick={() => onSkip(w.id)} disabled={busy}
+                  title="Leave on the watch list for the next walk"
+                  className="btn-ghost text-xs py-1.5">
+                  Skip
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
