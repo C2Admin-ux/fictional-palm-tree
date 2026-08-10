@@ -340,12 +340,17 @@ export default function InspectionDetailPage() {
       disposition_note: item.disposition_note,
       disposition_at: item.disposition_at,
       capex_project_id: item.capex_project_id,
+      communicated_at: item.communicated_at,
     }
     const patch = {
       disposition,
       disposition_note: note,
       disposition_at: new Date().toISOString(),
       capex_project_id: opts?.capexProjectId !== undefined ? opts.capexProjectId : item.capex_project_id,
+      // A fresh flag starts a fresh communication cycle — a stale
+      // "communicated Nd ago" from an earlier flag must not make a new
+      // ask look already-handled.
+      ...(disposition === 'flagged' ? { communicated_at: null } : {}),
     }
     const applyLocal = (fields: Partial<InspectionItem>) =>
       setItems(prev => prev.map(i => i.id === item.id ? { ...i, ...fields } : i))
@@ -386,21 +391,32 @@ export default function InspectionDetailPage() {
   const commStampPriorsRef = useRef<Record<string, string | null> | null>(null)
 
   async function stampFlaggedCommunicated() {
-    const flagged = items.filter(i => normalizeDisposition(i.disposition) === 'flagged')
-    if (flagged.length === 0) return
-    const now = new Date().toISOString()
-    const priors = Object.fromEntries(flagged.map(i => [i.id, i.communicated_at]))
-    const { error } = await supabase.from('inspection_items')
-      .update({ communicated_at: now })
+    // Server truth: read the currently-flagged rows from the DB rather
+    // than the local snapshot (another tab or a triage sweep elsewhere
+    // may have changed dispositions since this page loaded), stamp
+    // exactly those ids, and keep their prior values for Mark-not-sent.
+    const { data, error: selectError } = await supabase.from('inspection_items')
+      .select('id, communicated_at')
       .eq('inspection_id', inspectionId)
       .eq('disposition', 'flagged')
+    if (selectError) {
+      console.warn('Could not load flagged findings to stamp:', selectError.message)
+      return
+    }
+    const flagged = data ?? []
+    if (flagged.length === 0) { commStampPriorsRef.current = null; return }
+    const now = new Date().toISOString()
+    const ids = flagged.map(r => r.id)
+    const { error } = await supabase.from('inspection_items')
+      .update({ communicated_at: now })
+      .in('id', ids)
     if (error) {
       console.warn('Could not stamp communicated_at on flagged findings:', error.message)
       return
     }
-    commStampPriorsRef.current = priors
+    commStampPriorsRef.current = Object.fromEntries(flagged.map(r => [r.id, r.communicated_at]))
     setItems(prev => prev.map(i =>
-      normalizeDisposition(i.disposition) === 'flagged' ? { ...i, communicated_at: now } : i))
+      ids.includes(i.id) ? { ...i, communicated_at: now } : i))
   }
 
   async function unstampFlaggedCommunicated() {
@@ -2228,7 +2244,9 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
     setError(null)
     // Payload computed once so a retried write is a harmless repeat.
     // disposition_at stamps only when the verb actually changed — editing
-    // the description or note must not reset "flagged Nd" aging.
+    // the description or note must not reset "flagged Nd" aging. A change
+    // TO 'flagged' also clears communicated_at: a fresh flag starts a
+    // fresh communication cycle.
     const payload = {
       item_label: description.trim(),
       section_name: sectionName,
@@ -2238,7 +2256,10 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
       disposition,
       disposition_note: note,
       ...(disposition !== normalizeDisposition(item.disposition)
-        ? { disposition_at: new Date().toISOString() }
+        ? {
+            disposition_at: new Date().toISOString(),
+            ...(disposition === 'flagged' ? { communicated_at: null } : {}),
+          }
         : {}),
     }
     try {
