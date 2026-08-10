@@ -45,10 +45,36 @@ export function normalizeDisposition(value: string | null | undefined): Disposit
   return (DISPOSITIONS as readonly string[]).includes(value ?? '') ? value as Disposition : 'open'
 }
 
-// Dispositions that still count as an OPEN finding for property rollups
-// (the property page "Open findings" card). capex findings are tracked on
-// their project instead; accepted/resolved are settled.
-export const OPEN_FINDING_DISPOSITIONS = ['open', 'watch', 'flagged', 'task'] as const
+// Settled dispositions: the risk is no longer outstanding — either a
+// deliberate decision to live with it (accepted) or verified gone
+// (resolved). Settled findings stay reviewable forever; they just stop
+// counting as open.
+export const SETTLED_DISPOSITIONS = ['accepted', 'resolved'] as const
+
+export function isSettled(value: string | null | undefined): boolean {
+  return (SETTLED_DISPOSITIONS as readonly string[]).includes(normalizeDisposition(value))
+}
+
+// THE canonical "open finding" rule — every rollup (inspections list
+// badge, property Overview card, property Inspections tab, filter chips)
+// counts with this one predicate so the buckets can never drift:
+//
+//   open finding = NOT settled AND (requires_action OR triaged)
+//
+// An untriaged pure observation (requires_action false, disposition
+// 'open') is NOT an open finding — it's a note, not a problem. Anything
+// triaged to watch/flagged/task/capex counts regardless of
+// requires_action: assigning a verb is a statement that the finding is
+// outstanding and being managed.
+export function isOpenFinding(item: { requires_action: boolean; disposition?: string | null }): boolean {
+  const d = normalizeDisposition(item.disposition)
+  return !isSettled(d) && (item.requires_action === true || d !== 'open')
+}
+
+// Server-side candidate set for open-finding queries (everything not
+// settled). Pair with `.or('requires_action.eq.true,disposition.neq.open')`
+// — or client-side isOpenFinding — to complete the rule above.
+export const UNSETTLED_DISPOSITIONS = ['open', 'watch', 'flagged', 'task', 'capex'] as const
 
 // Whole days since a timestamp — drives "flagged Nd" / "communicated Nd
 // ago" aging on chips, the agenda, and the report email.

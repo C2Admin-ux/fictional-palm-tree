@@ -9,7 +9,7 @@ import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType }
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
 import { cancelInspectionUploads } from '@/lib/inspections/upload-queue'
 import { inspectionScore } from '@/lib/inspections/score'
-import { normalizeDisposition } from '@/lib/inspections/dispositions'
+import { isOpenFinding } from '@/lib/inspections/dispositions'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -78,10 +78,9 @@ export default function InspectionsPage() {
       ...i,
       property_name: i.properties?.name ?? '',
       item_count: i.inspection_items.length,
-      // "Open" excludes settled dispositions — accepted/resolved findings
-      // stay reviewable but no longer count as outstanding follow-ups.
-      open_findings: i.inspection_items.filter(it => it.requires_action
-        && !['accepted', 'resolved'].includes(normalizeDisposition(it.disposition))).length,
+      // The canonical open-finding rule (lib/inspections/dispositions):
+      // not settled AND (requires_action OR triaged).
+      open_findings: i.inspection_items.filter(isOpenFinding).length,
       score: i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
     .sort(sortFn),

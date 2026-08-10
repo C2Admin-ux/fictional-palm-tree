@@ -15,6 +15,12 @@ import { normalizeDisposition, type Disposition } from '@/lib/inspections/dispos
 //   watch — half (deliberate deferral, rounded up so it never reads free)
 //   accepted / resolved — zero (a settled decision or a fixed issue is
 //     managed risk, not a mark against the walk)
+//
+// NOTE: the score deliberately keeps its requires_action basis, which is
+// NARROWER than the canonical isOpenFinding bucket — a flagged/watched
+// OBSERVATION (requires_action false) appears in lists, on the agenda and
+// in the report email, but does not deduct points. Deliberate v1 choice:
+// the score measures follow-up risk, not communication debt.
 
 export const SCORE_DEDUCTIONS: Record<ActionPriority, number> = {
   urgent: 15,

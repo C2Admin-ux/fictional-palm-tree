@@ -12,7 +12,7 @@ import BuildingTab from './building-tab'
 import EditProperty from './edit-property'
 import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
 import { OpenFindingsCard, type OpenFindingRow } from './open-findings'
-import { OPEN_FINDING_DISPOSITIONS } from '@/lib/inspections/dispositions'
+import { UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
 import TasksTab from './tasks-tab'
 import { StatusBadge } from '@/components/ui/badge'
 
@@ -106,20 +106,24 @@ export default async function PropertyPage({
     // Trash-contract coverage check — only contracts affirmatively covering
     // this property (property_id link or covered_property_ids contains it).
     supabase.from('contracts').select('property_id, covered_property_ids, contract_type, status, expiration_date').eq('contract_type', 'trash').eq('status', 'active').or(`property_id.eq.${params.id},covered_property_ids.cs.{${params.id}}`),
-    // Open findings rollup (Overview card): unresolved dispositions across
-    // ALL the property's inspections — count for the header, a lean
-    // 8-row preview (first photo only ships to the client).
+    // Open findings rollup (Overview card): the canonical open-finding
+    // rule (lib/inspections/dispositions.isOpenFinding) pushed into the
+    // query — unsettled dispositions, minus untriaged pure observations
+    // — count for the header, a lean 8-row preview (first photo only
+    // ships to the client).
     tab === 'overview'
       ? supabase.from('inspection_items')
           .select('id, inspections!inner(property_id)', { count: 'exact', head: true })
           .eq('inspections.property_id', params.id)
-          .in('disposition', [...OPEN_FINDING_DISPOSITIONS])
+          .in('disposition', [...UNSETTLED_DISPOSITIONS])
+          .or('requires_action.eq.true,disposition.neq.open')
       : Promise.resolve({ count: null }),
     tab === 'overview'
       ? supabase.from('inspection_items')
           .select(FINDING_ROW_SELECT)
           .eq('inspections.property_id', params.id)
-          .in('disposition', [...OPEN_FINDING_DISPOSITIONS])
+          .in('disposition', [...UNSETTLED_DISPOSITIONS])
+          .or('requires_action.eq.true,disposition.neq.open')
           .order('created_at', { ascending: false })
           .limit(8)
       : Promise.resolve({ data: null }),

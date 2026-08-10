@@ -2,14 +2,15 @@
 
 // Property-level finding rollups, across ALL of the property's
 // inspections:
-//   OpenFindingsCard — Overview card: currently-unresolved findings
-//     (dispositions open/watch/flagged/task), newest first, capped at 8
-//     with a count header and a "View all" into the Inspections tab.
+//   OpenFindingsCard — Overview card: open findings per the canonical
+//     rule (lib/inspections/dispositions.isOpenFinding), newest first,
+//     capped at 8 with a count header and a "View all" into the
+//     Inspections tab.
 //   PropertyFindingsList — the Inspections tab's full list: every finding
 //     regardless of disposition, with opt-in filter chips (All | Open |
-//     Watch | Flagged | Resolved/Accepted) defaulting to All. Filtering
-//     is the viewer's choice — nothing is hidden by default; findings
-//     stay reviewable forever.
+//     Watch | Flagged | Settled) defaulting to All. Filtering is the
+//     viewer's choice — nothing is hidden by default; findings stay
+//     reviewable forever.
 // Rows are lean server-fetched shapes (first photo path only); thumbnails
 // sign client-side through the shared photo helper.
 
@@ -19,7 +20,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, PRIORITY_DOT } from '@/lib/utils'
 import { signedPhotoUrls, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { instanceLabel } from '@/lib/inspections/sections'
-import { normalizeDisposition } from '@/lib/inspections/dispositions'
+import { isOpenFinding, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { Camera, ClipboardCheck } from 'lucide-react'
 
@@ -137,27 +138,23 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
 // ── Full list (Inspections tab) ──────────────────────────────
 
 type FilterId = 'all' | 'open' | 'watch' | 'flagged' | 'settled'
-const FILTERS: { id: FilterId; label: string; dispositions: readonly string[] | null }[] = [
-  { id: 'all', label: 'All', dispositions: null },
-  { id: 'open', label: 'Open', dispositions: ['open', 'task', 'capex'] },
-  { id: 'watch', label: 'Watch', dispositions: ['watch'] },
-  { id: 'flagged', label: 'Flagged', dispositions: ['flagged'] },
-  { id: 'settled', label: 'Resolved/Accepted', dispositions: ['resolved', 'accepted'] },
+const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => boolean }[] = [
+  { id: 'all', label: 'All', match: () => true },
+  // "Open" = the canonical open-finding rule, minus the verbs that get
+  // their own chip (watch/flagged) so the chips partition cleanly. An
+  // untriaged pure observation lands only under All.
+  { id: 'open', label: 'Open', match: r => isOpenFinding(r) && ['open', 'task', 'capex'].includes(normalizeDisposition(r.disposition)) },
+  { id: 'watch', label: 'Watch', match: r => normalizeDisposition(r.disposition) === 'watch' },
+  { id: 'flagged', label: 'Flagged', match: r => normalizeDisposition(r.disposition) === 'flagged' },
+  { id: 'settled', label: 'Settled', match: r => isSettled(r.disposition) },
 ]
 
 export function PropertyFindingsList({ rows }: { rows: OpenFindingRow[] }) {
   const [filter, setFilter] = useState<FilterId>('all')
   const thumbs = useSignedThumbs(rows)
 
-  const countFor = (dispositions: readonly string[] | null) =>
-    dispositions == null
-      ? rows.length
-      : rows.filter(r => dispositions.includes(normalizeDisposition(r.disposition))).length
-
   const active = FILTERS.find(f => f.id === filter) ?? FILTERS[0]
-  const visible = active.dispositions == null
-    ? rows
-    : rows.filter(r => active.dispositions!.includes(normalizeDisposition(r.disposition)))
+  const visible = rows.filter(active.match)
 
   if (rows.length === 0) return null
 
@@ -176,7 +173,7 @@ export function PropertyFindingsList({ rows }: { rows: OpenFindingRow[] }) {
                   ? 'bg-blue-600 border-blue-600 text-white'
                   : 'border-slate-200 text-slate-500 hover:bg-slate-50'
               )}>
-              {f.label} ({countFor(f.dispositions)})
+              {f.label} ({rows.filter(f.match).length})
             </button>
           ))}
         </div>

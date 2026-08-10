@@ -32,7 +32,7 @@ import {
   groupItemsByInstance, type SectionInstance,
 } from '@/lib/inspections/sections'
 import {
-  DISPOSITIONS, DISPOSITION_LABELS, normalizeDisposition, type Disposition,
+  DISPOSITIONS, DISPOSITION_LABELS, isSettled, normalizeDisposition, type Disposition,
 } from '@/lib/inspections/dispositions'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { Modal } from '@/components/ui/modal'
@@ -1801,7 +1801,7 @@ function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUp
 
   // Settled findings stay fully visible and reviewable — never filtered
   // away — just visually quieter than the live ones.
-  const settled = ['accepted', 'resolved'].includes(normalizeDisposition(item.disposition))
+  const settled = isSettled(item.disposition)
 
   async function handleAdd(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])

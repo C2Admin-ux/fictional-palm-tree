@@ -11,7 +11,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, formatDateShort, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { inspectionScore } from '@/lib/inspections/score'
-import { normalizeDisposition } from '@/lib/inspections/dispositions'
+import { isOpenFinding } from '@/lib/inspections/dispositions'
 import { PropertyFindingsList, type OpenFindingRow } from './open-findings'
 import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { signedFileUrl } from '@/lib/inspections/photos'
@@ -39,10 +39,9 @@ export default function InspectionsTab({ inspections, findings }: {
   const rows = inspections.map(i => ({
     ...i,
     score: inspectionScore(i.inspection_items),
-    // "Open" excludes settled dispositions — accepted/resolved findings
-    // stay reviewable but no longer count as outstanding follow-ups.
-    open: i.inspection_items.filter(it => it.requires_action
-      && !['accepted', 'resolved'].includes(normalizeDisposition(it.disposition))).length,
+    // The canonical open-finding rule (lib/inspections/dispositions):
+    // not settled AND (requires_action OR triaged).
+    open: i.inspection_items.filter(isOpenFinding).length,
   }))
 
   // Trend uses completed walks only — a draft mid-walk has partial
