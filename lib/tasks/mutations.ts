@@ -9,9 +9,25 @@ import type { Database, Task } from '@/lib/supabase/types'
 import { toast } from '@/components/ui/toast'
 import { createNextOccurrence } from '@/lib/tasks/recurrence'
 import { taskInsertPayload } from '@/lib/tasks/payload'
+import { invalidateInspectionReports } from '@/lib/inspections/invalidate'
 import { formatDateShort } from '@/lib/utils'
 
 type Client = SupabaseClient<Database>
+
+// The auto-resolve stamp a task completion leaves on its linked
+// inspection findings — and the only signal a later manual un-complete
+// has for walking that resolve back (see the wasDone path below).
+const RESOLVE_NOTE = 'Linked task completed'
+
+// Exact prior of a finding the completion auto-resolved — the Undo toast
+// restores by id with these values.
+type FindingPrior = {
+  id: string
+  inspection_id: string
+  disposition: string
+  disposition_note: string | null
+  disposition_at: string | null
+}
 
 // Local-state adapter: how the calling page mutates its task list.
 // `insert` receives a bare Task row — pages holding enriched rows
@@ -115,20 +131,74 @@ export async function toggleDoneOptimistic(
     }
   }
 
-  if (wasDone) return
+  if (wasDone) {
+    // Manual UN-complete, possibly long after the completion (the
+    // day-later vendor no-show): best-effort restore the findings that
+    // completion auto-resolved, back to 'task'. The completion's exact
+    // priors are long gone at this distance, so the stamp note is the
+    // only signal left — a finding whose note Nick edited since stays
+    // resolved (acceptable: an edited note is a human decision the
+    // machine shouldn't overwrite). Fire-and-forget like the stamp.
+    void (async () => {
+      const { data: restored, error: restoreError } = await supabase.from('inspection_items')
+        .update({ disposition: 'task', disposition_note: null, disposition_at: now })
+        .eq('task_id', task.id)
+        .eq('disposition', 'resolved')
+        .eq('disposition_note', RESOLVE_NOTE)
+        .select('inspection_id')
+      if (restoreError) {
+        console.warn('Could not restore linked inspection findings:', restoreError.message)
+        return
+      }
+      if (restored && restored.length > 0) {
+        void invalidateInspectionReports(supabase, restored.map(r => r.inspection_id))
+      }
+    })()
+    return
+  }
 
-  // Completing a task resolves the inspection findings it was spawned
-  // from (disposition 'task' only — a manually re-triaged finding is left
-  // alone). Best-effort and fire-and-forget: a failure is logged, never
-  // surfaced, and never blocks the completion. The finding stays fully
-  // reviewable — 'resolved' is a state change, not a closure.
-  void supabase.from('inspection_items')
-    .update({ disposition: 'resolved', disposition_note: 'Linked task completed', disposition_at: now })
-    .eq('task_id', task.id)
-    .eq('disposition', 'task')
-    .then(({ error: findingError }) => {
-      if (findingError) console.warn('Could not resolve linked inspection findings:', findingError.message)
-    })
+  // Completing a task resolves the inspection findings it — or the
+  // subtasks completed with it — was spawned from (disposition 'task'
+  // only: a manually re-triaged finding is left alone). Best-effort and
+  // fire-and-forget: a failure is logged, never surfaced, and never
+  // blocks the completion. The finding stays fully reviewable —
+  // 'resolved' is a state change, not a closure. Exact priors are
+  // captured BEFORE the write so the Undo toast can restore by id (no
+  // note-string matching), and the affected inspections' stored reports
+  // are invalidated (the resolve changes their score/content).
+  const findingTaskIds = [task.id, ...children.map(c => c.id)]
+  const resolvedFindingsPromise: Promise<FindingPrior[]> = (async () => {
+    const { data: rows, error: selectError } = await supabase.from('inspection_items')
+      .select('id, inspection_id, disposition, disposition_note, disposition_at')
+      .in('task_id', findingTaskIds)
+      .eq('disposition', 'task')
+    if (selectError || !rows || rows.length === 0) {
+      if (selectError) console.warn('Could not load linked inspection findings:', selectError.message)
+      return []
+    }
+    const priors = rows as FindingPrior[]
+    const ids = priors.map(r => r.id)
+    const { error: resolveError } = await supabase.from('inspection_items')
+      .update({ disposition: 'resolved', disposition_at: now })
+      .in('id', ids)
+    if (resolveError) {
+      console.warn('Could not resolve linked inspection findings:', resolveError.message)
+      return []
+    }
+    // The stamp note must not clobber a note Nick wrote himself — only
+    // rows with no note get the marker (rows that keep their own note
+    // are invisible to the wasDone note-match restore above; documented
+    // limitation).
+    const noteless = priors.filter(r => r.disposition_note == null).map(r => r.id)
+    if (noteless.length > 0) {
+      const { error: noteError } = await supabase.from('inspection_items')
+        .update({ disposition_note: RESOLVE_NOTE })
+        .in('id', noteless)
+      if (noteError) console.warn('Could not stamp the resolve note on linked findings:', noteError.message)
+    }
+    void invalidateInspectionReports(supabase, priors.map(r => r.inspection_id))
+    return priors
+  })()
 
   // Spawn failures NEVER walk back the completion (it already committed
   // and is what the user asked for) — but they must not be silent either,
@@ -204,15 +274,23 @@ export async function toggleDoneOptimistic(
               failed.push(`next occurrence “${s.title}”`)
             }
           }
-          // Walk back the finding auto-resolve too — only rows this
-          // completion stamped (matched by our exact note), best-effort
-          // and silent-logged like the stamp itself.
-          const { error: findingUndoError } = await supabase.from('inspection_items')
-            .update({ disposition: 'task', disposition_note: null, disposition_at: new Date().toISOString() })
-            .eq('task_id', task.id)
-            .eq('disposition', 'resolved')
-            .eq('disposition_note', 'Linked task completed')
-          if (findingUndoError) console.warn('Could not restore linked inspection findings:', findingUndoError.message)
+          // Walk back the finding auto-resolve too — restore each row by
+          // id to the EXACT priors captured when the resolve ran (no
+          // note-string matching), best-effort and silent-logged like
+          // the stamp itself.
+          const priors = await resolvedFindingsPromise.catch(() => [] as FindingPrior[])
+          if (priors.length > 0) {
+            const results = await Promise.all(priors.map(p =>
+              supabase.from('inspection_items')
+                .update({
+                  disposition: p.disposition as Database['public']['Tables']['inspection_items']['Row']['disposition'],
+                  disposition_note: p.disposition_note,
+                  disposition_at: p.disposition_at,
+                })
+                .eq('id', p.id)))
+            if (results.some(r => r.error)) console.warn('Could not fully restore linked inspection findings')
+            void invalidateInspectionReports(supabase, priors.map(p => p.inspection_id))
+          }
           if (failed.length > 0) {
             toast(`Could not undo: ${failed.join(', ')}`, { tone: 'error' })
           }
