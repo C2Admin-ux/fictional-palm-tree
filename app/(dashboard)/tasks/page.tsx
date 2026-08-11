@@ -12,6 +12,7 @@ import {
   propertyColor, propertyAbbr,
 } from '@/lib/utils'
 import { groupByDue } from '@/lib/tasks/dates'
+import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
@@ -138,6 +139,27 @@ const VIEW_TABS: { key: ViewMode; label: string }[] = [
   { key: 'review', label: 'Review' },
 ]
 
+// URL → landing state, used for the initial render AND re-applied when
+// searchParams change (client-side navigations to /tasks?view=… after
+// the page is already mounted — e.g. the dashboard's "Plan my week →"
+// while sitting on /tasks). An explicit ?view= wins; otherwise a
+// property/capex deep link lands on the All list where those filters
+// live; plain /tasks restores the Agenda default.
+// Filters are seeded ONLY when the landing view is 'all': under
+// Agenda/Review the filter bar isn't visible, so seeding would
+// invisibly narrow the All list the next time the user switches to it.
+function paramsToNav(searchParams: URLSearchParams): {
+  view: ViewMode; property: string; capex: string
+} {
+  const v = searchParams.get('view')
+  const property = searchParams.get('property') ?? ''
+  const capex = searchParams.get('capex') ?? ''
+  const view: ViewMode = v === 'agenda' || v === 'all' || v === 'review' ? v
+    : property || capex ? 'all' : 'agenda'
+  const seed = view === 'all'
+  return { view, property: seed ? property : '', capex: seed ? capex : '' }
+}
+
 // Handlers every task list needs, bundled so the three views share
 // one prop shape.
 type RowHandlers = {
@@ -228,8 +250,8 @@ function TasksInner() {
   const [activeStatuses, setActiveStatuses] = useState<Set<StatusFilter>>(
     new Set<StatusFilter>(['inbox', 'next_action', 'waiting', 'blocked'])
   )
-  const [filterProp, setFilterProp] = useState(searchParams.get('property') ?? '')
-  const [filterCapex, setFilterCapex] = useState(searchParams.get('capex') ?? '')
+  const [filterProp, setFilterProp] = useState(() => paramsToNav(searchParams).property)
+  const [filterCapex, setFilterCapex] = useState(() => paramsToNav(searchParams).capex)
   const [filterContact, setFilterContact] = useState('')
   const [filterPriority, setFilterPriority] = useState('')
   const [search, setSearch] = useState('')
@@ -238,11 +260,22 @@ function TasksInner() {
   // saved views.
   const [groupBy, setGroupBy] = useState<GroupByMode>('status')
 
-  // View mode. Agenda is the default, but deep links that carry a
-  // property/capex filter land on the list where those filters live.
-  const [view, setView] = useState<ViewMode>(() =>
-    searchParams.get('property') || searchParams.get('capex') ? 'all' : 'agenda'
-  )
+  // View mode + deep-link filters — see paramsToNav for the rules.
+  const [view, setView] = useState<ViewMode>(() => paramsToNav(searchParams).view)
+
+  // Later navigations must land the same way the initial one did: a
+  // /tasks?view=… link clicked while this page is already mounted only
+  // changes searchParams, so re-apply them here (plain /tasks restores
+  // the Agenda default; filters seed only on an 'all' landing —
+  // paramsToNav explains why).
+  useEffect(() => {
+    const nav = paramsToNav(searchParams)
+    setView(nav.view)
+    if (nav.view === 'all') {
+      setFilterProp(nav.property)
+      setFilterCapex(nav.capex)
+    }
+  }, [searchParams])
 
   // Collapsed sections (All tasks view) — keyed per grouping so a
   // collapse in one group-by doesn't leak into another.
@@ -1105,26 +1138,22 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
-    // Actionable-now semantics. Subtasks never surface as top-level
-    // rows — they live in their parent's drill-down only (shared
-    // topLevel helper, lib/tasks/subtasks.ts).
+    // Actionable-now semantics — the shared MINE / AWAKE / UNBLOCKED
+    // predicates (lib/tasks/agenda.ts, also driving the dashboard Today
+    // lane). Subtasks never surface as top-level rows — they live in
+    // their parent's drill-down only (shared topLevel helper,
+    // lib/tasks/subtasks.ts).
     const tops = topLevel(tasks)
-    const isMine = (t: TaskWithRelations) => !t.assigned_to || t.assigned_to === userId
-    const isAwake = (t: TaskWithRelations) => !t.snoozed_until || t.snoozed_until <= today
-    const isUnblocked = (t: TaskWithRelations) => {
-      if (!t.blocked_by_task_id) return true
-      const blocker = taskById.get(t.blocked_by_task_id)
-      return !blocker || blocker.status === 'done'
-    }
 
     // Personal inbox: things I captured that still need processing
     const myInbox = tops.filter(t =>
-      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t)
+      t.status === 'inbox' && t.created_by != null && t.created_by === userId && isAwake(t, today)
     )
     const inboxIds = new Set(myInbox.map(t => t.id))
 
     const actionable = tops.filter(t =>
-      t.status !== 'done' && isMine(t) && isAwake(t) && isUnblocked(t) && !inboxIds.has(t.id)
+      t.status !== 'done' && isMine(t, userId) && isAwake(t, today) &&
+      isUnblocked(t, taskById) && !inboxIds.has(t.id)
     )
 
     // Shared bucketing (same as the property Tasks tab) — 'Later' is
@@ -1133,7 +1162,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
     const hasDated = groups.some(g => g.tasks.length > 0)
 
     const snoozed = tops.filter(t =>
-      t.status !== 'done' && isMine(t) && t.snoozed_until != null && t.snoozed_until > today
+      t.status !== 'done' && isMine(t, userId) && t.snoozed_until != null && t.snoozed_until > today
     ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
 
     return { myInbox, groups, hasDated, snoozed }

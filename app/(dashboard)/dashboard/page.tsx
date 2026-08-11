@@ -1,227 +1,302 @@
+// Dashboard — a GENERATED daily guide, not a KPI wall. Four lanes:
+//   1 TODAY            ranked actionable list (interactive task rows)
+//   2 DECISIONS        the executive queue (bids ready, closing windows)
+//   3 THIS WEEK        the 7-day forecast + waiting-on + open seasons
+//   4 PORTFOLIO PULSE  one slim strip of property chips + three tiles
+//
+// Division of labor: this server component does every read in parallel
+// with lean selects and passes the RAW source rows through; the client
+// DashboardLanes owns "today" (computed locally, so a UTC server clock
+// can't shift the guide) and assembles lanes 1–3 via the pure selectors
+// in lib/dashboard/signals.ts, re-deriving on every client task
+// mutation or broadcast. Only Portfolio Pulse renders here. Each
+// non-core signal query is individually guarded: on error its rows go
+// null and the signal is simply omitted — one broken source never
+// blanks the whole guide.
+
 import { createClient } from '@/lib/supabase/server'
+import { format, parseISO } from 'date-fns'
 import {
-  formatCurrency, formatPct, occupancyColor, delinquencyColor,
-  noiVarianceColor, TRAFFIC_LIGHT, propertyColor, daysUntil, PRIORITY_DOT,
+  cn, todayISO, addDaysToDate, formatCurrency,
+  propertyColor, propertyAbbr,
 } from '@/lib/utils'
-import Link from 'next/link'
-import { AlertTriangle, CheckSquare, HardHat, TrendingUp, Building2, Shield } from 'lucide-react'
+import {
+  type DashboardTask, type TriageSourceRow, type DraftCallSourceRow,
+  type StaleFlagSourceRow, type CapexSignalRow, type DecisionContractRow,
+  type DecisionPolicyRow, type SeasonSettingRow,
+} from '@/lib/dashboard/signals'
+import { isMine } from '@/lib/tasks/agenda'
+import { topLevel } from '@/lib/tasks/subtasks'
+import { isOpenFinding, UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
+import { inspectionScore, scoreGrade, GRADE_STYLES, type ScoreGrade } from '@/lib/inspections/score'
+import { SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY } from '@/lib/tasks/seasonal'
 import { StatTile } from '@/components/ui/stat-tile'
+import { DashboardLanes } from './lanes'
+import Link from 'next/link'
+import { CheckSquare, Flag, HardHat } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
 
+// ── Raw query-row shapes (lean selects below) ────────────────
+// The signal-source shapes live in lib/dashboard/signals.ts next to
+// their builders; only Pulse-specific shapes remain here.
+type CapexRow = {
+  id: string; title: string; status: string
+  budget: number | null; actual_spend: number | null; bids_target: number | null
+  properties: { name: string } | null
+  capex_bids: { vendor_name: string; status: 'requested' | 'received' | 'declined' | 'selected' | 'rejected'; amount: number | null; requested_at: string | null }[]
+}
+type CompletedInspectionRow = { id: string; property_id: string; inspection_date: string }
+type OpenFindingRow = {
+  requires_action: boolean; disposition: string
+  inspections: { property_id: string } | null
+}
+type GradeItemRow = { inspection_id: string; requires_action: boolean; action_priority: string | null; disposition: string }
+
 export default async function DashboardPage() {
   const supabase = await createClient()
+  const today = todayISO()
+  const in30 = addDaysToDate(today, 30)
+  const in90 = addDaysToDate(today, 90)
+  const weekAgo = addDaysToDate(today, -7)
+  const draftCallCutoff = new Date(Date.now() - 1 * 86400000).toISOString()
+  const staleFlagCutoff = new Date(Date.now() - 3 * 86400000).toISOString()
 
   const [
-    { data: properties },
-    { data: allMetrics },
-    { data: tasks },
-    { data: capexProjects },
-    { data: policies },
-    { data: claims },
+    { data: auth },
+    propertiesRes,
+    tasksRes,
+    triageRes,
+    callsRes,
+    flagsRes,
+    capexRes,
+    contractsRes,
+    policiesRes,
+    completedInspRes,
+    openFindingsRes,
+    seasonSettingsRes,
   ] = await Promise.all([
-    supabase.from('properties').select('*, pmcs(name)').eq('status', 'active').order('name'),
-    supabase.from('pm_metrics').select('*').order('period_month', { ascending: false }),
-    // Top-level tasks only: subtasks never render outside their
-    // parent's drill-down, so the KPI count, overdue count, per-property
-    // counts, and the Top Open Tasks list all exclude them.
-    supabase.from('tasks').select('id, status, priority, property_id, title, due_date')
-      .neq('status', 'done').is('parent_task_id', null),
-    supabase.from('capex_projects').select('id, property_id, title, status, budget, actual_spend').in('status', ['planning', 'approved', 'in_progress']),
-    supabase.from('insurance_policies').select('id, property_id, policy_type, carrier, expiry_date, status').eq('status', 'active'),
-    supabase.from('insurance_claims').select('id, property_id, status, amount_claimed').neq('status', 'closed').neq('status', 'denied'),
+    supabase.auth.getUser(),
+    supabase.from('properties').select('id, name').eq('status', 'active').order('name'),
+    // ALL my open tasks including subtasks — the Today lane needs the
+    // children so completing a parent sweeps them (openSubtasksOf),
+    // and every list derivation starts from topLevel().
+    // Horizon guard: the client re-buckets against ITS local today, so
+    // this fetch must cover the widest window it could need (overdue →
+    // +7d) regardless of server-vs-client clock skew. With no due-date
+    // bound at all that holds trivially — if a bound is ever added for
+    // volume, widen it by ±1 day beyond the client horizon to absorb
+    // timezone drift (and keep null-due rows: blockers and subtasks).
+    supabase.from('tasks').select('*, properties(name)').neq('status', 'done'),
+    // Submitted walks with untriaged findings: the embed is filtered to
+    // disposition='open' so only the untriaged rows ride along.
+    supabase.from('inspections')
+      .select('id, inspection_date, properties(name), inspection_items(disposition)')
+      .eq('status', 'submitted')
+      .eq('inspection_items.disposition', 'open'),
+    supabase.from('calls')
+      .select('id, title, created_at, pmcs(name), call_items(kind)')
+      .eq('status', 'draft')
+      .lte('created_at', draftCallCutoff),
+    supabase.from('inspection_items')
+      .select('id, inspection_id, disposition_at, inspections!inner(properties(name))')
+      .eq('disposition', 'flagged')
+      .is('communicated_at', null)
+      .lte('disposition_at', staleFlagCutoff),
+    supabase.from('capex_projects')
+      .select('id, title, status, budget, actual_spend, bids_target, properties(name), capex_bids(vendor_name, status, amount, requested_at)')
+      .in('status', ['planning', 'approved', 'in_progress']),
+    supabase.from('contracts')
+      .select('id, title, vendor_name, cancel_deadline')
+      .eq('status', 'active')
+      .gte('cancel_deadline', today)
+      .lte('cancel_deadline', in30),
+    // The old expiring-policies banner, folded into Decisions rows.
+    // Lower bound: active policies expired more than a week ago are
+    // stale data, not decisions — the recent ones (≤7d) collapse into
+    // one hygiene row in assembleDecisions.
+    supabase.from('insurance_policies')
+      .select('id, carrier, policy_type, expiry_date')
+      .eq('status', 'active')
+      .gte('expiry_date', weekAgo)
+      .lte('expiry_date', in90),
+    // Latest completed walk per property (first row per property_id
+    // below). created_at breaks same-day ties deterministically; the
+    // fetch is bounded — if walk history ever outgrows 200 rows, move
+    // this to a DISTINCT ON (property_id) RPC instead of a wider limit.
+    supabase.from('inspections')
+      .select('id, property_id, inspection_date')
+      .in('status', ['submitted', 'report_sent'])
+      .order('inspection_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(200),
+    // Canonical open-finding candidates (dispositions.ts): unsettled,
+    // completed client-side with isOpenFinding.
+    supabase.from('inspection_items')
+      .select('requires_action, disposition, inspections!inner(property_id)')
+      .in('disposition', [...UNSETTLED_DISPOSITIONS])
+      .or('requires_action.eq.true,disposition.neq.open'),
+    // Global AND property-level season windows — the client resolves
+    // them per property in the engine's order (property → global →
+    // defaults).
+    supabase.from('alert_settings')
+      .select('property_id, setting_key, value')
+      .in('setting_key', [SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY]),
   ])
 
-  const latestMetric: Record<string, any> = {}
-  for (const m of (allMetrics ?? [])) {
-    if (!latestMetric[m.property_id]) latestMetric[m.property_id] = m
+  const userId = auth.user?.id ?? null
+  const properties = (propertiesRes.data ?? []) as { id: string; name: string }[]
+  const tasks = (tasksRes.data ?? []) as unknown as DashboardTask[]
+  const propertyNames = Object.fromEntries(properties.map(p => [p.id, p.name]))
+
+  // ── Raw signal sources (each individually guarded) ─────────
+  const triageRows = triageRes.error ? null
+    : ((triageRes.data ?? []) as unknown as TriageSourceRow[])
+  const callRows = callsRes.error ? null
+    : ((callsRes.data ?? []) as unknown as DraftCallSourceRow[])
+  const flagRows = flagsRes.error ? null
+    : ((flagsRes.data ?? []) as unknown as StaleFlagSourceRow[])
+
+  const capexRows = (capexRes.data ?? []) as unknown as CapexRow[]
+  const capexSignals: CapexSignalRow[] | null = capexRes.error ? null
+    : capexRows.map(p => ({
+        id: p.id, title: p.title, propertyName: p.properties?.name ?? null,
+        bids_target: p.bids_target, bids: p.capex_bids,
+      }))
+
+  const contracts = contractsRes.error ? null
+    : ((contractsRes.data ?? []) as DecisionContractRow[])
+  const policies = policiesRes.error ? null
+    : ((policiesRes.data ?? []) as DecisionPolicyRow[])
+  const seasonSettings = (seasonSettingsRes.data ?? []) as SeasonSettingRow[]
+
+  // ── PORTFOLIO PULSE ────────────────────────────────────────
+  // Latest completed walk per property → grade (one dependent fetch for
+  // just those inspections' items).
+  const latestInspByProp = new Map<string, string>()
+  for (const i of ((completedInspRes.data ?? []) as CompletedInspectionRow[])) {
+    if (!latestInspByProp.has(i.property_id)) latestInspByProp.set(i.property_id, i.id)
+  }
+  const latestIds = Array.from(latestInspByProp.values())
+  const gradeItemsRes = latestIds.length > 0
+    ? await supabase.from('inspection_items')
+        .select('inspection_id, requires_action, action_priority, disposition')
+        .in('inspection_id', latestIds)
+    : { data: [] as GradeItemRow[], error: null }
+  // A failed walk or items query means grades are UNKNOWN — chips omit
+  // the grade badge rather than scoring an empty item list as an 'A'.
+  const gradesOk = !completedInspRes.error && !gradeItemsRes.error
+  const itemsByInspection = new Map<string, GradeItemRow[]>()
+  for (const it of ((gradeItemsRes.data ?? []) as GradeItemRow[])) {
+    const arr = itemsByInspection.get(it.inspection_id)
+    if (arr) arr.push(it)
+    else itemsByInspection.set(it.inspection_id, [it])
   }
 
-  const props = (properties ?? []) as any[]
-  const openTasks = (tasks ?? []) as any[]
-  const capex = (capexProjects ?? []) as any[]
-  const allPolicies = (policies ?? []) as any[]
-  const openClaims = (claims ?? []) as any[]
+  // Same rule for open-finding counts: on a failed query the chips drop
+  // their count and the flags tile shows an em dash — never a zero.
+  const findingsOk = !openFindingsRes.error
+  const openFindingRows = (openFindingsRes.data ?? []) as unknown as OpenFindingRow[]
+  const openByProperty = new Map<string, number>()
+  let openFlagCount = 0
+  for (const row of openFindingRows) {
+    if (!isOpenFinding(row)) continue
+    const pid = row.inspections?.property_id
+    if (pid) openByProperty.set(pid, (openByProperty.get(pid) ?? 0) + 1)
+    if (row.disposition === 'flagged') openFlagCount++
+  }
 
-  const propsWithMetrics = props.filter(p => latestMetric[p.id]?.occupancy_pct != null)
-  const avgOccupancy = propsWithMetrics.length
-    ? propsWithMetrics.reduce((s, p) => s + latestMetric[p.id].occupancy_pct, 0) / propsWithMetrics.length
-    : null
+  const pulseChips = properties.map(p => {
+    const inspId = latestInspByProp.get(p.id)
+    const items = gradesOk && inspId ? itemsByInspection.get(inspId) ?? [] : null
+    return {
+      id: p.id, name: p.name,
+      grade: items != null ? scoreGrade(inspectionScore(items)) : null,
+      openFindings: findingsOk ? openByProperty.get(p.id) ?? 0 : null,
+    }
+  })
 
-  const overdueCount = openTasks.filter(t => t.due_date && new Date(t.due_date) < new Date()).length
-  const totalCapexBudget = capex.reduce((s, p) => s + (p.budget ?? 0), 0)
-  const expiringPolicies = allPolicies.filter(p => { const d = daysUntil(p.expiry_date); return d != null && d <= 90 })
-  const totalClaimed = openClaims.reduce((s, c) => s + (c.amount_claimed ?? 0), 0)
-
-  const propMap = Object.fromEntries(props.map(p => [p.id, p.name]))
-
-  const topTasks = [...openTasks]
-    .sort((a, b) => {
-      const pri: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
-      return (pri[a.priority] ?? 2) - (pri[b.priority] ?? 2)
-    })
-    .slice(0, 6)
+  const myOpenTasks = topLevel(tasks).filter(t => isMine(t, userId))
+  const myOverdue = myOpenTasks.filter(t => t.due_date != null && t.due_date < today).length
+  const capexBudget = capexRows.reduce((s, p) => s + (p.budget ?? 0), 0)
+  const capexSpent = capexRows.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-5">
       <div>
-        <h1 className="page-title">Portfolio Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-0.5">{props.length} active properties</p>
+        <h1 className="page-title">{format(parseISO(today), 'EEEE, MMMM d')}</h1>
+        <p className="text-sm text-slate-500 mt-0.5">
+          Your day, generated — edit it as you go. {properties.length} active properties.
+        </p>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <StatTile label="Portfolio Occupancy" value={avgOccupancy != null ? formatPct(avgOccupancy) : '—'} sub={`${propsWithMetrics.length}/${props.length} reporting`} icon={<Building2 size={15} />} />
-        <StatTile label="Open Tasks" value={String(openTasks.length)} sub={overdueCount > 0 ? `${overdueCount} overdue` : 'none overdue'} icon={<CheckSquare size={15} />} alert={overdueCount > 0} href="/tasks" />
-        <StatTile label="Active CapEx" value={String(capex.length)} sub={formatCurrency(totalCapexBudget, true) + ' budget'} icon={<HardHat size={15} />} href="/capex" />
-        <StatTile label="Insurance Expiring" value={String(expiringPolicies.length)} sub="Within 90 days" icon={<Shield size={15} />} alert={expiringPolicies.length > 0} href="/insurance/policies" />
-        <StatTile label="Open Claims" value={String(openClaims.length)} sub={formatCurrency(totalClaimed, true) + ' claimed'} icon={<TrendingUp size={15} />} href="/insurance/claims" />
-      </div>
-
-      {/* Property cards */}
-      <div>
-        <h2 className="section-title mb-3">Properties</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {props.map(property => {
-            const metric = latestMetric[property.id]
-            const propTasks = openTasks.filter(t => t.property_id === property.id)
-            const propCapex = capex.filter(p => p.property_id === property.id)
-            const propExpiring = allPolicies.filter(p => p.property_id === property.id && (daysUntil(p.expiry_date) ?? 999) <= 90)
-            const pc = propertyColor(property.name)
-            const overdueProp = propTasks.filter(t => t.due_date && new Date(t.due_date) < new Date()).length
-
-            return (
-              <Link key={property.id} href={`/properties/${property.id}`} className="card-hover p-4 block">
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: pc }} />
-                      <span className="font-medium text-slate-900 text-sm">{property.name}</span>
-                    </div>
-                    <div className="text-xs text-slate-400 ml-4.5">
-                      {property.city}, {property.state}
-                      {property.units_total ? ` · ${property.units_total} units` : ''}
-                      {' · '}{(property as any).pmcs?.name ?? 'No PMC'}
-                    </div>
-                  </div>
-                  {metric && (
-                    <span className="text-xs text-slate-400 flex-shrink-0 ml-2">
-                      {new Date(metric.period_month + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
-                    </span>
-                  )}
-                </div>
-
-                {metric ? (
-                  <div className="grid grid-cols-3 gap-2 mb-3">
-                    <MetricCell label="Occupancy" value={formatPct(metric.occupancy_pct)} color={occupancyColor(metric.occupancy_pct)} />
-                    <MetricCell label="Delinquency" value={formatPct(metric.delinquency_pct)} color={delinquencyColor(metric.delinquency_pct)} />
-                    <MetricCell label="NOI vs Bud" value={metric.noi_actual && metric.noi_budget ? `${Math.round((metric.noi_actual - metric.noi_budget) / Math.abs(metric.noi_budget) * 100)}%` : '—'} color={noiVarianceColor(metric.noi_actual, metric.noi_budget)} />
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-400 italic mb-3 py-1.5">No metrics entered yet</p>
-                )}
-
-                <div className="flex items-center gap-4 pt-2.5 border-t border-slate-100 text-xs text-slate-500">
-                  <span className={overdueProp > 0 ? 'text-red-500 font-medium' : ''}>
-                    <CheckSquare size={11} className="inline mr-1" />{propTasks.length} task{propTasks.length !== 1 ? 's' : ''}
-                    {overdueProp > 0 && ` (${overdueProp} overdue)`}
-                  </span>
-                  <span><HardHat size={11} className="inline mr-1" />{propCapex.length} CapEx</span>
-                  {propExpiring.length > 0 && (
-                    <span className="text-amber-600 font-medium">
-                      <Shield size={11} className="inline mr-1" />{propExpiring.length} expiring
-                    </span>
-                  )}
-                </div>
-              </Link>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Bottom row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-slate-700">Top Open Tasks</h2>
-            <Link href="/tasks" className="text-xs text-blue-600 hover:underline">View all →</Link>
-          </div>
-          {topTasks.length === 0
-            ? <p className="text-sm text-slate-400 italic py-2">No open tasks</p>
-            : topTasks.map(task => {
-              const overdue = task.due_date && new Date(task.due_date) < new Date()
-              return (
-                <div key={task.id} className="flex items-center gap-2.5 py-2 border-b border-slate-200/70 last:border-0">
-                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    style={{ background: PRIORITY_DOT[task.priority] ?? '#94a3b8' }} />
-                  <span className="text-sm text-slate-700 flex-1 truncate">{task.title}</span>
-                  {task.property_id && <span className="text-xs text-slate-400 truncate max-w-[90px] flex-shrink-0">{propMap[task.property_id]}</span>}
-                  {overdue && <AlertTriangle size={12} className="text-red-400 flex-shrink-0" />}
-                </div>
-              )
-            })}
-        </div>
-
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-slate-700">Active CapEx Projects</h2>
-            <Link href="/capex" className="text-xs text-blue-600 hover:underline">View all →</Link>
-          </div>
-          {capex.length === 0
-            ? <p className="text-sm text-slate-400 italic py-2">No active projects</p>
-            : capex.slice(0, 5).map(project => {
-              const pct = project.budget && project.budget > 0 ? Math.min(Math.round((project.actual_spend ?? 0) / project.budget * 100), 100) : 0
-              const over = (project.actual_spend ?? 0) > (project.budget ?? Infinity)
-              return (
-                <div key={project.id} className="mb-3 last:mb-0">
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <Link href={`/capex/${project.id}`} className="text-slate-700 hover:text-blue-600 font-medium truncate max-w-[200px]">{project.title}</Link>
-                    <span className="text-slate-400 ml-2 flex-shrink-0">{formatCurrency(project.actual_spend, true)} / {formatCurrency(project.budget, true)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-slate-100 rounded-full h-1.5">
-                      <div className={`h-1.5 rounded-full ${over ? 'bg-red-400' : 'bg-blue-500'}`} style={{ width: `${pct}%` }} />
-                    </div>
-                    <span className={`text-xs ${over ? 'text-red-500' : 'text-slate-400'}`}>{pct}%</span>
-                  </div>
-                </div>
-              )
-            })}
-        </div>
-      </div>
-
-      {expiringPolicies.length > 0 && (
-        <div className="p-4 border border-amber-200 bg-amber-50 rounded-xl">
-          <div className="flex items-center gap-2 mb-2">
-            <AlertTriangle size={14} className="text-amber-600" />
-            <h2 className="text-sm font-semibold text-amber-800">{expiringPolicies.length} insurance polic{expiringPolicies.length === 1 ? 'y' : 'ies'} expiring within 90 days</h2>
-            <Link href="/insurance/policies" className="ml-auto text-xs text-amber-700 hover:underline">View all →</Link>
-          </div>
-          <div className="divide-y divide-amber-200/70">
-            {expiringPolicies.slice(0, 3).map(p => {
-              const days = daysUntil(p.expiry_date)
-              return (
-                <div key={p.id} className="flex items-center gap-2 text-xs text-amber-700 py-0.5">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${(days ?? 0) <= 30 ? 'bg-red-500' : 'bg-amber-400'}`} />
-                  <span className="font-medium">{p.carrier}</span>
-                  <span className="text-amber-400">·</span>
-                  <span>{p.policy_type.toUpperCase()}</span>
-                  <span className="ml-auto font-medium">{(days ?? 0) <= 0 ? 'EXPIRED' : `${days}d left`}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      <DashboardLanes
+        initialTasks={tasks}
+        triageRows={triageRows}
+        callRows={callRows}
+        flagRows={flagRows}
+        capexSignals={capexSignals}
+        contracts={contracts}
+        policies={policies}
+        seasonSettings={seasonSettings}
+        activePropertyIds={properties.map(p => p.id)}
+        userId={userId}
+        serverToday={today}
+        propertyNames={propertyNames}
+        pulse={<PulseStrip chips={pulseChips}
+          openTasks={myOpenTasks.length} overdue={myOverdue}
+          capexCount={capexRows.length} capexBudget={capexBudget} capexSpent={capexSpent}
+          openFlags={findingsOk ? openFlagCount : null} />}
+      />
     </div>
   )
 }
 
-function MetricCell({ label, value, color }: { label: string; value: string; color: string }) {
+// ── 4 · PORTFOLIO PULSE (server-rendered) ────────────────────
+
+function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexSpent, openFlags }: {
+  chips: { id: string; name: string; grade: ScoreGrade | null; openFindings: number | null }[]
+  openTasks: number
+  overdue: number
+  capexCount: number
+  capexBudget: number
+  capexSpent: number
+  openFlags: number | null
+}) {
   return (
-    <div className={`rounded-lg px-2 py-1.5 border text-center ${TRAFFIC_LIGHT[color as keyof typeof TRAFFIC_LIGHT] ?? 'text-slate-500 bg-slate-50 border-slate-200'}`}>
-      <div className="text-xs font-semibold leading-none mb-0.5">{value}</div>
-      <div className="text-xs opacity-70">{label}</div>
-    </div>
+    <section className="space-y-3">
+      <div className="card px-3 py-2 flex flex-wrap items-center gap-2">
+        {chips.length === 0 && <span className="text-sm text-slate-400 px-1">No active properties</span>}
+        {chips.map(c => (
+          <Link key={c.id} href={`/properties/${c.id}`} title={c.name}
+            className="flex items-center gap-1.5 border border-slate-200 rounded-full pl-2 pr-2.5 py-1 hover:border-blue-300 hover:bg-slate-50 transition-colors">
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: propertyColor(c.name) }} />
+            <span className="text-xs font-semibold text-slate-700">{propertyAbbr(c.name)}</span>
+            {c.grade != null && (
+              <span className={cn('text-[10px] font-bold px-1 rounded border leading-4', GRADE_STYLES[c.grade])}>
+                {c.grade}
+              </span>
+            )}
+            {c.openFindings != null && (
+              <span className={cn('text-xs', c.openFindings > 0 ? 'text-amber-600 font-medium' : 'text-slate-400')}>
+                {c.openFindings} open
+              </span>
+            )}
+          </Link>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <StatTile label="Open Tasks" value={String(openTasks)}
+          sub={overdue > 0 ? `${overdue} overdue` : 'none overdue'}
+          icon={<CheckSquare size={15} />} alert={overdue > 0} href="/tasks" />
+        <StatTile label="Active CapEx" value={String(capexCount)}
+          sub={`${formatCurrency(capexSpent, true)} spent of ${formatCurrency(capexBudget, true)}`}
+          icon={<HardHat size={15} />} href="/capex" />
+        <StatTile label="Open Flags" value={openFlags != null ? String(openFlags) : '—'}
+          sub={openFlags != null ? 'flagged findings in play' : 'count unavailable'}
+          icon={<Flag size={15} />} alert={openFlags != null && openFlags > 0} href="/inspections" />
+      </div>
+    </section>
   )
 }
