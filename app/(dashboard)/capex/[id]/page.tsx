@@ -8,6 +8,8 @@ import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, STATUS_STYLES, STA
 import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
 import { BidsCard } from './bids-card'
+import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
+import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 
 const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
@@ -22,6 +24,7 @@ export default function CapexDetailPage() {
   const [project, setProject] = useState<ProjectWithProp | null>(null)
   const [lineItems, setLineItems] = useState<CapexLineItem[]>([])
   const [bids, setBids] = useState<CapexBid[]>([])
+  const [bidsSchemaGap, setBidsSchemaGap] = useState<{ code?: string | null; message?: string | null } | null>(null)
   const [linkedTasks, setLinkedTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [editMode, setEditModeState] = useState(false)
@@ -41,7 +44,7 @@ export default function CapexDetailPage() {
 
   async function fetchAll() {
     const seq = ++fetchSeq.current
-    const [{ data: proj }, { data: lines }, { data: bidRows }, { data: tasks }] = await Promise.all([
+    const [{ data: proj }, { data: lines }, { data: bidRows, error: bidsError }, { data: tasks }] = await Promise.all([
       supabase.from('capex_projects').select('*, properties(name)').eq('id', id).single(),
       supabase.from('capex_line_items').select('*').eq('project_id', id).order('created_at', { ascending: false }),
       supabase.from('capex_bids').select('*').eq('project_id', id).order('created_at', { ascending: true }),
@@ -59,6 +62,10 @@ export default function CapexDetailPage() {
     // NOT editing (saveProject exits edit mode before its refetch).
     if (!editModeRef.current) setForm((proj as any) ?? {})
     setLineItems(lines ?? [])
+    // An empty bids list and a missing bids table look identical on screen —
+    // one means "no bids yet", the other means the feature isn't in the
+    // database. Only the second is worth saying out loud.
+    setBidsSchemaGap(isSchemaGapError(bidsError) ? bidsError : null)
     setBids(bidRows ?? [])
     setLinkedTasks(tasks ?? [])
     setLoading(false)
@@ -210,7 +217,9 @@ export default function CapexDetailPage() {
           </div>
 
           {/* Vendor bids */}
-          <BidsCard project={project} bids={bids} onChanged={fetchAll} />
+          {bidsSchemaGap
+            ? <SchemaGapNotice error={bidsSchemaGap} detail="Bid tracking for this project is unavailable until then — no bid data has been lost." />
+            : <BidsCard project={project} bids={bids} onChanged={fetchAll} />}
 
           {/* Line items */}
           <div className="card p-5">
