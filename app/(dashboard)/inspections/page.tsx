@@ -14,6 +14,8 @@ import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
+import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
+import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 import { useSort, Th } from '@/lib/utils/sort'
 import { ClipboardCheck, Plus, Trash2, AlertTriangle, ChevronRight, RotateCcw, X } from 'lucide-react'
 
@@ -28,8 +30,14 @@ type InspectionRow = {
   notes: string | null
   created_at: string
   properties: { name: string } | null
+  // Empty when the findings embed was dropped by the degraded fetch below —
+  // never trust it as "this inspection has no findings" without checking
+  // schemaGap first.
   inspection_items: { requires_action: boolean; action_priority: string | null; disposition: string }[]
 }
+
+const LIST_COLUMNS = 'id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name)'
+const FINDINGS_EMBED = 'inspection_items(requires_action, action_priority, disposition)'
 
 export default function InspectionsPage() {
   const supabase = createClient()
@@ -38,6 +46,7 @@ export default function InspectionsPage() {
   const [properties, setProperties] = useState<PropertyOption[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [schemaGap, setSchemaGap] = useState<{ code?: string | null; message?: string | null } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [filterProp, setFilterProp] = useState('')
@@ -46,19 +55,39 @@ export default function InspectionsPage() {
   const { sort, dir, toggle, sortFn } = useSort<string>('inspection_date', 'desc')
 
   const fetchInspections = useCallback(async () => {
-    let q = supabase.from('inspections')
-      .select('id, property_id, inspection_type, inspection_date, status, notes, created_at, properties(name), inspection_items(requires_action, action_priority, disposition)')
-    if (filterProp) q = q.eq('property_id', filterProp)
-    if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
-    if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
-    const { data, error } = await q
+    const run = (select: string) => {
+      let q = supabase.from('inspections').select(select)
+      if (filterProp) q = q.eq('property_id', filterProp)
+      if (filterType) q = q.eq('inspection_type', filterType as InspectionType)
+      if (filterStatus) q = q.eq('status', filterStatus as InspectionRow['status'])
+      return q
+    }
+
+    const { data, error } = await run(`${LIST_COLUMNS}, ${FINDINGS_EMBED}`)
     if (error) {
+      // A missing findings column is a pending migration, and no retry will
+      // fix it — but the list itself doesn't depend on findings. Refetch
+      // without the embed so the walk list still loads onsite; grades and
+      // counts go dark and the banner says why. Losing the page entirely
+      // mid-inspection is the one outcome worth this extra round trip.
+      if (isSchemaGapError(error)) {
+        const degraded = await run(LIST_COLUMNS)
+        if (!degraded.error) {
+          setSchemaGap(error)
+          setFetchError(null)
+          setInspections(((degraded.data ?? []) as unknown as Omit<InspectionRow, 'inspection_items'>[])
+            .map(row => ({ ...row, inspection_items: [] })))
+          setLoading(false)
+          return
+        }
+      }
       // Never show the false "No inspections yet" empty state on a failed
       // fetch — surface the error with a retry instead.
       setFetchError(error.message)
       setLoading(false)
       return
     }
+    setSchemaGap(null)
     setFetchError(null)
     setInspections((data as unknown as InspectionRow[]) ?? [])
     setLoading(false)
@@ -73,20 +102,24 @@ export default function InspectionsPage() {
   // A draft mid-walk has partial findings — it has no score yet. null here
   // both renders as the muted "—" slot and sorts to the bottom regardless
   // of direction (useSort puts nulls last either way).
+  // When the findings embed was dropped, findings are UNKNOWN, not zero —
+  // null everywhere so every slot renders "—" instead of quietly asserting
+  // a clean inspection. [[Pulse honesty]] applies here too: never fabricate
+  // a grade from data we failed to read.
   const displayed = useMemo(() => inspections
     .map(i => ({
       ...i,
       property_name: i.properties?.name ?? '',
-      item_count: i.inspection_items.length,
+      item_count: schemaGap ? null : i.inspection_items.length,
       // The canonical open-finding rule (lib/inspections/dispositions):
       // not settled AND (requires_action OR triaged).
-      open_findings: i.inspection_items.filter(isOpenFinding).length,
-      score: i.status === 'draft' ? null : inspectionScore(i.inspection_items),
+      open_findings: schemaGap ? null : i.inspection_items.filter(isOpenFinding).length,
+      score: schemaGap || i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
     .sort(sortFn),
     // sortFn is fully determined by sort + dir.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [inspections, sort, dir])
+    [inspections, sort, dir, schemaGap])
 
   async function deleteInspection(insp: InspectionRow) {
     if (!confirm(`Delete this draft inspection${insp.properties?.name ? ` at ${insp.properties.name}` : ''} and all its findings? This cannot be undone.`)) return
@@ -157,6 +190,14 @@ export default function InspectionsPage() {
         </p>
       )}
 
+      {/* Degraded, not dead: the list loaded without its findings embed. */}
+      {schemaGap && (
+        <SchemaGapNotice
+          error={schemaGap}
+          detail="Your inspections and findings are all still saved — this list just can't show grades or finding counts until the migration runs."
+        />
+      )}
+
       {loading ? (
         <div className="py-12 text-center text-sm text-slate-400">Loading…</div>
       ) : fetchError ? (
@@ -193,15 +234,19 @@ export default function InspectionsPage() {
                     <span>{INSPECTION_TYPE_LABELS[insp.inspection_type] ?? insp.inspection_type}</span>
                     <span>·</span>
                     <span>{formatDate(insp.inspection_date)}</span>
-                    <span>·</span>
-                    <span>{insp.item_count} finding{insp.item_count === 1 ? '' : 's'}</span>
+                    {insp.item_count != null && (
+                      <>
+                        <span>·</span>
+                        <span>{insp.item_count} finding{insp.item_count === 1 ? '' : 's'}</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {insp.score != null
                     ? <GradeBadge score={insp.score} />
                     : <span className="text-slate-300 text-xs">—</span>}
-                  {insp.open_findings > 0 && (
+                  {insp.open_findings != null && insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
                     </span>
@@ -257,9 +302,11 @@ export default function InspectionsPage() {
                         ? <GradeBadge score={insp.score} />
                         : <span className="text-slate-300 text-xs">—</span>}
                     </td>
-                    <td className="px-3 py-3 text-right text-slate-700">{insp.item_count}</td>
+                    <td className="px-3 py-3 text-right text-slate-700">
+                      {insp.item_count ?? <span className="text-slate-300 text-xs">—</span>}
+                    </td>
                     <td className="px-3 py-3 text-right">
-                      {insp.open_findings > 0 ? (
+                      {insp.open_findings != null && insp.open_findings > 0 ? (
                         <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                           <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
                         </span>
