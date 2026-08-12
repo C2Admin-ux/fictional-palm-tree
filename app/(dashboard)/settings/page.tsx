@@ -6,6 +6,8 @@ import type { AlertSetting, Json, Property, Pmc, Contact } from '@/lib/supabase/
 import { cn } from '@/lib/utils'
 import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail, Bell } from 'lucide-react'
 import { Modal } from '@/components/ui/modal'
+import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
+import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 import {
   OBLIGATION_LEAD_DAYS_KEY, SEASONS, formatMonthDay, parseMonthDay,
   resolveSeasonConfig, type SeasonSpec,
@@ -579,12 +581,17 @@ function AlertsTab() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [showAdd, setShowAdd] = useState(false)
   const [editOverride, setEditOverride] = useState<AlertSetting | null>(null)
+  const [schemaGap, setSchemaGap] = useState<{ code?: string | null; message?: string | null } | null>(null)
 
   const fetch = useCallback(async () => {
-    const [{ data: rows }, { data: props }] = await Promise.all([
+    const [{ data: rows, error: rowsError }, { data: props }] = await Promise.all([
       supabase.from('alert_settings').select('*').order('setting_key'),
       supabase.from('properties').select('*').order('name'),
     ])
+    // Without this the tab renders defaults and looks fine — then every
+    // save fails. Say the table is missing instead of implying "no
+    // overrides set".
+    setSchemaGap(isSchemaGapError(rowsError) ? rowsError : null)
     const all = rows ?? []
     setSettings(all)
     setProperties(props ?? [])
@@ -699,6 +706,14 @@ function AlertsTab() {
 
   return (
     <div className="space-y-5">
+      {schemaGap && (
+        <SchemaGapNotice
+          error={schemaGap}
+          detail="The values below are the code defaults. Saving an override will fail until the migration runs."
+          className="max-w-2xl"
+        />
+      )}
+
       {/* Global: obligation lead time */}
       <div className="card p-5 space-y-3 max-w-2xl">
         <h3 className="text-sm font-semibold text-slate-700">Obligation lead time</h3>
