@@ -1957,6 +1957,10 @@ function FindingCard({ item, photoUrls, localPreviews, pendingUploads, onRetryUp
 // unit-number input appears for duplicable sections. Section + unit
 // together define the instance, exactly like the old chips did.
 
+// Sentinel option value — no real instance key can collide with it because
+// instanceKey always contains a '|'.
+const NEW_SECTION_KEY = '__new_section__'
+
 function AddFindingForm({ inspection, template, instances, countByInstance, onSaved }: {
   inspection: Inspection
   template: TemplateSection[]
@@ -1967,6 +1971,11 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
   const supabase = createClient()
   const [sectionName, setSectionName] = useState('')
   const [unitNumber, setUnitNumber] = useState('')
+  // Non-null = typing a section the template doesn't have. section_name is
+  // free text in the database and buildSectionInstances already carries
+  // off-template sections into the report, so a new section needs no schema
+  // and no template edit — it just has to be typeable onsite.
+  const [customName, setCustomName] = useState<string | null>(null)
   const [files, setFiles] = useState<File[]>([])
   const [previews, setPreviews] = useState<string[]>([])
   const [description, setDescription] = useState('')
@@ -1976,25 +1985,44 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
   const [error, setError] = useState<string | null>(null)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const duplicable = template.some(s => s.name === sectionName && s.duplicable)
+  // A typed section always offers the unit box — a new section is as likely
+  // to be per-unit ("Storage Locker") as not.
+  const duplicable = customName != null || template.some(s => s.name === sectionName && s.duplicable)
+
+  // Typing a name that already exists (in any casing) folds into it rather
+  // than opening a near-duplicate section — "roof" and "Roof" must not split
+  // the report into two headings.
+  const knownNames = useMemo(
+    () => [...template.map(s => s.name), ...instances.map(i => i.name)],
+    [template, instances])
+  const canonicalName = (typed: string) =>
+    knownNames.find(n => n.toLowerCase() === typed.toLowerCase()) ?? typed
+
   // The instance the new finding saves to. For non-duplicable sections the
   // unit box is hidden, but a unit picked via an existing-instance option
   // (off-template legacy data) still carries through unitNumber.
-  const active: SectionInstance | null = sectionName
-    ? { name: sectionName, unit: unitNumber.trim() || null }
-    : null
+  const typedName = customName?.trim() ?? ''
+  const active: SectionInstance | null = customName != null
+    ? (typedName ? { name: canonicalName(typedName), unit: unitNumber.trim() || null } : null)
+    : sectionName
+      ? { name: sectionName, unit: unitNumber.trim() || null }
+      : null
 
   const optionKeys = useMemo(() => new Set(instances.map(i => instanceKey(i.name, i.unit))), [instances])
   // Keep the <select> honest when the typed unit doesn't match an existing
   // instance option: fall back to the base section option.
   const activeKey = active ? instanceKey(active.name, active.unit) : ''
-  const selectValue = activeKey && optionKeys.has(activeKey)
-    ? activeKey
-    : sectionName && optionKeys.has(instanceKey(sectionName, null))
-      ? instanceKey(sectionName, null)
-      : activeKey
+  const selectValue = customName != null
+    ? NEW_SECTION_KEY
+    : activeKey && optionKeys.has(activeKey)
+      ? activeKey
+      : sectionName && optionKeys.has(instanceKey(sectionName, null))
+        ? instanceKey(sectionName, null)
+        : activeKey
 
   function pickSection(key: string) {
+    if (key === NEW_SECTION_KEY) { setCustomName(''); setUnitNumber(''); return }
+    setCustomName(null)
     if (!key) { setSectionName(''); setUnitNumber(''); return }
     const inst = instances.find(i => instanceKey(i.name, i.unit) === key)
     if (!inst) return
@@ -2081,6 +2109,11 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
       setDescription('')
       setFollowUp(false)
       setPriority('medium')
+      // A section typed once is a section for the rest of the walk: leave
+      // custom mode with it selected so the next finding there is one tap.
+      // It reaches the dropdown on its own — instances are derived from the
+      // saved items.
+      if (customName != null) { setSectionName(active.name); setCustomName(null) }
       setState('saved')
       if (savedTimer.current) clearTimeout(savedTimer.current)
       savedTimer.current = setTimeout(() => setState(s => s === 'saved' ? 'idle' : s), 2500)
@@ -2119,6 +2152,7 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
               </option>
             )
           })}
+          <option value={NEW_SECTION_KEY}>+ New section…</option>
         </select>
         {duplicable && (
           <input
@@ -2131,6 +2165,30 @@ function AddFindingForm({ inspection, template, instances, countByInstance, onSa
           />
         )}
       </div>
+
+      {/* Typing a section the template doesn't cover. It behaves like any
+          other section from here on — grouped in the app, the PDF, and the
+          report email. */}
+      {customName != null && (
+        <div className="flex gap-2 items-center">
+          <input
+            value={customName}
+            onChange={e => setCustomName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
+            placeholder="Section name (e.g. Storage Lockers)"
+            aria-label="New section name"
+            autoFocus
+            className="input min-h-[42px] flex-1 min-w-0"
+          />
+          <button
+            type="button"
+            onClick={() => { setCustomName(null); setUnitNumber('') }}
+            aria-label="Cancel new section"
+            className="text-slate-400 hover:text-slate-600 p-2 flex-shrink-0">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {previews.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto pb-0.5">
@@ -2218,6 +2276,7 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
   const sectionNames = Array.from(new Set(instances.map(i => i.name)))
   const [description, setDescription] = useState(item.item_label)
   const [sectionName, setSectionName] = useState(item.section_name)
+  const [renaming, setRenaming] = useState(false)
   const [unitNumber, setUnitNumber] = useState(item.unit_number ?? '')
   const [followUp, setFollowUp] = useState(item.requires_action)
   const [priority, setPriority] = useState<ActionPriority>(
@@ -2241,6 +2300,14 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
       setError('Add a one-line reason for accepting this finding.')
       return
     }
+    // A typed section folds into an existing one when it matches in any
+    // casing, so the report never grows two headings for one place.
+    const typedSection = sectionName.trim()
+    if (!typedSection) {
+      setError('Give the section a name.')
+      return
+    }
+    const section = sectionNames.find(n => n.toLowerCase() === typedSection.toLowerCase()) ?? typedSection
     setSaving(true)
     setError(null)
     // Payload computed once so a retried write is a harmless repeat.
@@ -2250,7 +2317,7 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
     // fresh communication cycle.
     const payload = {
       item_label: description.trim(),
-      section_name: sectionName,
+      section_name: section,
       unit_number: unitNumber.trim() || null,
       requires_action: followUp,
       action_priority: followUp ? priority : null,
@@ -2289,10 +2356,24 @@ function EditFindingModal({ item, instances, onClose, onSaved, onCreateTask, cre
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label">Section</label>
-            <select value={sectionName} onChange={e => setSectionName(e.target.value)} className="input">
-              {!sectionNames.includes(sectionName) && <option value={sectionName}>{sectionName}</option>}
-              {sectionNames.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
+            {renaming ? (
+              // Same free-text section entry as the capture form — here it
+              // also fixes a section typed wrong onsite.
+              <input value={sectionName} onChange={e => setSectionName(e.target.value)}
+                autoFocus className="input" placeholder="Section name" aria-label="Section name" />
+            ) : (
+              <select
+                value={sectionName}
+                onChange={e => {
+                  if (e.target.value === NEW_SECTION_KEY) { setRenaming(true); setSectionName(''); return }
+                  setSectionName(e.target.value)
+                }}
+                className="input">
+                {!sectionNames.includes(sectionName) && <option value={sectionName}>{sectionName}</option>}
+                {sectionNames.map(n => <option key={n} value={n}>{n}</option>)}
+                <option value={NEW_SECTION_KEY}>+ New section…</option>
+              </select>
+            )}
           </div>
           <div>
             <label className="label">Unit #</label>
