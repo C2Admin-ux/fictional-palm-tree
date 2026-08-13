@@ -26,6 +26,65 @@ type PolicyWithProp = InsurancePolicy & { properties?: { name: string } | null }
 type CoveragePolicyFacts = Pick<InsurancePolicy, 'property_id' | 'covered_property_ids' | 'policy_type' | 'status' | 'expiry_date'>
 type FormDefaults = { property_id?: string; policy_type?: string }
 
+// The dedupe key for "this exact policy is already on file". policy_type is
+// part of it because carriers routinely issue the property and the liability
+// policy for one asset under a SINGLE number — State Farm writes Main
+// Street's property and GL both as 96-E9-R086-4 — and without the type the
+// second of the pair reads as a duplicate of the first. Mirrors the
+// uniq_policy_no_duplicates index (migration 0012); keep the two in step, or
+// the client waves a row through that Postgres then rejects.
+function policyFingerprint(f: {
+  property_id: string | null; policy_type: string | null
+  carrier: string | null; policy_number: string | null; effective_date: string | null
+}) {
+  const norm = (s: string | null) => (s ?? '').trim().toLowerCase()
+  return [f.property_id ?? '', norm(f.policy_type), norm(f.carrier), norm(f.policy_number), f.effective_date ?? ''].join('|')
+}
+
+// A renewal retires the policy it replaces: when a newer policy is saved for
+// the same property and policy_type, older ACTIVE ones are archived and
+// linked to the replacement. "Older" = earlier effective_date.
+//
+// Carrier is deliberately NOT part of the match. Insurance gets re-shopped
+// at renewal and the carrier usually changes — Pikes Place moved its GL from
+// Scottsdale to Maxum — so matching on carrier would miss exactly the
+// renewals that matter. Property + type is the coverage slot; whoever writes
+// it, the new one replaces the old.
+//
+// This archives policies that have NOT yet expired (owner rule): a re-shopped
+// renewal often starts mid-term, leaving the old policy live on paper but no
+// longer the one in force. Archiving is reversible from the status toggle.
+//
+// Only the property_id link is considered, not covered_property_ids — a
+// blanket policy is retired by entering its own replacement, not as a
+// side effect of assigning a single-property policy.
+async function supersedeOlderPolicies(
+  supabase: ReturnType<typeof createClient>,
+  newPolicy: { id: string; property_id: string | null; policy_type: string; effective_date: string | null },
+): Promise<number> {
+  if (!newPolicy.effective_date) return 0  // can't order without a date
+
+  let q = supabase.from('insurance_policies')
+    .select('id, effective_date')
+    .eq('policy_type', newPolicy.policy_type)
+    .eq('status', 'active')
+    .neq('id', newPolicy.id)
+  q = newPolicy.property_id
+    ? q.eq('property_id', newPolicy.property_id)
+    : q.is('property_id', null)
+
+  const { data: candidates } = await q
+  const toArchive = (candidates ?? [])
+    .filter((p: any) => p.effective_date && p.effective_date < newPolicy.effective_date!)
+    .map((p: any) => p.id)
+  if (!toArchive.length) return 0
+
+  await supabase.from('insurance_policies')
+    .update({ status: 'archived', superseded_by: newPolicy.id, superseded_at: new Date().toISOString() })
+    .in('id', toArchive)
+  return toArchive.length
+}
+
 export default function InsurancePoliciesPage() {
   // useSearchParams needs a Suspense boundary (same pattern as the Tasks page).
   return (
@@ -456,44 +515,49 @@ function ExtractionReviewModal({ extractedPolicies, extractedFile, properties, o
       status: 'active' as const,
     }))
 
-    // Duplicate check: fetch existing policies and compare on
-    // property + carrier + policy_number + effective_date (case-insensitive).
+    // Duplicate check: fetch existing policies and compare on the shared
+    // fingerprint (property + type + carrier + number + effective date).
     // Property is included so a master/blanket policy covering multiple
-    // properties can be entered once per property without being blocked.
+    // properties can be entered once per property without being blocked;
+    // type, so a property and liability policy sharing one number both save.
     const { data: existing } = await supabase.from('insurance_policies')
-      .select('property_id, carrier, policy_number, effective_date')
+      .select('property_id, policy_type, carrier, policy_number, effective_date')
 
-    function fingerprint(propertyId: string | null, carrier: string | null, policyNo: string | null, eff: string | null) {
-      return `${propertyId ?? ''}|${(carrier ?? '').trim().toLowerCase()}|${(policyNo ?? '').trim().toLowerCase()}|${eff ?? ''}`
-    }
     const existingKeys = new Set(
       (existing ?? [])
         .filter((e: any) => e.policy_number)
-        .map((e: any) => fingerprint(e.property_id, e.carrier, e.policy_number, e.effective_date))
+        .map((e: any) => policyFingerprint(e))
     )
 
     const seenInBatch = new Set<string>()
     const skipped: string[] = []
     const deduped = rows.filter(r => {
       if (!r.policy_number) return true  // no policy number → can't dedupe, allow
-      const key = fingerprint(r.property_id, r.carrier, r.policy_number, r.effective_date)
+      const key = policyFingerprint(r)
       if (existingKeys.has(key) || seenInBatch.has(key)) {
-        skipped.push(`${r.carrier} ${r.policy_number}`)
+        skipped.push(`${POLICY_TYPE_LABELS[r.policy_type] ?? r.policy_type} — ${r.carrier} ${r.policy_number}`)
         return false
       }
       seenInBatch.add(key)
       return true
     })
 
-    if (deduped.length) await supabase.from('insurance_policies').insert(deduped)
+    // Insert, then retire what each new policy replaces. Sequential so two
+    // renewals in one batch can't archive each other.
+    let archived = 0
+    if (deduped.length) {
+      const { data: inserted } = await supabase.from('insurance_policies')
+        .insert(deduped)
+        .select('id, property_id, policy_type, effective_date')
+      for (const p of inserted ?? []) archived += await supersedeOlderPolicies(supabase, p as any)
+    }
 
     setSaving(false)
-    if (skipped.length) {
-      alert(
-        `${deduped.length} saved. ${skipped.length} skipped as duplicate${skipped.length > 1 ? 's' : ''} ` +
-        `(already in your tracker):\n\n${skipped.join('\n')}`
-      )
-    }
+    const notes = [
+      skipped.length && `${skipped.length} skipped as duplicate${skipped.length > 1 ? 's' : ''} (already in your tracker):\n${skipped.join('\n')}`,
+      archived && `${archived} prior polic${archived > 1 ? 'ies' : 'y'} archived as superseded.`,
+    ].filter(Boolean)
+    if (notes.length) alert(`${deduped.length} saved.\n\n${notes.join('\n\n')}`)
     onSaved()
   }
 
@@ -593,11 +657,14 @@ function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { po
     if (policy) {
       await supabase.from('insurance_policies').update(payload).eq('id', policy.id)
     } else {
-      // Duplicate check on new policies: property + carrier + policy_number + effective_date.
-      // Property included so master/blanket policies can be entered per-property.
+      // Duplicate check on new policies: property + type + carrier +
+      // policy_number + effective_date. Property included so master/blanket
+      // policies can be entered per-property; type so a property and
+      // liability policy issued under one number don't collide.
       if (form.policy_number) {
         let dupeQuery = supabase.from('insurance_policies')
           .select('id')
+          .eq('policy_type', form.policy_type)
           .ilike('carrier', form.carrier)
           .ilike('policy_number', form.policy_number)
           .eq('effective_date', (form.effective_date || null) as string)
@@ -610,11 +677,15 @@ function PolicyFormModal({ policy, defaults, properties, onClose, onSave }: { po
           const propLabel = form.property_id
             ? (properties.find(p => p.id === form.property_id)?.name ?? 'this property')
             : 'unassigned'
-          alert(`A policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} already exists for ${propLabel}. Duplicate not saved.`)
+          alert(`A ${POLICY_TYPE_LABELS[form.policy_type] ?? form.policy_type} policy with number "${form.policy_number}" from ${form.carrier} effective ${form.effective_date || '(no date)'} already exists for ${propLabel}. Duplicate not saved.`)
           return
         }
       }
-      await supabase.from('insurance_policies').insert(payload)
+      const { data: created } = await supabase.from('insurance_policies')
+        .insert(payload)
+        .select('id, property_id, policy_type, effective_date')
+        .single()
+      if (created) await supersedeOlderPolicies(supabase, created as any)
     }
     setSaving(false); onSave()
   }
