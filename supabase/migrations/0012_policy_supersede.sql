@@ -1,5 +1,5 @@
 -- Insurance renewals: fix the duplicate guard, then let a renewal retire the
--- policy it replaces (Sprint 12).
+-- policy it replaces (Sprint 13).
 --
 -- Two problems, found on 2026-08-12 while entering the Main Street and Pikes
 -- Place renewals.
@@ -25,7 +25,7 @@
 --    they replaced -- Main Street carried two "active" GL rows and two
 --    "active" umbrella rows -- and the only way to clear the old one was the
 --    manual archive toggle. insurance_policies now gets the superseded_by /
---    superseded_at pair contracts has carried since Sprint 11.
+--    superseded_at pair that contracts already carries.
 --
 -- Note on status: contracts use status 'superseded', but insurance_policies
 -- constrains status to active/expired/cancelled/archived and the UI filter
