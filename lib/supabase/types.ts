@@ -94,6 +94,18 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['capex_photos']['Row']>
         Relationships: [{ foreignKeyName: 'capex_photos_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
+      renewal_cycles: {
+        Row: { id: string; property_id: string; expiration_month: string; due_date: string; offer_received_at: string | null; approved_at: string | null; partner_approved_at: string | null; source: 'email' | 'sheet'; source_url: string | null; notes: string | null; chase_task_id: string | null; created_at: string; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['renewal_cycles']['Row']> & { property_id: string; expiration_month: string; due_date: string }
+        Update: Partial<Database['public']['Tables']['renewal_cycles']['Row']>
+        Relationships: [{ foreignKeyName: 'renewal_cycles_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
+      }
+      renewal_settings: {
+        Row: { property_id: string; enabled: boolean; lead_days: number; requires_partner_approval: boolean; partner_label: string | null; source: 'email' | 'sheet'; source_url: string | null; created_at: string; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['renewal_settings']['Row']> & { property_id: string }
+        Update: Partial<Database['public']['Tables']['renewal_settings']['Row']>
+        Relationships: [{ foreignKeyName: 'renewal_settings_property_id_fkey'; columns: ['property_id']; isOneToOne: true; referencedRelation: 'properties'; referencedColumns: ['id'] }]
+      }
       pm_metrics: {
         Row: { id: string; property_id: string; period_month: string; occupancy_pct: number | null; leased_pct: number | null; delinquency_pct: number | null; delinquency_amount: number | null; noi_actual: number | null; noi_budget: number | null; gross_revenue_actual: number | null; gross_revenue_budget: number | null; work_orders_opened: number | null; work_orders_closed: number | null; avg_days_to_close: number | null; new_leases: number | null; renewals: number | null; move_ins: number | null; move_outs: number | null; response_time_hrs: number | null; notes: string | null; entered_by: string | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['pm_metrics']['Row']> & { property_id: string; period_month: string }
@@ -212,6 +224,8 @@ export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type CapexBid = Database['public']['Tables']['capex_bids']['Row']
 export type CapexPhoto = Database['public']['Tables']['capex_photos']['Row']
+export type RenewalCycle = Database['public']['Tables']['renewal_cycles']['Row']
+export type RenewalSetting = Database['public']['Tables']['renewal_settings']['Row']
 export type PmMetric = Database['public']['Tables']['pm_metrics']['Row']
 export type Document = Database['public']['Tables']['documents']['Row']
 export type InsurancePolicy = Database['public']['Tables']['insurance_policies']['Row']

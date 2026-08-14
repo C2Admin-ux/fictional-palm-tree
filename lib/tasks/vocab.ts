@@ -24,6 +24,13 @@ export const OBLIGATION_SOURCES: string[] = [
   INSURANCE_SOURCE, CONTRACT_SOURCE, ...SEASONAL_BID_SOURCES,
 ]
 
+// Renewal chase tasks (app/api/renewals/sync). Calendar-driven like the
+// seasonal cycles, but keyed on the renewal_cycles row id, so the sync
+// reconciles them with the same (auto_source, source_record_id) rules.
+// Deliberately NOT in OBLIGATION_SOURCES: the obligations engine is
+// paused, and its cron must not start touching these.
+export const RENEWAL_SOURCE = 'renewal_offer'
+
 // Tasks created from a confirmed call item (calls/[id] Confirm & process).
 export const CALL_AUTO_SOURCE = 'call'
 
