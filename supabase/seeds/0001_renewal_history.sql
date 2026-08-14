@@ -80,7 +80,7 @@ from (values
   ('Pikes Place on San Miguel', '2026-05-01', '2026-02-02', null,         null, 'GB catch-up batch 2/2/26 — approval not evidenced'),
 
   -- June: the cycle that stalled. Jenny chased on 4/14; the February
-  -- approval could not be found on either side ("I don''t see an approved
+  -- approval could not be found on either side ("I don't see an approved
   -- email for Pikes and Pebble"). Re-approved 4/15. De Cortez had no June
   -- expirations. This thread is why this tracker exists.
   ('Pebble Creek',              '2026-06-01', '2026-04-14', '2026-04-15', null, 'GB "Pikes and Pebble - June Renewals" — prior approval lost, re-approved 4/15'),
