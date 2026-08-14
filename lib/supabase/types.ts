@@ -88,6 +88,12 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['capex_bids']['Row']>
         Relationships: [{ foreignKeyName: 'capex_bids_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
+      capex_photos: {
+        Row: { id: string; project_id: string; file_path: string; file_name: string | null; caption: string | null; sort_order: number; created_by: string | null; created_at: string }
+        Insert: Partial<Database['public']['Tables']['capex_photos']['Row']> & { project_id: string; file_path: string }
+        Update: Partial<Database['public']['Tables']['capex_photos']['Row']>
+        Relationships: [{ foreignKeyName: 'capex_photos_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
+      }
       pm_metrics: {
         Row: { id: string; property_id: string; period_month: string; occupancy_pct: number | null; leased_pct: number | null; delinquency_pct: number | null; delinquency_amount: number | null; noi_actual: number | null; noi_budget: number | null; gross_revenue_actual: number | null; gross_revenue_budget: number | null; work_orders_opened: number | null; work_orders_closed: number | null; avg_days_to_close: number | null; new_leases: number | null; renewals: number | null; move_ins: number | null; move_outs: number | null; response_time_hrs: number | null; notes: string | null; entered_by: string | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['pm_metrics']['Row']> & { property_id: string; period_month: string }
@@ -116,7 +122,7 @@ export type Database = {
         ]
       }
       inspections: {
-        Row: { id: string; property_id: string; template_id: string | null; inspected_by: string | null; inspection_date: string; inspection_type: 'site_visit' | 'annual'; unit_number: string | null; area: string | null; status: 'draft' | 'submitted' | 'report_sent'; overall_rating: number | null; report_file_path: string | null; report_sent_at: string | null; notes: string | null; created_at: string }
+        Row: { id: string; property_id: string; template_id: string | null; inspected_by: string | null; inspection_date: string; inspection_type: 'site_visit' | 'annual'; unit_number: string | null; area: string | null; status: 'draft' | 'submitted' | 'report_sent'; overall_rating: number | null; report_file_path: string | null; report_sent_at: string | null; photo_sheet_path: string | null; photo_sheet_paths: string[] | null; notes: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['inspections']['Row']> & { property_id: string }
         Update: Partial<Database['public']['Tables']['inspections']['Row']>
         Relationships: []
@@ -205,6 +211,7 @@ export type TaskView = Database['public']['Tables']['task_views']['Row']
 export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type CapexBid = Database['public']['Tables']['capex_bids']['Row']
+export type CapexPhoto = Database['public']['Tables']['capex_photos']['Row']
 export type PmMetric = Database['public']['Tables']['pm_metrics']['Row']
 export type Document = Database['public']['Tables']['documents']['Row']
 export type InsurancePolicy = Database['public']['Tables']['insurance_policies']['Row']

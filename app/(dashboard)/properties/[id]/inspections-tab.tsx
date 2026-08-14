@@ -1,19 +1,20 @@
 'use client'
 
 // Property profile → Inspections tab. Read-only rollup of the property's
-// inspections: score + grade per walk, open-findings count, a link to the
-// stored PDF report, and a compact score trend. Deliberately NO photo
-// grids — captures live on the inspection detail page.
+// inspections: open-findings count per walk, a link to the stored PDF
+// report, and a compact follow-up trend. Deliberately NO photo grids —
+// captures live on the inspection detail page.
+//
+// Scoring was removed in Sprint 14; the trend now plots outstanding
+// follow-ups per walk, which is the number that actually drives work.
 
 import { useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, formatDateShort, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
-import { inspectionScore } from '@/lib/inspections/score'
 import { isOpenFinding } from '@/lib/inspections/dispositions'
 import { PropertyFindingsList, type OpenFindingRow } from './open-findings'
-import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { signedFileUrl } from '@/lib/inspections/photos'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { ClipboardCheck, ExternalLink, AlertTriangle, Plus } from 'lucide-react'
@@ -38,18 +39,17 @@ export default function InspectionsTab({ inspections, findings }: {
 
   const rows = inspections.map(i => ({
     ...i,
-    score: inspectionScore(i.inspection_items),
     // The canonical open-finding rule (lib/inspections/dispositions):
     // not settled AND (requires_action OR triaged).
     open: i.inspection_items.filter(isOpenFinding).length,
   }))
 
   // Trend uses completed walks only — a draft mid-walk has partial
-  // findings and would inflate the line.
+  // findings and would understate the line.
   const trend = rows
     .filter(r => r.status !== 'draft')
     .sort((a, b) => a.inspection_date.localeCompare(b.inspection_date))
-    .map(r => ({ date: formatDateShort(r.inspection_date), score: r.score }))
+    .map(r => ({ date: formatDateShort(r.inspection_date), open: r.open }))
 
   async function viewReport(path: string) {
     setError(null)
@@ -82,17 +82,18 @@ export default function InspectionsTab({ inspections, findings }: {
         </p>
       )}
 
-      {/* Score trend — needs at least two completed walks to be a line */}
+      {/* Follow-up trend — needs at least two completed walks to be a line */}
       {trend.length >= 2 && (
         <div className="card p-4">
-          <h3 className="text-sm font-semibold text-slate-700 mb-3">Score trend</h3>
+          <h3 className="text-sm font-semibold text-slate-700 mb-3">Open findings per walk</h3>
           <div className="h-28">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trend}>
                 <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={32} />
+                {/* allowDecimals=false: a count of findings is never 2.5 */}
+                <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} width={32} />
                 <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-                <Line type="monotone" dataKey="score" stroke="#2563eb" strokeWidth={2} dot={{ r: 2.5 }} name="Score" />
+                <Line type="monotone" dataKey="open" stroke="#2563eb" strokeWidth={2} dot={{ r: 2.5 }} name="Open findings" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -103,7 +104,7 @@ export default function InspectionsTab({ inspections, findings }: {
         <table className="w-full text-sm min-w-[640px]">
           <thead className="bg-slate-50 border-b border-slate-200/70">
             <tr>
-              {['Date', 'Type', 'Status', 'Score', 'Follow-ups', 'Report'].map(h => (
+              {['Date', 'Type', 'Status', 'Follow-ups', 'Report'].map(h => (
                 <th key={h} className="text-left px-4 py-2 text-xs font-medium text-slate-500">{h}</th>
               ))}
             </tr>
@@ -127,12 +128,6 @@ export default function InspectionsTab({ inspections, findings }: {
                     <span className={cn('badge', INSPECTION_STATUS_STYLES[insp.status])}>
                       {INSPECTION_STATUS_LABELS[insp.status] ?? insp.status}
                     </span>
-                  </td>
-                  <td className="px-4 py-2.5">
-                    {/* A draft mid-walk has partial findings — no score yet */}
-                    {insp.status !== 'draft'
-                      ? <GradeBadge score={insp.score} />
-                      : <span className="text-slate-300 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-2.5">
                     {insp.open > 0 ? (

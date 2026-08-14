@@ -1,6 +1,5 @@
 import { PRIORITY_LABELS, type ActionPriority, type TemplateSection } from '@/lib/inspections/templates'
 import { buildSectionInstances, groupItemsByInstance, instanceLabel } from '@/lib/inspections/sections'
-import { inspectionScore, scoreGrade, GRADE_HEX } from '@/lib/inspections/score'
 import { selectActionItems, selectFlagged, flaggedAgeLabel, itemPriority } from '@/lib/inspections/selectors'
 import { escHtml } from '@/lib/utils'
 
@@ -17,7 +16,7 @@ import { escHtml } from '@/lib/utils'
 //     "Flagged for Your Action" (findings triaged 'flagged', with aging)
 //     first, then the action-items recap — those are the blocks a PM
 //     works from.
-//   buildInspectionSummaryEmail — a short note: score card + a link to
+//   buildInspectionSummaryEmail — a short note: summary card + a link to
 //     the stored PDF report, for when the full list doesn't belong
 //     in-body.
 //
@@ -135,25 +134,18 @@ function greetingHtml(contactName: string | null, message: string | null): strin
   return `${contactName ? `  <p style="font-size:13px;color:#475569;margin:0 0 12px;">Hi ${escHtml(contactName)},</p>\n` : ''}${message ? `  <p style="font-size:13px;color:#475569;margin:0 0 16px;white-space:pre-line;">${escHtml(message)}</p>\n` : ''}`
 }
 
-function scoreCardHtml({ score, grade, findingsCount, actionCount, flaggedCount, inspectionNotes, pdfUrl }: {
-  score: number
-  grade: string
+// The at-a-glance card. Counts only — the inspection score was removed in
+// Sprint 14: outward-facing documents state what was found and what needs
+// doing, not a graded verdict on the PM's property.
+function summaryCardHtml({ findingsCount, actionCount, flaggedCount, inspectionNotes, pdfUrl }: {
   findingsCount: number
   actionCount: number
   flaggedCount: number
   inspectionNotes: string | null
   pdfUrl: string | null
 }): string {
-  const gradeColor = GRADE_HEX[grade as keyof typeof GRADE_HEX] ?? MUTED
   return `  <div style="${cardStyle}">
-    <div style="padding:16px 20px;">
-      <span style="display:inline-block;width:44px;height:44px;border-radius:8px;background:${gradeColor};color:#ffffff;font-size:22px;font-weight:700;text-align:center;line-height:44px;vertical-align:middle;">${grade}</span>
-      <span style="display:inline-block;vertical-align:middle;margin-left:12px;">
-        <span style="display:block;font-size:18px;font-weight:700;color:${INK};">${score} / 100</span>
-        <span style="display:block;font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;">Property score</span>
-      </span>
-    </div>
-    <div style="border-top:1px solid ${DIVIDER};padding:10px 20px;font-size:13px;color:#475569;">
+    <div style="padding:14px 20px;font-size:13px;color:#475569;">
       <strong style="color:${INK};">${findingsCount}</strong> finding${findingsCount === 1 ? '' : 's'} recorded ·
       <strong style="color:${INK};">${actionCount}</strong> action item${actionCount === 1 ? '' : 's'} requiring follow-up${flaggedCount > 0 ? ` ·
       <strong style="color:#b91c1c;">${flaggedCount}</strong> flagged for your action` : ''}
@@ -169,13 +161,13 @@ const FOOTER_LINE = 'C2 Capital · Property Inspection Report'
 function textHeaderLines(data: {
   propertyName: string; typeLabel: string; dateLabel: string
   contactName: string | null; message: string | null; inspectionNotes: string | null
-  score: number; grade: string; findingsCount: number; actionCount: number
+  findingsCount: number; actionCount: number
   flaggedCount: number; pdfUrl: string | null
 }): string[] {
   const lines: string[] = []
   lines.push('PROPERTY INSPECTION REPORT')
   lines.push(`${data.propertyName} · ${data.typeLabel} · ${data.dateLabel}`)
-  lines.push(`Score: ${data.score}/100 (${data.grade}) · ${data.findingsCount} finding${data.findingsCount === 1 ? '' : 's'} · ${data.actionCount} action item${data.actionCount === 1 ? '' : 's'}${data.flaggedCount > 0 ? ` · ${data.flaggedCount} flagged for your action` : ''}`)
+  lines.push(`${data.findingsCount} finding${data.findingsCount === 1 ? '' : 's'} · ${data.actionCount} action item${data.actionCount === 1 ? '' : 's'}${data.flaggedCount > 0 ? ` · ${data.flaggedCount} flagged for your action` : ''}`)
   lines.push('')
   if (data.contactName) { lines.push(`Hi ${data.contactName},`); lines.push('') }
   if (data.message) { lines.push(data.message); lines.push('') }
@@ -192,8 +184,6 @@ export function buildInspectionEmail(data: InspectionEmailData): { html: string;
     inspectionNotes, template, items, photoUrls, pdfUrl,
   } = data
 
-  const score = inspectionScore(items)
-  const grade = scoreGrade(score)
   // Shared selectors (lib/inspections/selectors) — the PDF report pulls
   // its lead blocks from the SAME functions, so email and PDF can never
   // disagree about what the PM is asked to act on. Action items exclude
@@ -208,7 +198,7 @@ export function buildInspectionEmail(data: InspectionEmailData): { html: string;
   const html = docHtml(`${headerHtml(propertyName, typeLabel, dateLabel)}
 
 ${greetingHtml(contactName, message)}
-${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: actionItems.length, flaggedCount: flaggedItems.length, inspectionNotes, pdfUrl })}
+${summaryCardHtml({ findingsCount: items.length, actionCount: actionItems.length, flaggedCount: flaggedItems.length, inspectionNotes, pdfUrl })}
 
   ${flaggedItems.length > 0 ? `
   <div style="background:#ffffff;border:1px solid #fecaca;border-radius:12px;margin-bottom:16px;">
@@ -253,7 +243,7 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: action
   const tag = (item: EmailFinding) => `[${PRIORITY_LABELS[itemPriority(item)].toUpperCase()}]`
   const lines = textHeaderLines({
     propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes,
-    score, grade, findingsCount: items.length, actionCount: actionItems.length,
+    findingsCount: items.length, actionCount: actionItems.length,
     flaggedCount: flaggedItems.length, pdfUrl,
   })
   if (flaggedItems.length > 0) {
@@ -300,12 +290,10 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount: action
 
 // ── Short note + PDF link ────────────────────────────────────
 // For when the full findings list doesn't belong in the email body: the
-// score card with a 30-day link to the stored PDF report.
+// summary card with a 30-day link to the stored PDF report.
 
 export function buildInspectionSummaryEmail(data: InspectionSummaryEmailData): { html: string; text: string } {
   const { propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes, items, pdfUrl } = data
-  const score = inspectionScore(items)
-  const grade = scoreGrade(score)
   // Same shared selectors as the full email and the PDF — the summary's
   // counts must describe the same buckets those documents render.
   const actionCount = selectActionItems(items).length
@@ -314,7 +302,7 @@ export function buildInspectionSummaryEmail(data: InspectionSummaryEmailData): {
   const html = docHtml(`${headerHtml(propertyName, typeLabel, dateLabel)}
 
 ${greetingHtml(contactName, message)}
-${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount, flaggedCount, inspectionNotes, pdfUrl })}
+${summaryCardHtml({ findingsCount: items.length, actionCount, flaggedCount, inspectionNotes, pdfUrl })}
 
   <div style="text-align:center;padding:16px 0;font-size:11px;color:#94a3b8;">
     ${FOOTER_LINE}
@@ -322,7 +310,7 @@ ${scoreCardHtml({ score, grade, findingsCount: items.length, actionCount, flagge
 
   const lines = textHeaderLines({
     propertyName, typeLabel, dateLabel, contactName, message, inspectionNotes,
-    score, grade, findingsCount: items.length, actionCount, flaggedCount, pdfUrl,
+    findingsCount: items.length, actionCount, flaggedCount, pdfUrl,
   })
   lines.push(FOOTER_LINE)
 
