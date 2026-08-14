@@ -232,7 +232,10 @@ export default function InspectionDetailPage() {
   // state and surfaces a failure on the page banner.
   const invalidateReport = useCallback(async () => {
     const insp = inspectionRef.current
-    if (!insp?.report_file_path) return
+    // The photo sheet goes stale for the same reason and is cleared by the
+    // same helper — deleting a finding deletes its photos from storage, so
+    // a stored sheet can outlive the images it was rendered from.
+    if (!insp?.report_file_path && !insp?.photo_sheet_path) return
     const { failed } = await invalidateInspectionReports(supabase, [insp.id])
     if (failed.length > 0) {
       setActionError('Change saved, but the now-outdated report could not be cleared — regenerate it before emailing the PM.')
@@ -241,6 +244,7 @@ export default function InspectionDetailPage() {
     const patch: Partial<Inspection> = {
       report_file_path: null,
       report_sent_at: null,
+      photo_sheet_path: null,
       ...(insp.status === 'report_sent' ? { status: 'submitted' as const } : {}),
     }
     setInspection(prev => prev ? { ...prev, ...patch } : prev)
@@ -761,6 +765,8 @@ export default function InspectionDetailPage() {
       {!isDraft && (
         <ReportPanel
           inspection={inspection}
+          items={items}
+          photoUrls={photoUrls}
           pendingPhotoCount={inspectionUploads.length}
           onUpdated={patch => setInspection(prev => prev ? { ...prev, ...patch } : prev)}
           onPatch={patchInspection}
@@ -1415,8 +1421,12 @@ function CapexAttachModal({ item, propertyId, onClose, onDone }: {
 // so "sent" is a status the app can't observe: it's recorded here by an
 // explicit "Mark as sent" button, and only by that button.
 
-function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMarkedSent, onMarkedNotSent }: {
+function ReportPanel({ inspection, items, photoUrls, pendingPhotoCount, onUpdated, onPatch, onMarkedSent, onMarkedNotSent }: {
   inspection: InspectionDetail
+  // Findings + their signed thumbnail URLs — the photo-sheet picker
+  // renders every photo on the walk so Nick can tick the ones to send.
+  items: InspectionItem[]
+  photoUrls: Record<string, SignedPhotoUrl>
   // Photos for this inspection still in the background upload queue
   // (uploading, retrying, or failed) — a report generated now would
   // silently miss them.
@@ -1436,6 +1446,7 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMark
   const [generating, setGenerating] = useState(false)
   const [opening, setOpening] = useState(false)
   const [showDraft, setShowDraft] = useState(false)
+  const [showPicker, setShowPicker] = useState(false)
   // Inline confirm for "Mark as sent" — flipping the status is a manual
   // claim ("I emailed this from Gmail"), so it gets a deliberate two-tap
   // instead of firing on a stray click.
@@ -1444,6 +1455,8 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMark
   const [error, setError] = useState<string | null>(null)
 
   const hasReport = !!inspection.report_file_path
+  const hasSheet = !!inspection.photo_sheet_path
+  const photoCount = items.reduce((n, i) => n + i.photo_paths.length, 0)
 
   async function markSent() {
     setSavingSent(true)
@@ -1491,14 +1504,16 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMark
     }
   }
 
-  async function viewPdf() {
-    if (!inspection.report_file_path) return
+  // One opener for both documents — same signing, same failure message
+  // shape, so the report and the photo sheet can't drift apart.
+  async function openStored(path: string | null, label: string) {
+    if (!path) return
     setOpening(true)
     setError(null)
-    const { url, error: signError } = await signedFileUrl(supabase, inspection.report_file_path)
+    const { url, error: signError } = await signedFileUrl(supabase, path)
     setOpening(false)
     if (url) window.open(url, '_blank')
-    else setError(`Could not open the report${signError ? ` — ${signError}` : ''}`)
+    else setError(`Could not open the ${label}${signError ? ` — ${signError}` : ''}`)
   }
 
   return (
@@ -1525,8 +1540,23 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMark
             {generating ? 'Generating…' : hasReport ? 'Regenerate report' : 'Generate report'}
           </button>
           {hasReport && (
-            <button onClick={viewPdf} disabled={opening} className="btn-secondary">
+            <button onClick={() => openStored(inspection.report_file_path, 'report')}
+              disabled={opening} className="btn-secondary">
               <ExternalLink size={14} />{opening ? 'Opening…' : 'View PDF'}
+            </button>
+          )}
+          {/* The photo sheet: a captioned 9-up grid of hand-picked photos,
+              separate from the report and meant to ride along with a
+              follow-up email. Nothing to pick means nothing to generate. */}
+          <button onClick={() => setShowPicker(true)} disabled={photoCount === 0}
+            title={photoCount === 0 ? 'No photos on this inspection yet' : 'Choose photos for a printable sheet'}
+            className="btn-secondary">
+            <ImagePlus size={14} />{hasSheet ? 'Rebuild photo sheet…' : 'Photo sheet…'}
+          </button>
+          {hasSheet && (
+            <button onClick={() => openStored(inspection.photo_sheet_path, 'photo sheet')}
+              disabled={opening} className="btn-secondary">
+              <ExternalLink size={14} />{opening ? 'Opening…' : 'View photo sheet'}
             </button>
           )}
           {/* Records that Nick emailed the report from Gmail — the app
@@ -1577,7 +1607,184 @@ function ReportPanel({ inspection, pendingPhotoCount, onUpdated, onPatch, onMark
           onClose={() => setShowDraft(false)}
         />
       )}
+      {showPicker && (
+        <PhotoSheetModal
+          inspection={inspection}
+          items={items}
+          photoUrls={photoUrls}
+          pendingPhotoCount={pendingPhotoCount}
+          onClose={() => setShowPicker(false)}
+          onGenerated={patch => onUpdated(patch)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── Photo-sheet picker ───────────────────────────────────────
+// Every photo on the walk, ticked by default, grouped by the same section
+// instances the report and the app use. Unticking is how a photo stays
+// out of the sheet — the sheet is an attachment for people outside the
+// app, so what goes in it is always a deliberate choice.
+
+function PhotoSheetModal({ inspection, items, photoUrls, pendingPhotoCount, onClose, onGenerated }: {
+  inspection: InspectionDetail
+  items: InspectionItem[]
+  photoUrls: Record<string, SignedPhotoUrl>
+  pendingPhotoCount: number
+  onClose: () => void
+  onGenerated: (patch: Partial<Inspection>) => void
+}) {
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Same grouping/order as the report and the generated sheet, so what
+  // Nick ticks here reads back in the order he ticked it.
+  const groups = useMemo(() => {
+    const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
+    return groupItemsByInstance(buildSectionInstances(template, items), items)
+      .map(({ inst, items: groupItems }) => ({
+        inst,
+        photos: groupItems.flatMap(item =>
+          item.photo_paths.map(path => ({ path, caption: item.item_label.trim() }))),
+      }))
+      .filter(g => g.photos.length > 0)
+  }, [inspection.inspection_type, items])
+
+  const allPaths = useMemo(() => groups.flatMap(g => g.photos.map(p => p.path)), [groups])
+
+  // Reopen on the last generated selection, intersected with what still
+  // exists — a deleted photo drops out silently rather than resurrecting
+  // as a ticked box for a file that's gone.
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    const remembered = inspection.photo_sheet_paths
+    if (!remembered || remembered.length === 0) return new Set(allPaths)
+    const live = new Set(allPaths)
+    const kept = remembered.filter(p => live.has(p))
+    return kept.length > 0 ? new Set(kept) : new Set(allPaths)
+  })
+
+  function toggle(path: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  async function generate() {
+    if (pendingPhotoCount > 0 && !confirm(
+      `${pendingPhotoCount} photo${pendingPhotoCount === 1 ? ' is' : 's are'} still uploading (or failed) for this inspection. `
+      + 'They cannot be included in a sheet generated now. Continue?')) return
+    setGenerating(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/inspections/${inspection.id}/photo-sheet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Send in walk order, not click order — the sheet reads as a walk.
+        body: JSON.stringify({ paths: allPaths.filter(p => selected.has(p)) }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) {
+        const base = json.error ?? `Photo sheet generation failed (${res.status})`
+        throw new Error(json.detail ? `${base} — ${json.detail}` : base)
+      }
+      onGenerated({ photo_sheet_path: json.path, photo_sheet_paths: allPaths.filter(p => selected.has(p)) })
+      toast(json.omittedPhotos > 0
+        ? `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}, ${json.omittedPhotos} could not be included`
+        : `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}`)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Photo sheet generation failed — try again.')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const count = selected.size
+  const pages = Math.ceil(count / 9)
+
+  return (
+    <Modal title="Photo sheet" onClose={onClose} maxWidth="3xl">
+      <div className="px-6 py-4 space-y-4">
+        <div className="flex items-center gap-3 flex-wrap text-xs">
+          <span className="text-slate-500">
+            {count} of {allPaths.length} selected
+            {count > 0 && ` · ${pages} page${pages === 1 ? '' : 's'}, 9 to a page`}
+          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <button onClick={() => setSelected(new Set(allPaths))}
+              className="text-blue-600 hover:underline">Select all</button>
+            <span className="text-slate-300">·</span>
+            <button onClick={() => setSelected(new Set())}
+              className="text-blue-600 hover:underline">Clear</button>
+          </div>
+        </div>
+
+        {groups.map(({ inst, photos }) => (
+          <div key={instanceKey(inst.name, inst.unit)} className="space-y-2">
+            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              {instanceLabel(inst)}
+            </h3>
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {photos.map(({ path, caption }) => {
+                const on = selected.has(path)
+                return (
+                  <button key={path} type="button" onClick={() => toggle(path)}
+                    aria-pressed={on}
+                    className={cn(
+                      'relative rounded-lg overflow-hidden border-2 text-left transition-colors',
+                      on ? 'border-blue-500' : 'border-slate-200 hover:border-slate-300',
+                    )}>
+                    {photoUrls[path] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={photoUrls[path].url} alt={caption || 'Inspection photo'}
+                        className={cn('w-full h-24 object-cover', !on && 'opacity-50')} />
+                    ) : (
+                      <div className="w-full h-24 bg-slate-100 flex items-center justify-center">
+                        <Camera size={16} className="text-slate-300" />
+                      </div>
+                    )}
+                    <span className={cn(
+                      'absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center',
+                      on ? 'bg-blue-600' : 'bg-white/80 border border-slate-300',
+                    )}>
+                      {on && <Check size={12} className="text-white" />}
+                    </span>
+                    <span className="block px-1.5 py-1 text-[10px] leading-tight text-slate-600 truncate">
+                      {caption || 'No description'}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+
+        {pendingPhotoCount > 0 && (
+          <p className="text-xs text-amber-600 flex items-center gap-1.5">
+            <UploadCloud size={12} className="flex-shrink-0" />
+            {pendingPhotoCount} photo{pendingPhotoCount === 1 ? '' : 's'} still uploading — {pendingPhotoCount === 1 ? 'it' : 'they'} can&apos;t be included yet.
+          </p>
+        )}
+        {error && (
+          <p className="text-xs text-red-600 flex items-center gap-1.5">
+            <AlertTriangle size={12} className="flex-shrink-0" />{error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+          <button type="button" onClick={generate} disabled={generating || count === 0}
+            className="btn-primary">
+            <FileText size={14} />
+            {generating ? 'Building…' : `Build sheet (${count})`}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
