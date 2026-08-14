@@ -8,6 +8,7 @@ import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, STATUS_STYLES, STA
 import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
 import { BidsCard } from './bids-card'
+import { PhotosCard } from './photos-card'
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
 import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 
@@ -220,6 +221,11 @@ export default function CapexDetailPage() {
           {bidsSchemaGap
             ? <SchemaGapNotice error={bidsSchemaGap} detail="Bid tracking for this project is unavailable until then — no bid data has been lost." />
             : <BidsCard project={project} bids={bids} onChanged={fetchAll} />}
+
+          {/* Project photos — scope shots for vendors, before/after for the
+              record. Owns its own fetch: photos change far more often than
+              the project, and nothing else on this page depends on them. */}
+          <PhotosCard project={project} />
 
           {/* Line items */}
           <div className="card p-5">

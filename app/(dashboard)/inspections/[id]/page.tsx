@@ -1692,9 +1692,16 @@ function PhotoSheetModal({ inspection, items, photoUrls, pendingPhotoCount, onCl
         throw new Error(json.detail ? `${base} — ${json.detail}` : base)
       }
       onGenerated({ photo_sheet_path: json.path, photo_sheet_paths: allPaths.filter(p => selected.has(p)) })
-      toast(json.omittedPhotos > 0
-        ? `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}, ${json.omittedPhotos} could not be included`
-        : `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}`)
+      // The sheet built but the app couldn't record it (pending migration).
+      // Hand over the document directly rather than losing the work.
+      if (json.warning) {
+        if (json.url) window.open(json.url, '_blank')
+        toast(json.warning, { tone: 'error', duration: 12000 })
+      } else {
+        toast(json.omittedPhotos > 0
+          ? `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}, ${json.omittedPhotos} could not be included`
+          : `Photo sheet built — ${json.included} photo${json.included === 1 ? '' : 's'}`)
+      }
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Photo sheet generation failed — try again.')

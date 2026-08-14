@@ -6,6 +6,7 @@ import { TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS } from '@/lib/inspections/tem
 import { buildSectionInstances, groupItemsByInstance, instanceLabel } from '@/lib/inspections/sections'
 import { BUCKET } from '@/lib/inspections/photos'
 import { downloadEmbeddableImages } from '@/lib/storage-server'
+import { isSchemaGapError, schemaGapMessage } from '@/lib/supabase/schema-errors'
 import { renderPhotoSheet, type PhotoSheetData, type SheetPhoto } from '@/lib/photo-sheet'
 import { formatDate } from '@/lib/utils'
 
@@ -142,6 +143,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       .update({ photo_sheet_path: path, photo_sheet_paths: ordered.map(o => o.path) })
       .eq('id', inspection.id)
     if (updateError) {
+      // The sheet itself rendered and uploaded fine — only remembering it
+      // failed. When the cause is the pending 0013 migration, say so and
+      // hand back a link anyway rather than making the work disappear.
+      if (isSchemaGapError(updateError)) {
+        const { data: signed } = await admin.storage.from(BUCKET).createSignedUrl(path, 60 * 60)
+        return NextResponse.json({
+          success: true, path, included: photos.length, omittedPhotos: omitted,
+          url: signed?.signedUrl ?? null,
+          warning: `${schemaGapMessage(updateError)} The sheet was built, but the app can't remember it until then.`,
+        })
+      }
       return NextResponse.json({ error: 'Photo sheet stored but could not save its path', detail: updateError.message }, { status: 500 })
     }
 
