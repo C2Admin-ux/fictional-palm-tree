@@ -15,18 +15,17 @@ import { topLevel } from '@/lib/tasks/subtasks'
 import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { bidGlance, type BidLike } from '@/lib/capex/bids'
 import { SEASONS, resolveSeasonConfig, seasonDueDate, type SeasonSpec } from '@/lib/tasks/seasonal'
-import { addDaysToDate, formatDateShort } from '@/lib/utils'
+import { addDaysToDate, daysBetween, formatDateShort } from '@/lib/utils'
 import { format, parseISO } from 'date-fns'
 
 // Task rows carry the joined property name (display) and stay full Task
 // rows underneath — the Today lane's optimistic mutations need them.
 export type DashboardTask = Task & { properties: { name: string } | null }
 
-// Whole days between two local yyyy-MM-dd dates (positive when `to` is
-// later). Both parse as UTC midnight, so the difference is exact.
-export function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(to) - Date.parse(from)) / 86400000)
-}
+// Re-exported from lib/utils (hoisted there so the renewals board and
+// these signals can never disagree on "days late"). Kept as an export
+// here for existing consumers.
+export { daysBetween } from '@/lib/utils'
 
 // ── TODAY — ranked actionable list ───────────────────────────
 

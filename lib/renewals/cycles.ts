@@ -1,5 +1,6 @@
 import type { RenewalSetting, Task } from '@/lib/supabase/types'
-import { addDaysToDate } from '@/lib/utils'
+import { format, parseISO } from 'date-fns'
+import { addDaysToDate, daysBetween } from '@/lib/utils'
 
 // Renewal cycle logic — pure functions, shared by the sync route (server)
 // and the renewals board (client) so the two can never disagree about
@@ -21,6 +22,12 @@ export const DEFAULT_LEAD_DAYS = 90
 // How far ahead cycles are generated. Six months comfortably covers a
 // 90-day lead plus the runway to see the next cycle coming.
 export const HORIZON_MONTHS = 6
+
+// How far back the sync and the board load cycles. Bounds growth — the
+// backlog would otherwise be walked nightly forever (~100 rows/property-
+// year). A cycle more than a year past its expiration month is history,
+// not work; it stays in the table, just out of the working set.
+export const FETCH_FLOOR_MONTHS = 12
 
 export type RenewalSource = 'email' | 'sheet'
 
@@ -90,20 +97,16 @@ export function cycleDueDate(expirationMonth: string, leadDays: number): string 
   return addDaysToDate(expirationMonth, -leadDays)
 }
 
-// "October 2026" — the label everyone uses for a cycle.
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
-
+// "October 2026" — the label everyone uses for a cycle. date-fns like the
+// rest of the app's formatters (parseISO of a date-only string is local
+// midnight, so the month can't shift).
 export function monthLabel(monthIso: string): string {
-  const m = Number(monthIso.slice(5, 7))
-  return `${MONTH_NAMES[m - 1] ?? monthIso.slice(5, 7)} ${monthIso.slice(0, 4)}`
+  return format(parseISO(monthIso), 'MMMM yyyy')
 }
 
-export function shortMonthLabel(monthIso: string): string {
-  const m = Number(monthIso.slice(5, 7))
-  return `${(MONTH_NAMES[m - 1] ?? '???').slice(0, 3)} ${monthIso.slice(2, 4)}`
+// "Oct" — for compact month lists in chase task titles.
+export function shortMonth(monthIso: string): string {
+  return format(parseISO(monthIso), 'MMM')
 }
 
 // ── Stage ────────────────────────────────────────────────────
@@ -136,8 +139,13 @@ export type StageableCycle = {
   due_date: string
 }
 
+// An approval implies the offers existed, even when the received date was
+// never recorded — the backfill deliberately ships such rows (approval
+// evidenced in email, arrival date not found). Stage and overdue must
+// both honor that, or an approved cycle reads as "awaiting offers" and
+// gets chased forever.
 export function cycleStage(cycle: StageableCycle, requiresPartner: boolean): RenewalStage {
-  if (!cycle.offer_received_at) return 'awaiting_offer'
+  if (!cycle.offer_received_at && !cycle.approved_at) return 'awaiting_offer'
   if (!cycle.approved_at) return 'awaiting_approval'
   if (requiresPartner && !cycle.partner_approved_at) return 'awaiting_partner'
   return 'complete'
@@ -147,17 +155,12 @@ export function cycleStage(cycle: StageableCycle, requiresPartner: boolean): Ren
 // waiting on OUR approval is not "overdue" in this sense — that's our own
 // queue, and the board shows it separately. Nothing chases us but us.
 export function isOverdue(cycle: StageableCycle, today: string): boolean {
-  return !cycle.offer_received_at && cycle.due_date < today
+  return cycleStage(cycle, false) === 'awaiting_offer' && cycle.due_date < today
 }
 
 export function daysLate(cycle: StageableCycle, today: string): number {
   if (!isOverdue(cycle, today)) return 0
   return daysBetween(cycle.due_date, today)
-}
-
-function daysBetween(fromIso: string, toIso: string): number {
-  const ms = Date.parse(`${toIso}T00:00:00Z`) - Date.parse(`${fromIso}T00:00:00Z`)
-  return Math.round(ms / 86_400_000)
 }
 
 // Turnaround on our own side: offers in hand → approval sent. Null while
@@ -169,29 +172,47 @@ export function approvalTurnaroundDays(cycle: StageableCycle): number | null {
 }
 
 // ── Chase tasks ──────────────────────────────────────────────
-// One task per overdue cycle, keyed (auto_source, source_record_id =
-// cycle id) exactly like the obligations engine, so the same
-// create/update/auto-resolve reconciliation applies.
+// One task per PROPERTY with overdue offer months, keyed (auto_source,
+// source_record_id = property id). Per-property, not per-cycle-month:
+// a chase is one email to one PM, and it covers every month they owe —
+// per-month tasks would have flooded the agenda with ~21 items on the
+// tracker's first-ever run (four generated months were already past due
+// on launch day), which is exactly the backlog dump the obligations
+// engine was paused to avoid.
 
-export function chaseTitle(cycle: { expiration_month: string; source: string }, propertyName: string): string {
-  const month = monthLabel(cycle.expiration_month)
-  // A sheet property has no email to chase — the ask is to go look.
-  return cycle.source === 'sheet'
-    ? `Review ${propertyName} renewal sheet for ${month}`
-    : `Chase ${propertyName} ${month} renewal offers`
+export type ChaseCycle = {
+  expiration_month: string
+  due_date: string
+  source: string
+  source_url: string | null
 }
 
-export function chaseDescription(
-  cycle: { expiration_month: string; source: string; source_url: string | null; due_date: string },
-): string {
-  const lines = [
-    `Renewal offers for ${monthLabel(cycle.expiration_month)} were due ${cycle.due_date}.`,
-  ]
-  if (cycle.source === 'sheet') {
+// Oldest overdue month first — its due date keys the chase generation
+// (see the sync's done-twin check) and drives escalation.
+export function sortChaseCycles<T extends ChaseCycle>(cycles: T[]): T[] {
+  return [...cycles].sort((a, b) => a.due_date.localeCompare(b.due_date))
+}
+
+export function chaseTitle(cycles: ChaseCycle[], propertyName: string): string {
+  const sorted = sortChaseCycles(cycles)
+  const months = sorted.map(c => shortMonth(c.expiration_month)).join(', ')
+  // A sheet property has no email to chase — the ask is to go look.
+  return sorted[0]?.source === 'sheet'
+    ? `Review ${propertyName} renewal sheet — ${months}`
+    : `Chase ${propertyName} renewal offers — ${months}`
+}
+
+export function chaseDescription(cycles: ChaseCycle[], today: string): string {
+  const sorted = sortChaseCycles(cycles)
+  const lines = sorted.map(c =>
+    `${monthLabel(c.expiration_month)} — due ${c.due_date} (${daysBetween(c.due_date, today)}d late)`)
+  const sheet = sorted.find(c => c.source === 'sheet')
+  if (sheet) {
     lines.push('This property tracks renewals in a shared spreadsheet rather than by email.')
     // The link is the whole point of the task for a sheet property.
-    if (cycle.source_url) lines.push(cycle.source_url)
+    if (sheet.source_url) lines.push(sheet.source_url)
   }
+  lines.push('Auto-managed: resolves itself when the offers are marked received on the Renewals board.')
   return lines.join('\n')
 }
 

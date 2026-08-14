@@ -19,8 +19,8 @@ import type { RenewalCycle, RenewalSetting } from '@/lib/supabase/types'
 import { cn, formatDate, propertyColor, todayISO } from '@/lib/utils'
 import {
   cadenceOf, cycleStage, isOverdue, daysLate, approvalTurnaroundDays,
-  monthLabel, cycleDueDate, DEFAULT_LEAD_DAYS,
-  STAGE_LABELS, STAGE_STYLES, type CadenceConfig,
+  monthLabel, monthStart, addMonths, cycleDueDate, DEFAULT_LEAD_DAYS,
+  FETCH_FLOOR_MONTHS, STAGE_LABELS, STAGE_STYLES, type CadenceConfig,
 } from '@/lib/renewals/cycles'
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
 import { isSchemaGapError } from '@/lib/supabase/schema-errors'
@@ -51,13 +51,18 @@ export default function RenewalsPage() {
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [showCadence, setShowCadence] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [schemaGap, setSchemaGap] = useState<{ code?: string | null; message?: string | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const today = todayISO()
 
   const fetchAll = useCallback(async () => {
+    // Bounded: a cycle more than a year past its month is history the
+    // board doesn't render (FETCH_FLOOR_MONTHS, shared with the sync).
+    const floor = addMonths(monthStart(todayISO()), -FETCH_FLOOR_MONTHS)
     const [cyclesRes, settingsRes, propsRes] = await Promise.all([
       supabase.from('renewal_cycles').select('*')
+        .gte('expiration_month', floor)
         .order('expiration_month').order('due_date'),
       supabase.from('renewal_settings').select('*'),
       supabase.from('properties').select('id, name').eq('status', 'active').order('name'),
@@ -67,6 +72,16 @@ export default function RenewalsPage() {
     if (cyclesRes.error) {
       setSchemaGap(isSchemaGapError(cyclesRes.error) ? cyclesRes.error : null)
       if (!isSchemaGapError(cyclesRes.error)) setError(cyclesRes.error.message)
+      setLoading(false)
+      return
+    }
+    // Settings/properties failures must NOT render a half-true board: a
+    // missing settings table would silently drop Fox Hill's partner leg
+    // and read every approved cycle as complete. Fail loud instead.
+    const sideError = settingsRes.error ?? propsRes.error
+    if (sideError) {
+      setSchemaGap(isSchemaGapError(sideError) ? sideError : null)
+      if (!isSchemaGapError(sideError)) setError(sideError.message)
       setLoading(false)
       return
     }
@@ -86,29 +101,43 @@ export default function RenewalsPage() {
   const propertyName = useMemo(
     () => new Map(properties.map(p => [p.id, p.name])), [properties])
 
-  // Grouped by expiration month, months ascending — the board reads as a
-  // forward calendar, with anything already late called out on top.
-  const months = useMemo(() => {
+  // A parked property ("Tracked" off) leaves the working board entirely —
+  // its history stays in the table, but stale cycles must not inflate the
+  // overdue count for a property the sync deliberately ignores.
+  const activeCycles = useMemo(
+    () => cycles.filter(c => cadenceFor(c.property_id).enabled && propertyName.has(c.property_id)),
+    [cycles, cadenceFor, propertyName])
+
+  // Grouped by expiration month. Current + upcoming months render first,
+  // ascending — the board reads as a forward calendar. Past months sink
+  // into a History section below, newest first, so a year of completed
+  // cycles never buries the actionable ones.
+  const { months, history } = useMemo(() => {
     const byMonth = new Map<string, RenewalCycle[]>()
-    for (const c of cycles) {
+    for (const c of activeCycles) {
       const list = byMonth.get(c.expiration_month) ?? []
       list.push(c)
       byMonth.set(c.expiration_month, list)
     }
-    return Array.from(byMonth.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([month, rows]) => ({
-        month,
-        rows: rows.sort((a, b) =>
-          (propertyName.get(a.property_id) ?? '').localeCompare(propertyName.get(b.property_id) ?? '')),
-      }))
-  }, [cycles, propertyName])
+    const entries = Array.from(byMonth.entries()).map(([month, rows]) => ({
+      month,
+      rows: rows.sort((a, b) =>
+        (propertyName.get(a.property_id) ?? '').localeCompare(propertyName.get(b.property_id) ?? '')),
+    }))
+    const current = monthStart(today)
+    return {
+      months: entries.filter(e => e.month >= current)
+        .sort((a, b) => a.month.localeCompare(b.month)),
+      history: entries.filter(e => e.month < current)
+        .sort((a, b) => b.month.localeCompare(a.month)),
+    }
+  }, [activeCycles, propertyName, today])
 
   const overdue = useMemo(
-    () => cycles.filter(c => isOverdue(c, today)), [cycles, today])
+    () => activeCycles.filter(c => isOverdue(c, today)), [activeCycles, today])
 
   const awaitingUs = useMemo(
-    () => cycles.filter(c => c.offer_received_at && !c.approved_at), [cycles])
+    () => activeCycles.filter(c => cycleStage(c, false) === 'awaiting_approval'), [activeCycles])
 
   async function setLeg(cycle: RenewalCycle, leg: LegKey, value: string | null) {
     const previous = cycle[leg]
@@ -121,6 +150,16 @@ export default function RenewalsPage() {
       // database doesn't have.
       setCycles(prev => prev.map(c => c.id === cycle.id ? { ...c, [leg]: previous } : c))
       toast(`Couldn't save — ${updateError.message}`, { tone: 'error' })
+      return
+    }
+    // The chase task's world just changed — reconcile now rather than at
+    // the 7:00 UTC cron, or a resolved chase sits open on the agenda all
+    // day (and an undone one stays closed). Quiet best-effort: the write
+    // above already succeeded, and the nightly run catches any miss.
+    if (leg === 'offer_received_at' || leg === 'approved_at') {
+      fetch(`/api/renewals/sync?today=${todayISO()}`)
+        .then(res => res.ok ? fetchAll() : undefined)
+        .catch(() => { /* nightly cron reconciles */ })
     }
   }
 
@@ -128,7 +167,9 @@ export default function RenewalsPage() {
     setSyncing(true)
     setError(null)
     try {
-      const res = await fetch('/api/renewals/sync')
+      // The board's local date rides along so an evening manual sync
+      // agrees with the screen (the server clock is UTC).
+      const res = await fetch(`/api/renewals/sync?today=${todayISO()}`)
       const json = await res.json().catch(() => ({}))
       if (!res.ok || !json.success) {
         const base = json.error ?? `Sync failed (${res.status})`
@@ -195,30 +236,8 @@ export default function RenewalsPage() {
 
       {/* The two numbers that matter: who owes us, and what we owe back */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className={cn('card px-4 py-3', overdue.length > 0 && 'border-red-200 bg-red-50/40')}>
-          <p className="text-xs uppercase tracking-wide text-slate-500">Overdue from PMs</p>
-          <p className={cn('text-2xl font-bold', overdue.length > 0 ? 'text-red-700' : 'text-slate-900')}>
-            {overdue.length}
-          </p>
-          {overdue.length > 0 && (
-            <p className="text-xs text-red-700 mt-0.5">
-              {Array.from(new Set(overdue.map(c => propertyName.get(c.property_id))))
-                .filter(Boolean).join(', ')}
-            </p>
-          )}
-        </div>
-        <div className={cn('card px-4 py-3', awaitingUs.length > 0 && 'border-blue-200 bg-blue-50/40')}>
-          <p className="text-xs uppercase tracking-wide text-slate-500">Waiting on your approval</p>
-          <p className={cn('text-2xl font-bold', awaitingUs.length > 0 ? 'text-blue-700' : 'text-slate-900')}>
-            {awaitingUs.length}
-          </p>
-          {awaitingUs.length > 0 && (
-            <p className="text-xs text-blue-700 mt-0.5">
-              {Array.from(new Set(awaitingUs.map(c => propertyName.get(c.property_id))))
-                .filter(Boolean).join(', ')}
-            </p>
-          )}
-        </div>
+        <SummaryCard label="Overdue from PMs" cycles={overdue} tone="red" propertyName={propertyName} />
+        <SummaryCard label="Waiting on your approval" cycles={awaitingUs} tone="blue" propertyName={propertyName} />
       </div>
 
       {showCadence && (
@@ -237,7 +256,7 @@ export default function RenewalsPage() {
 
       {loading ? (
         <p className="text-sm text-slate-400">Loading…</p>
-      ) : months.length === 0 ? (
+      ) : months.length === 0 && history.length === 0 ? (
         <EmptyState
           icon={<CalendarClock size={28} />}
           title="No renewal cycles yet"
@@ -245,23 +264,85 @@ export default function RenewalsPage() {
           action={<button onClick={sync} className="btn-primary"><RefreshCw size={14} />Sync now</button>}
         />
       ) : (
-        months.map(({ month, rows }) => (
-          <section key={month} className="space-y-2">
-            <h2 className="section-title">{monthLabel(month)} expirations</h2>
-            <div className="card divide-y divide-slate-200/70">
-              {rows.map(cycle => (
-                <CycleRow
-                  key={cycle.id}
-                  cycle={cycle}
-                  name={propertyName.get(cycle.property_id) ?? 'Unknown property'}
-                  cadence={cadenceFor(cycle.property_id)}
-                  today={today}
-                  onSetLeg={setLeg}
-                />
+        <>
+          {months.map(({ month, rows }) => (
+            <section key={month} className="space-y-2">
+              <h2 className="section-title">{monthLabel(month)} expirations</h2>
+              <div className="card divide-y divide-slate-200/70">
+                {rows.map(cycle => (
+                  <CycleRow
+                    key={cycle.id}
+                    cycle={cycle}
+                    name={propertyName.get(cycle.property_id) ?? 'Unknown property'}
+                    cadence={cadenceFor(cycle.property_id)}
+                    today={today}
+                    onSetLeg={setLeg}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+
+          {/* Past months sink below the working calendar, newest first,
+              behind a toggle — a year of history must never bury the
+              actionable months. Overdue past cycles still count in the
+              red card above either way. */}
+          {history.length > 0 && (
+            <section className="space-y-2">
+              <button onClick={() => setShowHistory(v => !v)}
+                className="section-title flex items-center gap-1.5 hover:text-slate-900">
+                {showHistory ? 'Hide' : 'Show'} past months ({history.length})
+              </button>
+              {showHistory && history.map(({ month, rows }) => (
+                <section key={month} className="space-y-2">
+                  <h2 className="section-title">{monthLabel(month)} expirations</h2>
+                  <div className="card divide-y divide-slate-200/70">
+                    {rows.map(cycle => (
+                      <CycleRow
+                        key={cycle.id}
+                        cycle={cycle}
+                        name={propertyName.get(cycle.property_id) ?? 'Unknown property'}
+                        cadence={cadenceFor(cycle.property_id)}
+                        today={today}
+                        onSetLeg={setLeg}
+                      />
+                    ))}
+                  </div>
+                </section>
               ))}
-            </div>
-          </section>
-        ))
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Summary card ─────────────────────────────────────────────
+
+const SUMMARY_TONES = {
+  red: { card: 'border-red-200 bg-red-50/40', number: 'text-red-700', list: 'text-red-700' },
+  blue: { card: 'border-blue-200 bg-blue-50/40', number: 'text-blue-700', list: 'text-blue-700' },
+} as const
+
+function SummaryCard({ label, cycles, tone, propertyName }: {
+  label: string
+  cycles: RenewalCycle[]
+  tone: keyof typeof SUMMARY_TONES
+  propertyName: Map<string, string>
+}) {
+  const tones = SUMMARY_TONES[tone]
+  return (
+    <div className={cn('card px-4 py-3', cycles.length > 0 && tones.card)}>
+      <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+      <p className={cn('text-2xl font-bold', cycles.length > 0 ? tones.number : 'text-slate-900')}>
+        {cycles.length}
+      </p>
+      {cycles.length > 0 && (
+        <p className={cn('text-xs mt-0.5', tones.list)}>
+          {Array.from(new Set(cycles.map(c => propertyName.get(c.property_id))))
+            .filter(Boolean).join(', ')}
+        </p>
       )}
     </div>
   )
@@ -316,8 +397,11 @@ function CycleRow({ cycle, name, cadence, today, onSetLeg }: {
         </span>
       )}
 
+      {/* ?property= is the filter the tasks page actually reads — it
+          lands on the All view scoped to this property, chase task on
+          top (it's overdue by definition). */}
       {cycle.chase_task_id && late && (
-        <Link href={`/tasks?task=${cycle.chase_task_id}`}
+        <Link href={`/tasks?property=${cycle.property_id}`}
           className="text-xs text-amber-700 hover:underline flex items-center gap-1">
           <ListTodo size={11} />Chase task
         </Link>
@@ -361,8 +445,9 @@ function CadencePanel({ properties, cadenceFor, onSave }: {
       <div>
         <h2 className="section-title mb-0">Cadence</h2>
         <p className="text-xs text-slate-500 mt-0.5">
-          How far ahead offers are due, and who else has to approve. Changes apply to
-          cycles generated from here on — past due dates stay as they were.
+          How far ahead offers are due, and who else has to approve. Changes reach every
+          cycle that hasn&apos;t started yet on the next sync — months already late or already
+          in motion keep their dates, so history is never rewritten.
         </p>
       </div>
       <div className="overflow-x-auto">
