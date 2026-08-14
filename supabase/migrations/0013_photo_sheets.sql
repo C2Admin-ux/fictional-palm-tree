@@ -39,7 +39,14 @@ create table if not exists capex_photos (
   file_name text,
   caption text,
   sort_order int not null default 0,
-  created_by uuid references auth.users(id) on delete set null,
+  -- Plain uuid, NOT a foreign key to auth.users. Every other table here
+  -- does the same (task_views.user_id, capex_projects.created_by): the
+  -- SQL Editor role has no REFERENCES privilege on auth.users, so an FK
+  -- here fails the whole migration with "permission denied for table
+  -- users". Learned the hard way — this migration was the only one in the
+  -- repo that reached into the auth schema, and it was the only one that
+  -- would not apply.
+  created_by uuid,
   created_at timestamptz default now()
 );
 
