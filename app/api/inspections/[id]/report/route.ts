@@ -4,10 +4,10 @@ import { getSessionUser, unauthorized } from '@/lib/api-auth'
 import type { Inspection, InspectionItem } from '@/lib/supabase/types'
 import { TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS } from '@/lib/inspections/templates'
 import { buildSectionInstances, groupItemsByInstance } from '@/lib/inspections/sections'
-import { inspectionScore, scoreGrade } from '@/lib/inspections/score'
 import { selectActionItems, selectFlagged } from '@/lib/inspections/selectors'
 import { BUCKET } from '@/lib/inspections/photos'
-import { renderInspectionReport, type ReportData, type ReportPhoto } from '@/lib/inspections/report'
+import { downloadEmbeddableImages } from '@/lib/storage-server'
+import { renderInspectionReport, type ReportData } from '@/lib/inspections/report'
 import { formatDate } from '@/lib/utils'
 
 // ── Generate the inspection PDF report ───────────────────────
@@ -69,34 +69,17 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   }
 
   // ── Photos: download bytes from the private bucket ─────────
-  // Service-role client for storage; downloads run 4 at a time — enough
-  // parallelism to matter on a photo-heavy annual, bounded enough to keep
-  // serverless memory sane (photos are already compressed client-side to
-  // ~1600px JPEG, a few hundred KB each). @react-pdf/renderer embeds only
-  // JPEG/PNG — rare webp/gif fallback uploads are skipped, and an
-  // individual failed download drops that photo rather than the report;
-  // both are counted so the PDF can disclose the omission.
+  // Service-role client for storage (see lib/storage-server: bounded
+  // concurrency, non-JPEG/PNG and failed downloads skipped and counted so
+  // the PDF can disclose the omission rather than silently ship a gap).
   // Everything from here can fail for environment reasons (service-role
   // key, storage access, the PDF renderer itself) — keep it inside the
   // try so the caller always gets a JSON envelope naming the cause
   // instead of an opaque function crash.
   try {
     const admin = await createAdminClient()
-    const photos: Record<string, ReportPhoto> = {}
-    const allPaths = Array.from(new Set(items.flatMap(i => i.photo_paths)))
-    let omittedPhotos = 0
-    const queue = [...allPaths]
-    const downloadWorker = async () => {
-      for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
-        const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-        const format = ext === 'jpg' || ext === 'jpeg' ? 'jpg' as const : ext === 'png' ? 'png' as const : null
-        if (!format) { omittedPhotos++; continue }
-        const { data: blob, error } = await admin.storage.from(BUCKET).download(path)
-        if (error || !blob) { omittedPhotos++; continue }
-        photos[path] = { data: Buffer.from(await blob.arrayBuffer()), format }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, allPaths.length) }, downloadWorker))
+    const { images: photos, omitted: omittedPhotos } =
+      await downloadEmbeddableImages(admin, items.flatMap(i => i.photo_paths))
 
     // ── Assemble + render ───────────────────────────────────────
     const template = TEMPLATE_SECTIONS[inspection.inspection_type] ?? TEMPLATE_SECTIONS.site_visit
@@ -107,7 +90,6 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     // findings; flagged findings lead the report.
     const actionItems = selectActionItems(items)
     const flaggedItems = selectFlagged(items)
-    const score = inspectionScore(items)
 
     const data: ReportData = {
       propertyName: inspection.properties?.name ?? 'Property',
@@ -116,8 +98,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       dateLabel: formatDate(inspection.inspection_date),
       inspectorName,
       notes: inspection.notes,
-      score,
-      grade: scoreGrade(score),
+      findingsCount: items.length,
       openFindings: actionItems.length,
       groups: groupItemsByInstance(instances, items),
       actionItems,
@@ -138,11 +119,12 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
 
     // A freshly generated PDF has by definition not been sent — clear the
     // sent marker (the status guard above means status is already
-    // 'submitted', never 'report_sent'). overall_rating persists the score
-    // so SQL can reach it without recomputing from items.
+    // 'submitted', never 'report_sent'). overall_rating is no longer
+    // written: scoring was removed in Sprint 14. The column is left in
+    // place so historical values survive.
     const { error: updateError } = await supabase
       .from('inspections')
-      .update({ report_file_path: path, report_sent_at: null, overall_rating: score })
+      .update({ report_file_path: path, report_sent_at: null })
       .eq('id', inspection.id)
     if (updateError) {
       return NextResponse.json({ error: 'Report stored but could not save its path', detail: updateError.message }, { status: 500 })

@@ -28,7 +28,6 @@ import {
 import { isMine } from '@/lib/tasks/agenda'
 import { topLevel } from '@/lib/tasks/subtasks'
 import { isOpenFinding, UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
-import { inspectionScore, scoreGrade, GRADE_STYLES, type ScoreGrade } from '@/lib/inspections/score'
 import { SNOW_SETTING_KEY, LANDSCAPING_SETTING_KEY } from '@/lib/tasks/seasonal'
 import { StatTile } from '@/components/ui/stat-tile'
 import { DashboardLanes } from './lanes'
@@ -46,12 +45,10 @@ type CapexRow = {
   properties: { name: string } | null
   capex_bids: { vendor_name: string; status: 'requested' | 'received' | 'declined' | 'selected' | 'rejected'; amount: number | null; requested_at: string | null }[]
 }
-type CompletedInspectionRow = { id: string; property_id: string; inspection_date: string }
 type OpenFindingRow = {
   requires_action: boolean; disposition: string
   inspections: { property_id: string } | null
 }
-type GradeItemRow = { inspection_id: string; requires_action: boolean; action_priority: string | null; disposition: string }
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -72,7 +69,6 @@ export default async function DashboardPage() {
     capexRes,
     contractsRes,
     policiesRes,
-    completedInspRes,
     openFindingsRes,
     seasonSettingsRes,
   ] = await Promise.all([
@@ -120,16 +116,6 @@ export default async function DashboardPage() {
       .eq('status', 'active')
       .gte('expiry_date', weekAgo)
       .lte('expiry_date', in90),
-    // Latest completed walk per property (first row per property_id
-    // below). created_at breaks same-day ties deterministically; the
-    // fetch is bounded — if walk history ever outgrows 200 rows, move
-    // this to a DISTINCT ON (property_id) RPC instead of a wider limit.
-    supabase.from('inspections')
-      .select('id, property_id, inspection_date')
-      .in('status', ['submitted', 'report_sent'])
-      .order('inspection_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(200),
     // Canonical open-finding candidates (dispositions.ts): unsettled,
     // completed client-side with isOpenFinding.
     supabase.from('inspection_items')
@@ -171,29 +157,12 @@ export default async function DashboardPage() {
   const seasonSettings = (seasonSettingsRes.data ?? []) as SeasonSettingRow[]
 
   // ── PORTFOLIO PULSE ────────────────────────────────────────
-  // Latest completed walk per property → grade (one dependent fetch for
-  // just those inspections' items).
-  const latestInspByProp = new Map<string, string>()
-  for (const i of ((completedInspRes.data ?? []) as CompletedInspectionRow[])) {
-    if (!latestInspByProp.has(i.property_id)) latestInspByProp.set(i.property_id, i.id)
-  }
-  const latestIds = Array.from(latestInspByProp.values())
-  const gradeItemsRes = latestIds.length > 0
-    ? await supabase.from('inspection_items')
-        .select('inspection_id, requires_action, action_priority, disposition')
-        .in('inspection_id', latestIds)
-    : { data: [] as GradeItemRow[], error: null }
-  // A failed walk or items query means grades are UNKNOWN — chips omit
-  // the grade badge rather than scoring an empty item list as an 'A'.
-  const gradesOk = !completedInspRes.error && !gradeItemsRes.error
-  const itemsByInspection = new Map<string, GradeItemRow[]>()
-  for (const it of ((gradeItemsRes.data ?? []) as GradeItemRow[])) {
-    const arr = itemsByInspection.get(it.inspection_id)
-    if (arr) arr.push(it)
-    else itemsByInspection.set(it.inspection_id, [it])
-  }
-
-  // Same rule for open-finding counts: on a failed query the chips drop
+  // Scoring was removed in Sprint 14, and with it the per-property grade
+  // badge — which also retires the latest-walk lookup and its dependent
+  // items fetch (the only sequential round trip on this page). The chips
+  // now carry the open-finding count alone.
+  //
+  // On a failed query the chips drop
   // their count and the flags tile shows an em dash — never a zero.
   const findingsOk = !openFindingsRes.error
   const openFindingRows = (openFindingsRes.data ?? []) as unknown as OpenFindingRow[]
@@ -206,15 +175,10 @@ export default async function DashboardPage() {
     if (row.disposition === 'flagged') openFlagCount++
   }
 
-  const pulseChips = properties.map(p => {
-    const inspId = latestInspByProp.get(p.id)
-    const items = gradesOk && inspId ? itemsByInspection.get(inspId) ?? [] : null
-    return {
-      id: p.id, name: p.name,
-      grade: items != null ? scoreGrade(inspectionScore(items)) : null,
-      openFindings: findingsOk ? openByProperty.get(p.id) ?? 0 : null,
-    }
-  })
+  const pulseChips = properties.map(p => ({
+    id: p.id, name: p.name,
+    openFindings: findingsOk ? openByProperty.get(p.id) ?? 0 : null,
+  }))
 
   const myOpenTasks = topLevel(tasks).filter(t => isMine(t, userId))
   const myOverdue = myOpenTasks.filter(t => t.due_date != null && t.due_date < today).length
@@ -255,7 +219,7 @@ export default async function DashboardPage() {
 // ── 4 · PORTFOLIO PULSE (server-rendered) ────────────────────
 
 function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexSpent, openFlags }: {
-  chips: { id: string; name: string; grade: ScoreGrade | null; openFindings: number | null }[]
+  chips: { id: string; name: string; openFindings: number | null }[]
   openTasks: number
   overdue: number
   capexCount: number
@@ -272,11 +236,6 @@ function PulseStrip({ chips, openTasks, overdue, capexCount, capexBudget, capexS
             className="flex items-center gap-1.5 border border-slate-200 rounded-full pl-2 pr-2.5 py-1 hover:border-blue-300 hover:bg-slate-50 transition-colors">
             <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: propertyColor(c.name) }} />
             <span className="text-xs font-semibold text-slate-700">{propertyAbbr(c.name)}</span>
-            {c.grade != null && (
-              <span className={cn('text-[10px] font-bold px-1 rounded border leading-4', GRADE_STYLES[c.grade])}>
-                {c.grade}
-              </span>
-            )}
             {c.openFindings != null && (
               <span className={cn('text-xs', c.openFindings > 0 ? 'text-amber-600 font-medium' : 'text-slate-400')}>
                 {c.openFindings} open

@@ -3,7 +3,6 @@ import {
   Document, Page, View, Text, Image, StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer'
 import { instanceLabel, type SectionInstance } from '@/lib/inspections/sections'
-import { GRADE_HEX, type ScoreGrade } from '@/lib/inspections/score'
 import { PRIORITY_LABELS, type ActionPriority } from '@/lib/inspections/templates'
 import { DISPOSITION_LABELS, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
 import { flaggedAgeLabel } from '@/lib/inspections/selectors'
@@ -40,8 +39,7 @@ export type ReportData = {
   dateLabel: string
   inspectorName: string | null
   notes: string | null
-  score: number
-  grade: ScoreGrade
+  findingsCount: number
   openFindings: number
   // Same grouping the app renders — built with lib/inspections/sections.
   groups: { inst: SectionInstance; items: ReportItem[] }[]
@@ -95,8 +93,10 @@ const styles = StyleSheet.create({
   propertyName: { fontSize: 13, fontFamily: 'Helvetica-Bold', color: SLATE_900 },
   metaLine: { fontSize: 9, color: SLATE_600, marginTop: 2 },
 
-  // Score block
-  scoreBlock: {
+  // Counts block — what was found and what needs doing. Replaced the
+  // graded score block in Sprint 14: outward-facing documents report
+  // facts, not a letter grade on the PM's property.
+  countsBlock: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: SLATE_50,
@@ -106,18 +106,9 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 16,
   },
-  gradeBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  gradeLetter: { fontSize: 24, fontFamily: 'Helvetica-Bold', color: '#ffffff' },
-  scoreNumber: { fontSize: 20, fontFamily: 'Helvetica-Bold', color: SLATE_900 },
-  scoreLabel: { fontSize: 8, color: SLATE_400, marginTop: 2, letterSpacing: 1 },
-  scoreDivider: { width: 1, height: 36, backgroundColor: SLATE_200, marginHorizontal: 18 },
+  countNumber: { fontSize: 20, fontFamily: 'Helvetica-Bold', color: SLATE_900 },
+  countLabel: { fontSize: 8, color: SLATE_400, marginTop: 2, letterSpacing: 1 },
+  countDivider: { width: 1, height: 36, backgroundColor: SLATE_200, marginHorizontal: 18 },
 
   // Section headings
   sectionHeading: {
@@ -294,7 +285,6 @@ function Finding({ item, photos }: { item: ReportItem; photos: Record<string, Re
 }
 
 export function InspectionReport({ data }: { data: ReportData }) {
-  const gradeColor = GRADE_HEX[data.grade]
   return (
     <Document
       title={`Inspection Report — ${data.propertyName} — ${data.dateLabel}`}
@@ -316,19 +306,16 @@ export function InspectionReport({ data }: { data: ReportData }) {
           </View>
         </View>
 
-        {/* Score block */}
-        <View style={styles.scoreBlock}>
-          <View style={[styles.gradeBox, { backgroundColor: gradeColor }]}>
-            <Text style={styles.gradeLetter}>{data.grade}</Text>
-          </View>
+        {/* Counts block */}
+        <View style={styles.countsBlock}>
           <View>
-            <Text style={styles.scoreNumber}>{data.score} / 100</Text>
-            <Text style={styles.scoreLabel}>PROPERTY SCORE</Text>
+            <Text style={styles.countNumber}>{data.findingsCount}</Text>
+            <Text style={styles.countLabel}>FINDING{data.findingsCount === 1 ? '' : 'S'} RECORDED</Text>
           </View>
-          <View style={styles.scoreDivider} />
+          <View style={styles.countDivider} />
           <View>
-            <Text style={styles.scoreNumber}>{data.openFindings}</Text>
-            <Text style={styles.scoreLabel}>OPEN FINDING{data.openFindings === 1 ? '' : 'S'} REQUIRING ACTION</Text>
+            <Text style={styles.countNumber}>{data.openFindings}</Text>
+            <Text style={styles.countLabel}>OPEN FINDING{data.openFindings === 1 ? '' : 'S'} REQUIRING ACTION</Text>
           </View>
         </View>
 

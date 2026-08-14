@@ -8,9 +8,7 @@ import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } fro
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
 import { cancelInspectionUploads } from '@/lib/inspections/upload-queue'
-import { inspectionScore } from '@/lib/inspections/score'
 import { isOpenFinding } from '@/lib/inspections/dispositions'
-import { GradeBadge } from '@/lib/inspections/grade-badge'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -99,13 +97,10 @@ export default function InspectionsPage() {
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  // A draft mid-walk has partial findings — it has no score yet. null here
-  // both renders as the muted "—" slot and sorts to the bottom regardless
-  // of direction (useSort puts nulls last either way).
   // When the findings embed was dropped, findings are UNKNOWN, not zero —
   // null everywhere so every slot renders "—" instead of quietly asserting
-  // a clean inspection. [[Pulse honesty]] applies here too: never fabricate
-  // a grade from data we failed to read.
+  // a clean inspection. Never fabricate counts from data we failed to read.
+  // (null also sorts to the bottom either way — useSort puts nulls last.)
   const displayed = useMemo(() => inspections
     .map(i => ({
       ...i,
@@ -114,7 +109,6 @@ export default function InspectionsPage() {
       // The canonical open-finding rule (lib/inspections/dispositions):
       // not settled AND (requires_action OR triaged).
       open_findings: schemaGap ? null : i.inspection_items.filter(isOpenFinding).length,
-      score: schemaGap || i.status === 'draft' ? null : inspectionScore(i.inspection_items),
     }))
     .sort(sortFn),
     // sortFn is fully determined by sort + dir.
@@ -243,9 +237,6 @@ export default function InspectionsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {insp.score != null
-                    ? <GradeBadge score={insp.score} />
-                    : <span className="text-slate-300 text-xs">—</span>}
                   {insp.open_findings != null && insp.open_findings > 0 && (
                     <span className="badge text-amber-700 bg-amber-50 border-amber-200">
                       <AlertTriangle size={10} className="mr-1" />{insp.open_findings}
@@ -269,7 +260,6 @@ export default function InspectionsPage() {
                   <Th label="Type" field="inspection_type" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Date" field="inspection_date" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
-                  <Th label="Score" field="score" current={sort} dir={dir} onSort={toggle} />
                   <Th label="Findings" field="item_count" current={sort} dir={dir} onSort={toggle} align="right" />
                   <Th label="Follow-ups" field="open_findings" current={sort} dir={dir} onSort={toggle} align="right" />
                   <th className="w-14" />
@@ -296,11 +286,6 @@ export default function InspectionsPage() {
                       <span className={cn('badge', INSPECTION_STATUS_STYLES[insp.status])}>
                         {INSPECTION_STATUS_LABELS[insp.status] ?? insp.status}
                       </span>
-                    </td>
-                    <td className="px-3 py-3">
-                      {insp.score != null
-                        ? <GradeBadge score={insp.score} />
-                        : <span className="text-slate-300 text-xs">—</span>}
                     </td>
                     <td className="px-3 py-3 text-right text-slate-700">
                       {insp.item_count ?? <span className="text-slate-300 text-xs">—</span>}
