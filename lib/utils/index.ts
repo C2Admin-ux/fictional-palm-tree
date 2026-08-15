@@ -76,6 +76,13 @@ export function addDaysToDate(date: string, days: number): string {
   return format(addDays(parseISO(date), days), 'yyyy-MM-dd')
 }
 
+// Whole days between two yyyy-MM-dd dates (positive when `to` is later).
+// Both parse as UTC midnight, so the difference is exact. Single source —
+// dashboard signals and the renewals board must agree on "days late".
+export function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / 86400000)
+}
+
 // HTML-escape user/DB strings interpolated into inline email HTML
 // (digest, inspection report send). Null-safe: nullish → ''.
 export function escHtml(str: string | null | undefined): string {

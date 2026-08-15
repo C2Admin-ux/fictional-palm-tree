@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { isCronRequest, unauthorized } from '@/lib/api-auth'
 import { CONTRACT_SOURCE, INSURANCE_SOURCE, OBLIGATION_SOURCES, SEASONAL_BID_SOURCES } from '@/lib/tasks/vocab'
+import { autoResolveTask } from '@/lib/tasks/auto-resolve'
 import {
   OBLIGATION_LEAD_DAYS_KEY, SEASONS, contractResolvesSeasonalTask,
   parseLeadDaysSetting, resolveSeasonConfig, seasonDueDate, seasonYearOf,
@@ -189,11 +190,7 @@ export async function GET(req: NextRequest) {
     // deadline moved out of window; or status no longer active) → resolve.
     for (const [key, pending] of Array.from(pendingByKey.entries())) {
       if (desiredByKey.has(key)) continue
-      const description = [pending.description, '(auto-resolved: record renewed/closed)']
-        .filter(Boolean).join('\n')
-      const { error } = await supabase.from('tasks')
-        .update({ status: 'done', completed_at: new Date().toISOString(), description })
-        .eq('id', pending.id)
+      const { error } = await autoResolveTask(supabase, pending, 'record renewed/closed')
       if (error) throw error
       counts.resolved++
     }
@@ -263,11 +260,7 @@ export async function GET(req: NextRequest) {
 
       const signed = activeContracts.some(c => contractResolvesSeasonalTask(c, t, spec))
       if (signed) {
-        const description = [t.description, `(auto-resolved: ${spec.label} contract signed for the season)`]
-          .filter(Boolean).join('\n')
-        const { error } = await supabase.from('tasks')
-          .update({ status: 'done', completed_at: new Date().toISOString(), description })
-          .eq('id', t.id)
+        const { error } = await autoResolveTask(supabase, t, `${spec.label} contract signed for the season`)
         if (error) throw error
         counts.resolved++
         continue

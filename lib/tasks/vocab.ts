@@ -24,6 +24,19 @@ export const OBLIGATION_SOURCES: string[] = [
   INSURANCE_SOURCE, CONTRACT_SOURCE, ...SEASONAL_BID_SOURCES,
 ]
 
+// Renewal chase tasks (app/api/renewals/sync). One per PROPERTY with
+// overdue offer months (source_record_id = property id), reconciled with
+// the same (auto_source, source_record_id) rules as the engine.
+// Deliberately NOT in OBLIGATION_SOURCES: the obligations engine is
+// paused, and its cron must not start touching these.
+export const RENEWAL_SOURCE = 'renewal_offer'
+
+// Every machine-managed source, for READERS (the Auto badge on task
+// rows). Broader than OBLIGATION_SOURCES on purpose: a renewal chase is
+// auto-managed and must look it — the sync rewrites title/priority on
+// drift, so an unbadged task would silently eat manual edits.
+export const AUTO_MANAGED_SOURCES: string[] = [...OBLIGATION_SOURCES, RENEWAL_SOURCE]
+
 // Tasks created from a confirmed call item (calls/[id] Confirm & process).
 export const CALL_AUTO_SOURCE = 'call'
 
