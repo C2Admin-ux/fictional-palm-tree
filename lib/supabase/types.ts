@@ -95,7 +95,7 @@ export type Database = {
         Relationships: [{ foreignKeyName: 'capex_photos_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
       renewal_cycles: {
-        Row: { id: string; property_id: string; expiration_month: string; due_date: string; offer_received_at: string | null; approved_at: string | null; partner_approved_at: string | null; source: 'email' | 'sheet'; source_url: string | null; notes: string | null; chase_task_id: string | null; created_at: string; updated_at: string }
+        Row: { id: string; property_id: string; expiration_month: string; due_date: string; offer_received_at: string | null; approved_at: string | null; partner_approved_at: string | null; source: 'email' | 'sheet'; source_url: string | null; notes: string | null; chase_task_id: string | null; renewal_rate: number | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['renewal_cycles']['Row']> & { property_id: string; expiration_month: string; due_date: string }
         Update: Partial<Database['public']['Tables']['renewal_cycles']['Row']>
         Relationships: [{ foreignKeyName: 'renewal_cycles_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]

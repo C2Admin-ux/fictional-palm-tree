@@ -20,6 +20,7 @@ import { cn, formatDate, propertyColor, todayISO } from '@/lib/utils'
 import {
   cadenceOf, cycleStage, isOverdue, daysLate, approvalTurnaroundDays,
   monthLabel, monthStart, addMonths, cycleDueDate, DEFAULT_LEAD_DAYS,
+  closedMonths, portfolioRate, shortMonth,
   FETCH_FLOOR_MONTHS, STAGE_LABELS, STAGE_STYLES, type CadenceConfig,
 } from '@/lib/renewals/cycles'
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
@@ -189,6 +190,40 @@ export default function RenewalsPage() {
     }
   }
 
+  // Rate entry writes onto the cycle row (the property × month grain the
+  // rate lives at). A month with no row yet — history before the seed —
+  // gets one created on the fly, due date computed from today's cadence.
+  async function saveRate(propertyId: string, month: string, rate: number | null) {
+    const cycle = cycles.find(c => c.property_id === propertyId && c.expiration_month === month)
+    const previous = cycle?.renewal_rate ?? null
+    if (cycle) {
+      setCycles(prev => prev.map(c => c.id === cycle.id ? { ...c, renewal_rate: rate } : c))
+    }
+    // due_date/source are the existing row's values on conflict (written
+    // back unchanged) and cadence-computed only for a brand-new row.
+    const cadence = cadenceFor(propertyId)
+    const { error: upsertError } = await supabase.from('renewal_cycles')
+      .upsert({
+        property_id: propertyId,
+        expiration_month: month,
+        due_date: cycle?.due_date ?? cycleDueDate(month, cadence.leadDays),
+        source: cycle?.source ?? cadence.source,
+        source_url: cycle?.source_url ?? cadence.sourceUrl,
+        renewal_rate: rate,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'property_id,expiration_month' })
+    if (upsertError) {
+      if (cycle) {
+        setCycles(prev => prev.map(c => c.id === cycle.id ? { ...c, renewal_rate: previous } : c))
+      }
+      toast(`Couldn't save rate — ${upsertError.message}`, { tone: 'error' })
+      return
+    }
+    if (!cycle) fetchAll() // pick up the freshly created row
+    // Entering a rate settles its entry task — reconcile now, not at 7am.
+    fetch(`/api/renewals/sync?today=${todayISO()}`).catch(() => { /* nightly cron reconciles */ })
+  }
+
   async function saveCadence(propertyId: string, patch: Partial<RenewalSetting>) {
     const existing = settings.find(s => s.property_id === propertyId)
     const next = { ...(existing ?? { property_id: propertyId }), ...patch } as RenewalSetting
@@ -245,6 +280,18 @@ export default function RenewalsPage() {
           properties={properties}
           cadenceFor={cadenceFor}
           onSave={saveCadence}
+        />
+      )}
+
+      {/* Monthly renewal rates — hand-entered per property once a month
+          closes. The current month is deliberately absent: its outcomes
+          are still accumulating and a partial rate reads as a bad one. */}
+      {!loading && (
+        <RateMatrix
+          properties={properties.filter(p => cadenceFor(p.id).enabled)}
+          cycles={cycles}
+          today={today}
+          onSave={saveRate}
         />
       )}
 
@@ -315,6 +362,139 @@ export default function RenewalsPage() {
         </>
       )}
     </div>
+  )
+}
+
+// ── Renewal-rate matrix ──────────────────────────────────────
+// Month-by-month table, one row per property: % of leases expiring that
+// month that renewed. Entered by hand (the sync opens a per-property
+// entry task when a month closes); the portfolio row is a simple mean —
+// unit-weighting needs the rent-roll counts that phase 2 will carry.
+
+const RATE_MONTHS_SHOWN = 12
+
+function RateMatrix({ properties, cycles, today, onSave }: {
+  properties: PropertyRow[]
+  cycles: RenewalCycle[]
+  today: string
+  onSave: (propertyId: string, month: string, rate: number | null) => void
+}) {
+  const months = useMemo(() => closedMonths(today, RATE_MONTHS_SHOWN), [today])
+  const rateByKey = useMemo(() => {
+    const map = new Map<string, number | null>()
+    for (const c of cycles) map.set(`${c.property_id}|${c.expiration_month}`, c.renewal_rate)
+    return map
+  }, [cycles])
+
+  if (properties.length === 0) return null
+
+  return (
+    <div className="card p-4 space-y-3">
+      <div>
+        <h2 className="section-title mb-0">Renewal rates</h2>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Share of expiring leases that renewed, by expiration month. Click a cell to enter.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[860px]">
+          <thead className="bg-slate-50 border-b border-slate-200/70">
+            <tr>
+              <th className="text-left px-3 py-2 text-xs font-medium text-slate-500">Property</th>
+              {months.map(m => (
+                <th key={m} className="text-right px-2 py-2 text-xs font-medium text-slate-500 whitespace-nowrap">
+                  {shortMonth(m)}
+                  {/* Year only where it changes — January or the first column */}
+                  {(m.endsWith('-01-01') || m === months[0]) && (
+                    <span className="text-slate-400 font-normal"> ’{m.slice(2, 4)}</span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200/70">
+            {properties.map(p => (
+              <tr key={p.id}>
+                <td className="px-3 py-1.5 font-medium text-slate-700 whitespace-nowrap">
+                  <span className="w-2 h-2 rounded-full inline-block mr-1.5" style={{ background: propertyColor(p.name) }} />
+                  {p.name}
+                </td>
+                {months.map(m => (
+                  <td key={m} className="px-2 py-1.5 text-right">
+                    <RateCell
+                      value={rateByKey.get(`${p.id}|${m}`) ?? null}
+                      onSave={rate => onSave(p.id, m, rate)}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+            <tr className="bg-slate-50/60">
+              <td className="px-3 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-wide">Portfolio</td>
+              {months.map(m => {
+                const avg = portfolioRate(properties.map(p => rateByKey.get(`${p.id}|${m}`) ?? null))
+                return (
+                  <td key={m} className="px-2 py-1.5 text-right text-slate-600 font-medium">
+                    {avg != null ? `${avg}%` : <span className="text-slate-300">—</span>}
+                  </td>
+                )
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// One editable percent cell. Click to edit; Enter/blur saves; Escape
+// cancels; clearing the input clears the stored rate.
+function RateCell({ value, onSave }: {
+  value: number | null
+  onSave: (rate: number | null) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  function commit() {
+    setEditing(false)
+    const trimmed = draft.trim()
+    if (trimmed === '') {
+      if (value != null) onSave(null)
+      return
+    }
+    const n = Math.round(Number(trimmed))
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      toast('Rate must be 0–100', { tone: 'error' })
+      return
+    }
+    if (n !== value) onSave(n)
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="number" min={0} max={100}
+        defaultValue={value ?? ''}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+          if (e.key === 'Escape') { setDraft(String(value ?? '')); setEditing(false) }
+        }}
+        className="input-sm w-14 text-right"
+        aria-label="Renewal rate percent"
+      />
+    )
+  }
+  return (
+    <button type="button"
+      onClick={() => { setDraft(String(value ?? '')); setEditing(true) }}
+      className={cn('px-1 py-0.5 rounded hover:bg-slate-100 min-w-[2.5rem] text-right',
+        value != null ? 'text-slate-800' : 'text-slate-300')}>
+      {value != null ? `${value}%` : '—'}
+    </button>
   )
 }
 

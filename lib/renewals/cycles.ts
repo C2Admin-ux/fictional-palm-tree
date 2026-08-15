@@ -223,3 +223,51 @@ export function chasePriority(daysOverdue: number): Task['priority'] {
   if (daysOverdue >= 14) return 'high'
   return 'medium'
 }
+
+// ── Renewal-rate entry tasks ─────────────────────────────────
+// A month's rate is knowable once the month CLOSES (move-outs final).
+// The sync creates one entry task per property for the most recent
+// closed month with no rate — per property by Nick's explicit choice
+// (2026-08-14): different PMs report at different times, and each task
+// closes as that property's number lands.
+
+// The most recent fully-closed month: last month.
+export function lastClosedMonth(today: string): string {
+  return addMonths(monthStart(today), -1)
+}
+
+// Due one week into the following month — enough time for the PM's
+// month-end report to land, early enough that the number is entered
+// while the month is still fresh.
+export function rateTaskDueDate(expirationMonth: string): string {
+  return `${addMonths(expirationMonth, 1).slice(0, 8)}07`
+}
+
+export function rateTaskTitle(expirationMonth: string, propertyName: string): string {
+  return `Enter ${monthLabel(expirationMonth)} renewal rate — ${propertyName}`
+}
+
+export function rateTaskDescription(expirationMonth: string, propertyName: string): string {
+  return [
+    `Percent of leases expiring in ${monthLabel(expirationMonth)} at ${propertyName} that renewed.`,
+    'Enter it in the rate table on the Renewals board.',
+    'Auto-managed: resolves itself when the rate is entered.',
+  ].join('\n')
+}
+
+// Simple mean of the entered rates — with hand-entered percentages there
+// is no denominator to weight by. Unit-weighting arrives with rent-roll
+// ingestion (phase 2), which carries the counts.
+export function portfolioRate(rates: (number | null)[]): number | null {
+  const entered = rates.filter((r): r is number => r != null)
+  if (entered.length === 0) return null
+  return Math.round(entered.reduce((s, r) => s + r, 0) / entered.length)
+}
+
+// The matrix's columns: the N most recent CLOSED months, oldest first —
+// the current month is still accumulating outcomes and would read as a
+// misleadingly low rate.
+export function closedMonths(today: string, count: number): string[] {
+  const last = lastClosedMonth(today)
+  return Array.from({ length: count }, (_, i) => addMonths(last, -(count - 1 - i)))
+}
