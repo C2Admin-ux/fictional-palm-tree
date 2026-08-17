@@ -31,10 +31,11 @@ import {
 import { openSubtasksOf } from '@/lib/tasks/subtasks'
 import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
 import {
-  type TaskStore, toggleDoneOptimistic, snoozeTaskOptimistic,
+  type TaskStore, toggleDoneOptimistic, snoozeTaskOptimistic, patchTaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { CompleteCircle } from '@/components/tasks/row-cells'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
+import { DueMenu } from '@/components/tasks/due-menu'
 import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
 import {
   cn, todayISO, formatDate, formatDateShort, propertyColor, propertyAbbr, PRIORITY_DOT,
@@ -42,6 +43,7 @@ import {
 import {
   ClipboardCheck, Phone, Flag, ChevronRight, Sun, Moon,
   Scale, FileSignature, Shield, HardHat, CalendarRange, CalendarClock,
+  CalendarDays,
 } from 'lucide-react'
 
 // Small shared chip — property context on any row type. Full name from
@@ -178,6 +180,10 @@ export function DashboardLanes({
     })
   }, [supabase, store, beginExit, cancelExit])
 
+  const setDue = useCallback((task: DashboardTask, date: string | null) => {
+    void patchTaskOptimistic(supabase, store, task, { due_date: date })
+  }, [supabase, store])
+
   const snoozeTask = useCallback((task: DashboardTask, date: string) => {
     snoozeTaskOptimistic(supabase, store, task, date)
     setSnoozedIds(prev => new Set(prev).add(task.id))
@@ -239,7 +245,7 @@ export function DashboardLanes({
           <p className="px-4 py-5 text-sm text-slate-400">Nothing needs you today — enjoy the quiet ✓</p>
         ) : shown.map(s => s.kind === 'task'
           ? <TodayTaskRow key={s.id} signal={s} today={today}
-              exitPhase={phaseOf(s.id)} onComplete={completeTask} onSnooze={snoozeTask} />
+              exitPhase={phaseOf(s.id)} onComplete={completeTask} onSnooze={snoozeTask} onDue={setDue} />
           : <TodayLinkRow key={s.id} signal={s} />)}
         {moreTasks > 0 && (
           <Link href="/tasks" className="block px-4 py-2 text-xs text-blue-600 hover:underline">
@@ -260,7 +266,8 @@ export function DashboardLanes({
       <DecisionsLane signals={decisions} today={today} />
 
       {/* ── 3 · THIS WEEK ─────────────────────────────────── */}
-      <WeekLane groups={weekGroups} waitingBids={waitingBids} seasons={seasons} />
+      <WeekLane groups={weekGroups} waitingBids={waitingBids} seasons={seasons}
+        onComplete={completeTask} onSnooze={snoozeTask} onDue={setDue} />
 
       {/* ── 4 · PORTFOLIO PULSE ───────────────────────────── */}
       {pulse}
@@ -270,12 +277,13 @@ export function DashboardLanes({
 
 // One interactive task row: complete circle + title + property chip +
 // due accent + snooze — the tasks page affordances, dashboard-compact.
-function TodayTaskRow({ signal, today, exitPhase, onComplete, onSnooze }: {
+function TodayTaskRow({ signal, today, exitPhase, onComplete, onSnooze, onDue }: {
   signal: TaskSignal
   today: string
   exitPhase: ExitPhase | null
   onComplete: (task: DashboardTask) => void
   onSnooze: (task: DashboardTask, date: string) => void
+  onDue: (task: DashboardTask, date: string | null) => void
 }) {
   const t = signal.task
   const overdue = isOverdueSignal(signal, today)
@@ -297,6 +305,14 @@ function TodayTaskRow({ signal, today, exitPhase, onComplete, onSnooze }: {
           overdue ? 'text-red-600 font-semibold' : 'text-amber-600 font-medium')}>
           {overdue ? `${overdueDays}d overdue` : 'today'}
         </span>
+        {/* Same quick-set affordances as a tasks-page row, hover-revealed */}
+        <DueMenu value={t.due_date} onSelect={date => onDue(t, date)}
+          trigger={
+            <span className="p-1 rounded text-slate-300 hover:text-blue-500 transition-all inline-flex md:opacity-0 md:group-hover:opacity-100"
+              title="Set due date">
+              <CalendarDays size={13} />
+            </span>
+          } />
         <SnoozeMenu onSnooze={date => onSnooze(t, date)}
           buttonClassName="md:opacity-0 md:group-hover:opacity-100" />
       </SignalRow>
@@ -397,10 +413,13 @@ function DaysBadge({ date, today }: { date: string; today: string }) {
 
 // ── 3 · THIS WEEK ────────────────────────────────────────────
 
-function WeekLane({ groups, waitingBids, seasons }: {
+function WeekLane({ groups, waitingBids, seasons, onComplete, onSnooze, onDue }: {
   groups: WeekdayGroup[]
   waitingBids: WaitingBidsSignal[]
   seasons: SeasonalWindowLine[]
+  onComplete: (task: DashboardTask) => void
+  onSnooze: (task: DashboardTask, date: string) => void
+  onDue: (task: DashboardTask, date: string | null) => void
 }) {
   const taskCount = groups.reduce((s, g) => s + g.tasks.length, 0)
   const empty = taskCount === 0 && waitingBids.length === 0 && seasons.length === 0
@@ -422,12 +441,24 @@ function WeekLane({ groups, waitingBids, seasons }: {
           <div className="px-4 py-1 bg-slate-50 border-b border-slate-200/70 text-xs font-semibold text-slate-500 uppercase tracking-wide">
             {g.label}
           </div>
+          {/* Interactive since Sprint 16 — these rows were the one task
+              list in the app you couldn't act on at all. */}
           {g.tasks.map(t => (
-            <SignalRow key={t.id}>
+            <SignalRow key={t.id} className="group hover:bg-slate-50 transition-colors">
               <span className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                 style={{ background: PRIORITY_DOT[t.priority] ?? '#94a3b8' }} />
+              <CompleteCircle isDone={t.status === 'done'} onToggle={() => onComplete(t)} />
               <span className="flex-1 min-w-0 truncate text-sm text-slate-700">{t.title}</span>
               {t.properties?.name && <PropertyChip name={t.properties.name} />}
+              <DueMenu value={t.due_date} onSelect={date => onDue(t, date)}
+                trigger={
+                  <span className="p-1 rounded text-slate-300 hover:text-blue-500 transition-all inline-flex md:opacity-0 md:group-hover:opacity-100"
+                    title="Set due date">
+                    <CalendarDays size={13} />
+                  </span>
+                } />
+              <SnoozeMenu onSnooze={date => onSnooze(t, date)}
+                buttonClassName="md:opacity-0 md:group-hover:opacity-100" />
             </SignalRow>
           ))}
         </div>

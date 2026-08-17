@@ -1,10 +1,12 @@
 'use client'
 
-// RTM-style keyboard layer for the tasks page (desktop only).
+// RTM-style keyboard layer for task list surfaces (desktop only).
 //   j / k (or arrows)  move the row selection in visual order
 //   c                  complete-toggle the selected task
 //   s                  open its snooze preset menu
-//   d                  open its due-date inline editor
+//   d                  open its due-date quick menu
+//   p                  postpone — push the due date one day
+//   x                  toggle the row in the multi-select set
 //   e                  open the edit modal
 //   1 / 2 / 3 / 4      priority urgent / high / medium / low
 //   Delete / Backspace delete (optimistic + undo toast)
@@ -16,11 +18,14 @@
 // across the Agenda / All / Review groupings without lifting each
 // view's ordering logic. s and d click the row's real controls
 // ([data-snooze-trigger], [data-due-edit]) — the exact same paths the
-// mouse uses. Inert while any input/textarea/select/modal has focus.
+// mouse uses. Inert while any input/textarea/select/modal has focus,
+// and while ANY overlay is open (command palette, global quick-add) —
+// not just this page's own modal.
 
 import { useEffect, useRef } from 'react'
 import type { Task } from '@/lib/supabase/types'
 import { isEditableTarget, isRepeatedActionKey } from '@/lib/ui/keyboard'
+import { isOverlayOpen } from '@/lib/ui/overlay'
 
 export type TaskShortcutActions = {
   enabled: boolean            // false while a modal is open or the list is loading
@@ -29,6 +34,11 @@ export type TaskShortcutActions = {
   onDelete: (id: string) => void
   onEdit: (id: string) => void
   onSetPriority: (id: string, priority: Task['priority']) => void
+  // Postpone: bump the due date (see postponeDate in lib/tasks/dates).
+  onPostpone: (id: string) => void
+  // Multi-select toggle — optional: surfaces without a batch bar omit it
+  // and `x` is inert there.
+  onToggleSelect?: (id: string) => void
   // Subtask drill-down: 'open' | 'close' | 'toggle' — a no-op for rows
   // without children (the page decides).
   onExpand: (id: string, mode: 'open' | 'close' | 'toggle') => void
@@ -47,6 +57,10 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
     function onKey(e: KeyboardEvent) {
       const a = ref.current
       if (!a.enabled) return
+      // Any overlay owns the keyboard — including ones this page didn't
+      // open (command palette, global quick-add). Relying on the palette
+      // autofocusing an input was the only thing saving us before.
+      if (isOverlayOpen()) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
       // Mobile keeps swipe gestures; no keyboard layer there.
       if (window.matchMedia('(pointer: coarse)').matches) return
@@ -151,6 +165,15 @@ export function useTaskListShortcuts(actions: TaskShortcutActions) {
         case 'd':
           e.preventDefault()
           row.querySelector<HTMLElement>('[data-due-edit] .cursor-pointer')?.click()
+          return
+        case 'p':
+          e.preventDefault()
+          a.onPostpone(a.selectedId)
+          return
+        case 'x':
+          if (!a.onToggleSelect) return
+          e.preventDefault()
+          a.onToggleSelect(a.selectedId)
           return
       }
     }

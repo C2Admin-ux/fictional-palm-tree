@@ -11,12 +11,15 @@ import { useClickOutside } from '@/components/ui/inline-edit'
 import { Moon, CalendarDays } from 'lucide-react'
 
 export function SnoozeMenu({
-  onSnooze, open: controlledOpen, onOpenChange, buttonClassName,
+  onSnooze, open: controlledOpen, onOpenChange, buttonClassName, triggerContent,
 }: {
   onSnooze: (date: string) => void
   open?: boolean
   onOpenChange?: (open: boolean) => void
   buttonClassName?: string
+  // Replaces the default Moon-icon trigger (the batch bar renders a
+  // labeled button instead).
+  triggerContent?: React.ReactNode
 }) {
   const [internalOpen, setInternalOpen] = useState(false)
   const open = controlledOpen ?? internalOpen
@@ -50,10 +53,10 @@ export function SnoozeMenu({
         onClick={() => setOpen(!open)}
         title="Snooze"
         className={cn(
-          'p-1 rounded text-slate-300 hover:text-indigo-500 transition-all flex-shrink-0',
+          triggerContent ? 'flex-shrink-0' : 'p-1 rounded text-slate-300 hover:text-indigo-500 transition-all flex-shrink-0',
           buttonClassName
         )}>
-        <Moon size={13} />
+        {triggerContent ?? <Moon size={13} />}
       </button>
 
       {open && (

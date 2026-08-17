@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -9,40 +9,34 @@ import {
   cn, formatDateShort, daysUntil,
   todayISO,
   STATUS_STYLES, STATUS_LABELS,
-  propertyColor, propertyAbbr,
+  propertyColor,
 } from '@/lib/utils'
-import { groupByDue } from '@/lib/tasks/dates'
+import { groupByDue, postponeDate } from '@/lib/tasks/dates'
 import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
-  Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, Keyboard,
+  Plus, X, ChevronDown, Mountain, Moon,
+  Keyboard,
 } from 'lucide-react'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
-import { SnoozeMenu } from '@/components/tasks/snooze-menu'
-import { SwipeRow } from '@/components/tasks/swipe-row'
-import { PriorityPip, CompleteCircle, TaskBadges, DueDateCell, DeleteX } from '@/components/tasks/row-cells'
-import { SubtaskChip, SubtaskList } from '@/components/tasks/subtask-list'
-import { ContactActionMenu } from '@/components/tasks/contact-popover'
-import { CollapseOnComplete, useExitingRows, type ExitPhase } from '@/components/tasks/complete-collapse'
+import {
+  TaskRow, subtaskSelection,
+  type RowHandlers, type SubtaskUi, type TaskWithRelations,
+} from '@/components/tasks/task-row'
+import { TaskFormModal } from '@/components/tasks/task-form-modal'
+import { useExitingRows } from '@/components/tasks/complete-collapse'
 import { SavedViewsBar } from '@/components/tasks/saved-views'
 import { useTaskListShortcuts } from '@/components/tasks/use-task-list-shortcuts'
-import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
-import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
-  snoozeTaskOptimistic, addSubtaskOptimistic,
+  snoozeTaskOptimistic, addSubtaskOptimistic, postponeTaskOptimistic,
+  batchPatchOptimistic, batchCompleteOptimistic,
 } from '@/lib/tasks/mutations'
+import { BatchBar } from '@/components/tasks/batch-bar'
 import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
-
-type TaskWithRelations = Task & {
-  properties?: { name: string } | null
-  capex_projects?: { title: string } | null
-  contacts?: Contact[]
-}
 
 // Shape of a row as returned by the select with joins, before we
 // flatten the task_contacts junction into a plain contacts array.
@@ -160,42 +154,6 @@ function paramsToNav(searchParams: URLSearchParams): {
   return { view, property: seed ? property : '', capex: seed ? capex : '' }
 }
 
-// Handlers every task list needs, bundled so the three views share
-// one prop shape.
-type RowHandlers = {
-  onEdit: (task: TaskWithRelations) => void
-  onDone: (task: TaskWithRelations) => void
-  onDelete: (task: TaskWithRelations) => void
-  onPatch: (task: TaskWithRelations, fields: Partial<Task>) => void
-  onSnooze: (task: TaskWithRelations, date: string) => void
-  // Keyboard-driven row selection (j/k etc.)
-  onSelect: (id: string) => void
-  // Local lookup — lets rows check whether a blocker still exists
-  getTask: (id: string) => TaskWithRelations | undefined
-  // Presentation-only exit animation state (useExitingRows) — stable
-  // identity; rows read it for their subtask drill-downs.
-  exitPhaseOf: (id: string) => ExitPhase | null
-  // Subtask drill-down: toggle a parent's expanded state / inline add
-  onToggleExpand: (id: string) => void
-  onAddSubtask: (parent: TaskWithRelations, title: string) => void | Promise<void>
-}
-
-// Per-view subtask plumbing: children lookup + which parents are open.
-// (Passed as props, not via handlers, so memoized rows re-render when
-// their own children change — the progress chip must move.)
-type SubtaskUi = {
-  subtasksOf: (id: string) => TaskWithRelations[] | undefined
-  expandedIds: Set<string>
-}
-
-// Keyboard selection can land on a subtask row (j/k walks the DOM in
-// visual order). Resolve it to a prop only for the parent that owns
-// it, so the other memoized rows don't re-render on selection moves.
-function subtaskSelection(ui: SubtaskUi, selectedId: string | null, parentId: string): string | null {
-  if (!selectedId) return null
-  return (ui.subtasksOf(parentId) ?? []).some(s => s.id === selectedId) ? selectedId : null
-}
-
 // Property grouping for the All view: sections in property-name order,
 // portfolio-wide ("No property") last.
 function groupByPropertySections<T extends Task & { properties?: { name: string } | null }>(
@@ -277,12 +235,37 @@ function TasksInner() {
     }
   }, [searchParams])
 
+  // Deep link: /tasks?task=<id> opens that task's full editor over the
+  // list — the palette, capex rows, and renewal chase links land ON the
+  // task instead of at the top of the list. Consumed once per param
+  // value (the ref), so closing the modal doesn't bounce it back open.
+  const consumedTaskParam = useRef<string | null>(null)
+  useEffect(() => {
+    const id = searchParams.get('task')
+    if (!id || loading || consumedTaskParam.current === id) return
+    consumedTaskParam.current = id
+    const t = tasks.find(x => x.id === id)
+    if (t) {
+      setEditTask(t)
+      setShowForm(true)
+      setSelectedId(id)
+    } else {
+      toast('That task no longer exists — it may have been deleted', { tone: 'error' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, loading, tasks])
+
   // Collapsed sections (All tasks view) — keyed per grouping so a
   // collapse in one group-by doesn't leak into another.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['status:done']))
 
   // Keyboard-selected row (j/k navigation)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Multi-select for the batch bar (checkbox / shift-click / `x`).
+  // lastCheckedRef anchors shift-range extension in DOM visual order.
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+  const lastCheckedRef = useRef<string | null>(null)
 
   // Expanded subtask drill-downs — per-session, not persisted
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
@@ -480,11 +463,14 @@ function TasksInner() {
     // Completing a parent takes its open subtasks with it — one action,
     // one toast, one undo (children resolved from the latest state).
     // onRevert cancels the exit animation (failed write / Undo) so the
-    // row reappears instantly.
-    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
-      openSubtasks: openSubtasksOf(tasksRef.current, task.id),
-      onRevert: () => cancelExit(task.id),
-    }),
+    // row reappears instantly. The returned undo closure is only used
+    // by the batch path — single completions undo via their own toast.
+    async (task: TaskWithRelations): Promise<void> => {
+      await toggleDoneOptimistic(supabase, store, task, {
+        openSubtasks: openSubtasksOf(tasksRef.current, task.id),
+        onRevert: () => cancelExit(task.id),
+      })
+    },
     [supabase, store, cancelExit]
   )
 
@@ -524,6 +510,53 @@ function TasksInner() {
     })
   }, [])
 
+  // Toggle a row's membership in the batch set. Shift extends from the
+  // last toggled row in DOM visual order — the same order j/k walks.
+  const toggleCheck = useCallback((id: string, shift: boolean) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev)
+      if (shift && lastCheckedRef.current && lastCheckedRef.current !== id) {
+        const ids = Array.from(document.querySelectorAll<HTMLElement>('[data-task-id]'))
+          .map(el => el.dataset.taskId as string)
+        const a = ids.indexOf(lastCheckedRef.current)
+        const b = ids.indexOf(id)
+        if (a !== -1 && b !== -1) {
+          for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(ids[i])
+          lastCheckedRef.current = id
+          return next
+        }
+      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      lastCheckedRef.current = id
+      return next
+    })
+  }, [])
+
+  const clearChecked = useCallback(() => {
+    setCheckedIds(new Set())
+    lastCheckedRef.current = null
+  }, [])
+
+  // The checked set only ever grows from visible rows, but rows can
+  // leave (complete, delete, filter change) — prune quietly so the bar's
+  // count never includes ghosts.
+  useEffect(() => {
+    setCheckedIds(prev => {
+      const live = new Set(tasks.map(t => t.id))
+      const next = new Set(Array.from(prev).filter(id => live.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [tasks])
+
+  const checkedTasks = useMemo(
+    () => tasks.filter(t => checkedIds.has(t.id)), [tasks, checkedIds])
+
+  const postponeTask = useCallback((task: TaskWithRelations, days: number) => {
+    postponeTaskOptimistic(supabase, store, task,
+      postponeDate(task.due_date, days, todayISO()))
+  }, [supabase, store])
+
   const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: completeTask,
@@ -535,7 +568,8 @@ function TasksInner() {
     exitPhaseOf: phaseOf,
     onToggleExpand: toggleExpand,
     onAddSubtask: (parent, title) => addSubtaskOptimistic(supabase, store, parent, title, userId),
-  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId])
+    onToggleCheck: toggleCheck,
+  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId, toggleCheck])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -550,6 +584,8 @@ function TasksInner() {
       const t = taskById(id)
       if (t) patchTaskOptimistic(supabase, store, t, { priority })
     },
+    onPostpone: id => { const t = taskById(id); if (t) postponeTask(t, 1) },
+    onToggleSelect: id => toggleCheck(id, false),
     onExpand: toggleExpand,
   })
 
@@ -799,10 +835,10 @@ function TasksInner() {
         ) : view === 'agenda' ? (
           <AgendaView tasks={renderTasks} userId={userId} handlers={handlers}
             selectedId={selectedId} properties={properties} onQuickAdd={store.insert}
-            subtaskUi={subtaskUi} />
+            subtaskUi={subtaskUi} checkedIds={checkedIds} />
         ) : view === 'review' ? (
           <ReviewView tasks={renderTasks} userId={userId} handlers={handlers} selectedId={selectedId}
-            subtaskUi={subtaskUi} />
+            subtaskUi={subtaskUi} checkedIds={checkedIds} />
         ) : (
           <div className="pb-8">
             {sections.map(section => {
@@ -850,6 +886,7 @@ function TasksInner() {
                       {sectionTasks.map(task => (
                         <TaskRow key={task.id} task={task} handlers={handlers}
                           selected={selectedId === task.id}
+                          checked={checkedIds.has(task.id)}
                           exitPhase={handlers.exitPhaseOf(task.id)}
                           subtasks={subtaskUi.subtasksOf(task.id)}
                           expanded={subtaskUi.expandedIds.has(task.id)}
@@ -886,8 +923,8 @@ function TasksInner() {
         <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
         {([
           ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
-          ['e', 'edit'], ['1–4', 'priority'], ['l/h', 'subtasks'], ['⌫', 'delete'],
-          ['n', 'quick add'],
+          ['p', 'postpone'], ['x', 'select'], ['e', 'edit'], ['1–4', 'priority'],
+          ['l/h', 'subtasks'], ['⌫', 'delete'], ['n', 'quick add'],
         ] as const).map(([key, label]) => (
           <span key={key} className="flex items-center gap-1 whitespace-nowrap">
             <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
@@ -908,220 +945,35 @@ function TasksInner() {
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
       )}
+
+      {/* Batch bar — RTM's multi-select move. Every action runs the same
+          optimistic paths as the row controls; complete replays each
+          task's full single-task path (recurrence, findings, undo). */}
+      <BatchBar
+        count={checkedTasks.length}
+        onComplete={() => {
+          const targets = checkedTasks
+          clearChecked()
+          void batchCompleteOptimistic(supabase, store, targets, {
+            openSubtasksOf: id => openSubtasksOf(tasksRef.current, id),
+            onRevert: cancelExit,
+          })
+          for (const t of targets) if (t.status !== 'done') beginExit(t)
+        }}
+        onDue={date => { void batchPatchOptimistic(supabase, store, checkedTasks, { due_date: date }, date ? `Due ${formatDateShort(date)}` : 'Due date cleared') }}
+        onSnooze={date => { void batchPatchOptimistic(supabase, store, checkedTasks, { snoozed_until: date }, `Snoozed until ${formatDateShort(date)}`) }}
+        onPriority={priority => { void batchPatchOptimistic(supabase, store, checkedTasks, { priority }, `Priority ${priority}`) }}
+        onClear={clearChecked}
+      />
     </div>
   )
 }
-
-// ── Task Row ─────────────────────────────────────────────────
-// Memoized: handlers/store are referentially stable, so a row only
-// re-renders when its own task object (or selection) changes.
-
-const TaskRow = memo(function TaskRow({
-  task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
-  subtaskSelectedId = null, exitPhase = null,
-}: {
-  task: TaskWithRelations
-  handlers: RowHandlers
-  selected?: boolean      // keyboard-selected (j/k)
-  meta?: React.ReactNode  // extra info rendered on the second line (review views)
-  swipeable?: boolean     // touch: swipe right = complete, swipe left = snooze
-  subtasks?: TaskWithRelations[]  // children of this row (parents only)
-  expanded?: boolean              // drill-down open (page-level session state)
-  subtaskSelectedId?: string | null  // keyboard selection inside the drill-down
-  exitPhase?: ExitPhase | null    // presentation-only completion exit (useExitingRows)
-}) {
-  const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
-  const [snoozeOpen, setSnoozeOpen] = useState(false)
-  const isDone = task.status === 'done'
-  // RTM completion feel, presentation-only: every completion surface on
-  // this row (circle, swipe, status dropdown, keyboard 'c' via
-  // data-complete-toggle) calls onDone, which fires the mutation
-  // IMMEDIATELY and starts the exit animation; while it plays, this row
-  // is the pre-completion snapshot (exitPhase non-null: check popped,
-  // pointer-events off, collapsing). Un-completing skips the animation.
-  const leaving = exitPhase != null
-  const taskContacts = task.contacts ?? []
-  const pc = task.properties?.name ? propertyColor(task.properties.name) : '#64748b'
-  const isRock = (task.tags ?? []).includes('rock')
-  // Same semantics as the agenda's isUnblocked: only a blocker that
-  // still exists locally and isn't done counts (no chip on dangling ids).
-  const blocker = task.blocked_by_task_id ? handlers.getTask(task.blocked_by_task_id) : undefined
-  const isBlocked = blocker != null && blocker.status !== 'done'
-
-  // Fire-and-forget: the optimistic store already applied the change,
-  // so the inline-edit primitives never sit in a saving state.
-  function patch(fields: Partial<Task>) {
-    onPatch(task, fields)
-  }
-
-  function toggleRock() {
-    const tags = isRock
-      ? (task.tags ?? []).filter(t => t !== 'rock')
-      : [...(task.tags ?? []), 'rock']
-    patch({ tags })
-  }
-
-  const row = (
-    <div
-      data-task-id={task.id}
-      onClick={() => onSelect(task.id)}
-      className={cn(
-        'flex items-center px-6 py-0 min-h-[30px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
-        isDone && 'opacity-60',
-        selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
-      )}>
-      {/* Priority pip — click to change priority */}
-      <PriorityPip priority={task.priority} isDone={isDone}
-        onSave={priority => patch({ priority })} />
-
-      {/* Checkbox */}
-      <CompleteCircle isDone={isDone || leaving} onToggle={() => onDone(task)} />
-
-      {/* Title — inline editable. Property/CapEx/blocked chips and meta
-          sit inline to its right (title truncates first) so a row stays
-          a single ~30px line. Below md the property chip collapses to
-          its 2-letter abbreviation to leave the title room. */}
-      <div className="flex-1 min-w-0 py-1 flex items-center gap-2 overflow-hidden">
-        <div className={cn('flex items-center min-w-0 flex-shrink text-sm text-slate-900', isDone && 'line-through text-slate-400')}>
-          <InlineText
-            value={task.title}
-            onSave={v => patch({ title: v })}
-            displayClassName="font-medium"
-          />
-          <TaskBadges task={task} />
-          {subtasks != null && subtasks.length > 0 && (
-            <SubtaskChip
-              subtasks={subtasks}
-              expanded={expanded}
-              onToggle={() => handlers.onToggleExpand(task.id)}
-            />
-          )}
-        </div>
-        {task.properties?.name && (
-          <>
-            <span className="hidden md:inline-block flex-shrink-0 max-w-[13ch] truncate text-xs font-medium px-1.5 py-0.5 rounded"
-              style={{ background: `${pc}18`, color: pc }}>
-              {task.properties.name}
-            </span>
-            <span className="md:hidden flex-shrink-0 text-[10px] font-semibold px-1 py-0.5 rounded"
-              style={{ background: `${pc}18`, color: pc }}
-              title={task.properties.name}>
-              {propertyAbbr(task.properties.name)}
-            </span>
-          </>
-        )}
-        {task.capex_projects?.title && (
-          <span className="flex-shrink min-w-0 max-w-[11rem] text-xs text-orange-600 inline-flex items-center gap-1">
-            <LinkIcon size={9} className="flex-shrink-0" />
-            <span className="truncate">{task.capex_projects.title}</span>
-          </span>
-        )}
-        {isBlocked && (
-          <span className="flex-shrink-0 text-xs text-amber-600 whitespace-nowrap">⛓ blocked</span>
-        )}
-        {meta && <span className="min-w-0 truncate">{meta}</span>}
-      </div>
-
-      {/* Rock toggle — 'rock' tag on/off */}
-      <button
-        onClick={toggleRock}
-        title={isRock ? 'Remove from rocks' : 'Mark as a rock'}
-        className={cn('mr-1 p-1 rounded flex-shrink-0 transition-all',
-          isRock
-            ? 'text-amber-500 hover:text-amber-600'
-            : 'text-slate-200 hover:text-amber-400 opacity-0 group-hover:opacity-100')}>
-        <Mountain size={13} />
-      </button>
-
-      {/* Status — inline dropdown. Completing routes through onDone so
-          it picks up the undo toast + recurrence handling. */}
-      <div className="w-28 hidden md:flex justify-center">
-        <InlineSelect
-          value={task.status}
-          options={STATUS_OPTIONS}
-          onSave={v => {
-            if (v === 'done') onDone(task)
-            else patch({ status: v as Task['status'], completed_at: null })
-          }}
-        />
-      </div>
-
-      {/* People avatars — tap for call/text/email actions */}
-      <div className="w-24 hidden lg:flex justify-center items-center gap-1">
-        {taskContacts.slice(0, 3).map((c: Contact) => (
-          <ContactActionMenu key={c.id} contact={c} align="right">
-            <span
-              className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0"
-              style={{ background: c.color_hex ?? '#64748b' }}>
-              {c.initials ?? c.full_name.slice(0, 2).toUpperCase()}
-            </span>
-          </ContactActionMenu>
-        ))}
-        {taskContacts.length > 3 && (
-          <span className="text-xs text-slate-400">+{taskContacts.length - 3}</span>
-        )}
-        <button onClick={() => onEdit(task)}
-          className="w-6 h-6 rounded-full border border-dashed border-slate-300 flex items-center justify-center text-slate-300 hover:border-blue-400 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0">
-          <Plus size={10} />
-        </button>
-      </div>
-
-      {/* Due date — inline date picker (data-due-edit lets the `d`
-          shortcut open it via the same click path) */}
-      <DueDateCell dueDate={task.due_date} isDone={isDone}
-        onSave={v => patch({ due_date: v })} />
-
-      {/* Snooze presets — no modal needed. Always visible on mobile,
-          hover-revealed on desktop; the `s` shortcut clicks this same
-          trigger. */}
-      <div data-snooze-trigger className="w-6 flex justify-center">
-        <SnoozeMenu
-          open={snoozeOpen}
-          onOpenChange={setSnoozeOpen}
-          onSnooze={date => onSnooze(task, date)}
-          buttonClassName="md:opacity-0 md:group-hover:opacity-100"
-        />
-      </div>
-
-      {/* Delete — instant, with an Undo toast */}
-      <DeleteX onDelete={() => onDelete(task)} />
-    </div>
-  )
-
-  const body = swipeable ? (
-    <SwipeRow
-      onSwipeRight={() => onDone(task)}
-      onSwipeLeft={() => setSnoozeOpen(true)}>
-      {row}
-    </SwipeRow>
-  ) : row
-
-  // The collapse wraps the row AND its expanded drill-down: completing
-  // a parent takes the whole block out in one motion.
-  return (
-    <CollapseOnComplete phase={exitPhase}>
-      {body}
-      {subtasks != null && subtasks.length > 0 && expanded && (
-        <SubtaskList
-          subtasks={subtasks}
-          selectedId={subtaskSelectedId}
-          onSelect={onSelect}
-          exitPhaseOf={handlers.exitPhaseOf}
-          onToggleDone={onDone}
-          onPatch={onPatch}
-          onDelete={onDelete}
-          onAdd={title => handlers.onAddSubtask(task, title)}
-        />
-      )}
-    </CollapseOnComplete>
-  )
-})
 
 // ── Agenda View ──────────────────────────────────────────────
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi, checkedIds }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
@@ -1129,6 +981,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   properties: Property[]
   onQuickAdd: (task: Task) => void
   subtaskUi: SubtaskUi
+  checkedIds: Set<string>
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
@@ -1190,7 +1043,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             <span className="text-xs text-indigo-400">to process</span>
           </button>
           {inboxOpen && myInbox.map(t => (
-            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
               exitPhase={handlers.exitPhaseOf(t.id)}
               subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
               subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
@@ -1215,7 +1068,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
               </span>
             </div>
             {g.tasks.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
                 exitPhase={handlers.exitPhaseOf(t.id)}
                 subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
                 subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
@@ -1272,16 +1125,18 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
+function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
   subtaskUi: SubtaskUi
+  checkedIds: Set<string>
 }) {
   const rowProps = (t: TaskWithRelations) =>
     ({
       task: t, handlers, selected: selectedId === t.id,
+      checked: checkedIds.has(t.id),
       exitPhase: handlers.exitPhaseOf(t.id),
       subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
       subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),
@@ -1444,443 +1299,6 @@ function ReviewSection({ title, count, hint, children }: {
 
 function SectionEmpty({ label }: { label: string }) {
   return <div className="px-6 py-4 text-sm text-slate-400 border-b border-slate-200/70">{label}</div>
-}
-
-// ── Task Form Modal ──────────────────────────────────────────
-
-function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onComplete, onClose, onSave }: {
-  task: TaskWithRelations | null
-  properties: Property[]
-  contacts: Contact[]
-  capexProjects: CapexProject[]
-  allTasks: TaskWithRelations[]
-  // Shared completion path (recurrence + completed_at + undo toast) —
-  // saving an existing task with status flipped to done routes here.
-  onComplete: (task: TaskWithRelations) => void | Promise<void>
-  onClose: () => void
-  onSave: () => void
-}) {
-  const supabase = createClient()
-
-  type FormState = {
-    title: string; description: string; property_id: string
-    capex_project_id: string; status: string; priority: string
-    due_date: string; snoozed_until: string; blocked_by_task_id: string
-    parent_task_id: string
-    tags: string; recur_freq: string; recur_interval: string
-    recur_unit: string; recur_end_type: string; recur_end_date: string
-    recur_end_count: string
-  }
-
-  const [form, setForm] = useState<FormState>({
-    title:              task?.title ?? '',
-    description:        task?.description ?? '',
-    property_id:        task?.property_id ?? '',
-    capex_project_id:   task?.capex_project_id ?? '',
-    status:             task?.status ?? 'inbox',
-    priority:           task?.priority ?? 'medium',
-    due_date:           task?.due_date ?? '',
-    snoozed_until:      task?.snoozed_until ?? '',
-    blocked_by_task_id: task?.blocked_by_task_id ?? '',
-    parent_task_id:     task?.parent_task_id ?? '',
-    tags:               task?.tags?.join(', ') ?? '',
-    recur_freq:         task?.recur_freq ?? '',
-    recur_interval:     task?.recur_interval?.toString() ?? '2',
-    recur_unit:         task?.recur_unit ?? 'weeks',
-    recur_end_type:     task?.recur_end_type ?? 'never',
-    recur_end_date:     task?.recur_end_date ?? '',
-    recur_end_count:    task?.recur_end_count?.toString() ?? '12',
-  })
-
-  const [selectedContacts, setSelectedContacts] = useState<string[]>(
-    (task?.contacts ?? []).map((c: Contact) => c.id)
-  )
-  const [saving, setSaving] = useState(false)
-  // Inline error under the Parent-task select (server-truth guard)
-  const [parentError, setParentError] = useState<string | null>(null)
-
-  function toggleContact(id: string) {
-    setSelectedContacts(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    )
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setParentError(null)
-    setSaving(true)
-
-    const payload = {
-      title:              form.title,
-      description:        form.description || null,
-      property_id:        form.property_id || null,
-      capex_project_id:   form.capex_project_id || null,
-      status:             form.status as Task['status'],
-      priority:           form.priority as Task['priority'],
-      due_date:           form.due_date || null,
-      snoozed_until:      form.snoozed_until || null,
-      blocked_by_task_id: form.blocked_by_task_id || null,
-      // A task with children can never gain a parent (hasChildren hides
-      // the control), and auto-generated deadline tasks stay top-level
-      // (isAutoSource hides it too) — both preserve whatever the task
-      // already had.
-      parent_task_id:     hasChildren || isAutoSource
-        ? (task?.parent_task_id ?? null)
-        : (form.parent_task_id || null),
-      tags:               form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-      recur_freq:         (form.recur_freq || null) as Task['recur_freq'],
-      recur_interval:     form.recur_freq === 'custom' ? parseInt(form.recur_interval) || null : null,
-      recur_unit:         form.recur_freq === 'custom' ? (form.recur_unit as Task['recur_unit']) : null,
-      recur_end_type:     form.recur_freq ? (form.recur_end_type as Task['recur_end_type']) : null,
-      recur_end_date:     form.recur_end_type === 'on' ? form.recur_end_date || null : null,
-      recur_end_count:    form.recur_end_type === 'after' ? parseInt(form.recur_end_count) || null : null,
-    }
-
-    // Server-truth guard when attaching a NEW parent: the local list
-    // can be stale (another tab may have subtasked or deleted the
-    // pick), and writing anyway would create a depth-2 chain or a
-    // dangling edge. One select against the real row before saving.
-    const newParentId = payload.parent_task_id
-    if (newParentId != null && newParentId !== (task?.parent_task_id ?? null)) {
-      const { data: parentRow } = await supabase.from('tasks')
-        .select('id, parent_task_id').eq('id', newParentId).maybeSingle()
-      if (!parentRow) {
-        setParentError('That parent task no longer exists — pick another, or None.')
-        setSaving(false)
-        return
-      }
-      if (parentRow.parent_task_id != null) {
-        setParentError('That task has become a subtask itself — only one level of nesting is allowed.')
-        setSaving(false)
-        return
-      }
-    }
-
-    // Status transitions across done are not plain field writes:
-    // completing routes through the shared completion path (recurrence,
-    // completed_at, undo toast) and un-completing clears the stamp.
-    const goingDone = task != null && task.status !== 'done' && payload.status === 'done'
-    const leavingDone = task != null && task.status === 'done' && payload.status !== 'done'
-
-    let taskId: string | undefined
-    if (task) {
-      const update = {
-        ...payload,
-        // Keep the previous status here — onComplete below performs
-        // the actual completion so it behaves like every other path.
-        ...(goingDone ? { status: task.status } : {}),
-        ...(leavingDone ? { completed_at: null } : {}),
-      }
-      await supabase.from('tasks').update(update).eq('id', task.id)
-      taskId = task.id
-      if (goingDone) await onComplete({ ...task, ...update })
-    } else {
-      // Stamp ownership on create so the personal inbox / agenda can
-      // tell whose task this is.
-      const { data: auth } = await supabase.auth.getUser()
-      const { data: inserted } = await supabase.from('tasks')
-        .insert({
-          ...payload,
-          completed_at: payload.status === 'done' ? new Date().toISOString() : null,
-          created_by: auth.user?.id ?? null,
-        })
-        .select('id')
-        .single()
-      taskId = inserted?.id
-    }
-
-    // Sync contacts
-    if (taskId) {
-      await supabase.from('task_contacts').delete().eq('task_id', taskId)
-      if (selectedContacts.length > 0) {
-        await supabase.from('task_contacts').insert(
-          selectedContacts.map(cid => ({ task_id: taskId as string, contact_id: cid }))
-        )
-      }
-    }
-
-    setSaving(false)
-    onSave()
-  }
-
-  const filteredCapex = form.property_id
-    ? capexProjects.filter(c => c.property_id === form.property_id)
-    : capexProjects
-
-  const blockableTasks = allTasks.filter(t =>
-    t.id !== task?.id && t.status !== 'done'
-  )
-
-  // Single-level nesting is an app rule: a task that already has
-  // children can't itself become a subtask (that would make 2 levels),
-  // and a subtask can't be picked as a parent. Tasks WITH children are
-  // valid parents. Auto-generated deadline tasks (renewals,
-  // expirations) must stay top-level so the Review obligations horizon
-  // and the auto-task dedupe keep seeing them.
-  const hasChildren = task != null && allTasks.some(t => t.parent_task_id === task.id)
-  const isAutoSource = task?.auto_source != null
-  // Done tasks aren't offered as new parents, but the CURRENT parent
-  // always appears (labelled "(completed)" when done) so the select
-  // shows the true state instead of silently blanking; "None" still
-  // clears it.
-  const parentOptions = allTasks.filter(t =>
-    t.id !== task?.id && t.parent_task_id == null &&
-    (t.status !== 'done' || t.id === task?.parent_task_id)
-  )
-
-  return (
-    <Modal title={task ? 'Edit Task' : 'New Task'} onClose={onClose} maxWidth="xl">
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
-          {/* Title */}
-          <div>
-            <label className="label">Title *</label>
-            <input required value={form.title}
-              onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-              className="input" placeholder="What needs to be done?" />
-          </div>
-
-          <div>
-            <label className="label">Description</label>
-            <textarea value={form.description}
-              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-              className="input min-h-[60px] resize-none" placeholder="Optional details…" />
-          </div>
-
-          {/* Row: property + status */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Property</label>
-              <select value={form.property_id}
-                onChange={e => setForm(f => ({ ...f, property_id: e.target.value, capex_project_id: '' }))}
-                className="input">
-                <option value="">Portfolio-wide</option>
-                {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Status</label>
-              <select value={form.status}
-                onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
-                className="input">
-                <option value="inbox">Inbox</option>
-                <option value="next_action">Next action</option>
-                <option value="waiting">Waiting</option>
-                <option value="blocked">Blocked</option>
-                <option value="done">Done</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Row: priority + due date */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Priority</label>
-              <select value={form.priority}
-                onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}
-                className="input">
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">Due Date</label>
-              <input type="date" value={form.due_date}
-                onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))}
-                className="input" />
-            </div>
-          </div>
-
-          {/* CapEx project */}
-          <div>
-            <label className="label">CapEx Project</label>
-            <select value={form.capex_project_id}
-              onChange={e => setForm(f => ({ ...f, capex_project_id: e.target.value }))}
-              className="input">
-              <option value="">None</option>
-              {filteredCapex.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-            </select>
-          </div>
-
-          {/* Parent task — makes this a subtask (single level) */}
-          {hasChildren || isAutoSource ? (
-            <div>
-              <label className="label">Parent task</label>
-              <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                {isAutoSource
-                  ? 'Auto-generated deadline tasks stay top-level so they always surface in the obligations horizon.'
-                  : 'This task has subtasks, so it can’t become a subtask itself (one level only).'}
-              </p>
-            </div>
-          ) : (
-            <div>
-              <label className="label">Parent task</label>
-              <select value={form.parent_task_id}
-                onChange={e => setForm(f => ({ ...f, parent_task_id: e.target.value }))}
-                className="input">
-                <option value="">None — top-level task</option>
-                {parentOptions.map(t => (
-                  <option key={t.id} value={t.id}>
-                    {t.title.slice(0, 60)}{t.status === 'done' ? ' (completed)' : ''}
-                  </option>
-                ))}
-              </select>
-              {parentError && (
-                <p className="text-xs text-red-600 mt-1">{parentError}</p>
-              )}
-              <p className="text-xs text-slate-400 mt-1">Subtasks live inside their parent’s drill-down, not in the main lists</p>
-            </div>
-          )}
-
-          {/* Blocked by */}
-          {form.status === 'blocked' && (
-            <div>
-              <label className="label">Blocked by task</label>
-              <select value={form.blocked_by_task_id}
-                onChange={e => setForm(f => ({ ...f, blocked_by_task_id: e.target.value }))}
-                className="input">
-                <option value="">Select blocking task…</option>
-                {blockableTasks.map(t => (
-                  <option key={t.id} value={t.id}>{t.title.slice(0, 60)}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* People — tap a chip for its action menu: add/remove on this
-              task plus one-tap call/text/email */}
-          <div>
-            <label className="label">People</label>
-            <div className="flex flex-wrap gap-2">
-              {contacts.map(c => {
-                const isSelected = selectedContacts.includes(c.id)
-                return (
-                  <ContactActionMenu
-                    key={c.id}
-                    contact={c}
-                    action={{
-                      label: isSelected ? 'Remove from this task' : 'Add to this task',
-                      onClick: () => toggleContact(c.id),
-                    }}>
-                    <span
-                      className={cn('flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all',
-                        isSelected
-                          ? 'text-white border-transparent'
-                          : 'text-slate-600 border-slate-200 hover:border-slate-300'
-                      )}
-                      style={isSelected
-                        ? { background: c.color_hex ?? '#64748b' }
-                        : {}}>
-                      <span className="w-4 h-4 rounded-full flex items-center justify-center text-white flex-shrink-0"
-                        style={{ background: c.color_hex ?? '#64748b', fontSize: 9 }}>
-                        {(c.initials ?? c.full_name.slice(0, 2)).toUpperCase()}
-                      </span>
-                      {c.full_name.split(' ')[0]}
-                    </span>
-                  </ContactActionMenu>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* Snooze */}
-          <div>
-            <label className="label">Snooze until</label>
-            <input type="date" value={form.snoozed_until}
-              onChange={e => setForm(f => ({ ...f, snoozed_until: e.target.value }))}
-              className="input" />
-            <p className="text-xs text-slate-400 mt-1">Hides from the agenda until this date, then wakes up automatically</p>
-          </div>
-
-          {/* Tags */}
-          <div>
-            <label className="label">Tags</label>
-            <input value={form.tags}
-              onChange={e => setForm(f => ({ ...f, tags: e.target.value }))}
-              className="input" placeholder="vendor, rock, follow-up (comma separated)" />
-          </div>
-
-          {/* Recurrence */}
-          <div className="border border-slate-200 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-slate-700">Recurring task</label>
-              <select value={form.recur_freq}
-                onChange={e => setForm(f => ({ ...f, recur_freq: e.target.value }))}
-                className="input-sm w-auto">
-                <option value="">One-time</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="biweekly">Every 2 weeks</option>
-                <option value="monthly">Monthly</option>
-                <option value="quarterly">Quarterly</option>
-                <option value="annually">Annually</option>
-                <option value="custom">Custom…</option>
-              </select>
-            </div>
-
-            {form.recur_freq === 'custom' && (
-              <div className="flex items-center gap-2 text-sm text-slate-600">
-                <span>Every</span>
-                <input type="number" min="1" max="365" value={form.recur_interval}
-                  onChange={e => setForm(f => ({ ...f, recur_interval: e.target.value }))}
-                  className="input-sm w-16" />
-                <select value={form.recur_unit}
-                  onChange={e => setForm(f => ({ ...f, recur_unit: e.target.value }))}
-                  className="input-sm w-auto">
-                  <option value="days">days</option>
-                  <option value="weeks">weeks</option>
-                  <option value="months">months</option>
-                </select>
-              </div>
-            )}
-
-            {form.recur_freq && (
-              <div className="space-y-2">
-                <label className="text-xs font-medium text-slate-500">Ends</label>
-                <div className="flex flex-col gap-2">
-                  {[
-                    { val: 'never', label: 'Never' },
-                    { val: 'on',    label: 'On date' },
-                    { val: 'after', label: 'After N times' },
-                  ].map(opt => (
-                    <label key={opt.val} className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-                      <input type="radio" name="recur_end_type" value={opt.val}
-                        checked={form.recur_end_type === opt.val}
-                        onChange={() => setForm(f => ({ ...f, recur_end_type: opt.val }))} />
-                      {opt.label}
-                      {opt.val === 'on' && form.recur_end_type === 'on' && (
-                        <input type="date" value={form.recur_end_date}
-                          onChange={e => setForm(f => ({ ...f, recur_end_date: e.target.value }))}
-                          className="input-sm ml-2" />
-                      )}
-                      {opt.val === 'after' && form.recur_end_type === 'after' && (
-                        <input type="number" min="1" value={form.recur_end_count}
-                          onChange={e => setForm(f => ({ ...f, recur_end_count: e.target.value }))}
-                          className="input-sm w-16 ml-2" />
-                      )}
-                    </label>
-                  ))}
-                </div>
-                {form.recur_freq && (
-                  <p className="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-2 flex items-center gap-1.5">
-                    <RefreshCw size={11} />
-                    Next instance created automatically when this task is marked done
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-            <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? 'Saving…' : task ? 'Save changes' : 'Create task'}
-            </button>
-          </div>
-        </form>
-    </Modal>
-  )
 }
 
 function CheckSquareIcon() {

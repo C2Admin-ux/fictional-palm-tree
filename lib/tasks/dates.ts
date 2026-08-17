@@ -33,6 +33,33 @@ export const SNOOZE_PRESETS: { key: string; label: string; compute: (today: stri
   { key: 'next_month', label: 'Next month',      compute: nextMonthISO },
 ]
 
+// ── Due-date presets (RTM-style quick set) ───────────────────
+// Absolute targets for the due menu. Distinct from SNOOZE_PRESETS on
+// purpose: snooze hides a task until a date without moving the deadline;
+// these SET the deadline.
+
+export const DUE_PRESETS: { key: string; label: string; compute: (today: string) => string }[] = [
+  { key: 'today',      label: 'Today',           compute: t => t },
+  { key: 'tomorrow',   label: 'Tomorrow',        compute: tomorrowISO },
+  { key: 'next_week',  label: 'Next week (Mon)', compute: nextMondayISO },
+  { key: 'next_month', label: 'Next month',      compute: nextMonthISO },
+]
+
+// Relative bumps for the same menu, and the `p` key. Postpone means
+// "push it out of my face": from the due date when it's still ahead,
+// from TODAY when the task is overdue or dateless — +1 day on a task
+// five days overdue lands tomorrow, not four-days-overdue (which would
+// change nothing the eye can see and make `p` feel broken).
+export function postponeDate(due: string | null, days: number, today: string): string {
+  const base = due != null && due > today ? due : today
+  return addDaysToDate(base, days)
+}
+
+export const POSTPONE_STEPS: { key: string; label: string; days: number }[] = [
+  { key: 'day',  label: '+1 day',  days: 1 },
+  { key: 'week', label: '+1 week', days: 7 },
+]
+
 // ── Due-date grouping (tasks page agenda + property Tasks tab) ──
 // One bucketing implementation: Overdue / Today / This week /
 // Later (unbounded — nothing dated far out ever disappears) / No date.

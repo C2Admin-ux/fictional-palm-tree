@@ -5,9 +5,10 @@
 // separate — only the byte-identical fragments live here).
 
 import type { Task } from '@/lib/supabase/types'
-import { cn, isOverdue, isSoon, PRIORITY_DOT, RECUR_LABELS } from '@/lib/utils'
+import { cn, formatDateShort, isOverdue, isSoon, PRIORITY_DOT, RECUR_LABELS } from '@/lib/utils'
 import { CALL_AUTO_SOURCE, AUTO_MANAGED_SOURCES } from '@/lib/tasks/vocab'
-import { InlineSelect, InlineDate, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { InlineSelect, PRIORITY_OPTIONS } from '@/components/ui/inline-edit'
+import { DueMenu } from '@/components/tasks/due-menu'
 import { CHECK_MS } from '@/components/tasks/complete-collapse'
 import { RefreshCw, Clock, AlertTriangle, Phone, X } from 'lucide-react'
 
@@ -95,7 +96,8 @@ export function DeleteX({ onDelete }: { onDelete: () => void }) {
   )
 }
 
-// Due date — inline date picker with overdue/soon tinting.
+// Due date — the RTM-style quick menu (presets, +1d/+1w, pick, clear)
+// with overdue/soon tinting on the trigger text.
 // (data-due-edit lets the `d` shortcut open it via the same click path.)
 export function DueDateCell({ dueDate, isDone, onSave }: {
   dueDate: string | null
@@ -105,14 +107,17 @@ export function DueDateCell({ dueDate, isDone, onSave }: {
   const overdue = !isDone && isOverdue(dueDate)
   const soon = !isDone && !overdue && isSoon(dueDate, 7)
   return (
-    <div data-due-edit className={cn('w-20 text-right flex-shrink-0',
-      overdue ? 'text-red-600' : soon ? 'text-amber-600' : 'text-slate-400')}>
-      {overdue && <AlertTriangle size={10} className="inline mr-1" />}
-      <InlineDate
+    <div data-due-edit className="w-20 text-right flex-shrink-0">
+      <DueMenu
         value={dueDate}
-        onSave={onSave}
-        className={cn('text-xs', overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}
-        emptyLabel="no date"
+        onSelect={onSave}
+        trigger={
+          <span className={cn('text-xs whitespace-nowrap',
+            overdue ? 'text-red-600 font-semibold' : soon ? 'text-amber-600 font-medium' : 'text-slate-400')}>
+            {overdue && <AlertTriangle size={10} className="inline mr-1" />}
+            {dueDate ? formatDateShort(dueDate) : 'no date'}
+          </span>
+        }
       />
     </div>
   )
