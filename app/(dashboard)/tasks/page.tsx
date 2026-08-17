@@ -11,12 +11,12 @@ import {
   STATUS_STYLES, STATUS_LABELS,
   propertyColor, propertyAbbr,
 } from '@/lib/utils'
-import { groupByDue } from '@/lib/tasks/dates'
+import { groupByDue, postponeDate } from '@/lib/tasks/dates'
 import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
   Plus, X, ChevronDown, RefreshCw, Mountain, Moon,
-  Link as LinkIcon, Keyboard,
+  Link as LinkIcon, Keyboard, Check as CheckIcon,
 } from 'lucide-react'
 import { TaskQuickAdd } from '@/components/tasks/task-quick-add'
 import { SnoozeMenu } from '@/components/tasks/snooze-menu'
@@ -33,8 +33,10 @@ import { Modal } from '@/components/ui/modal'
 import { EmptyState } from '@/components/ui/empty-state'
 import {
   type TaskStore, patchTaskOptimistic, toggleDoneOptimistic, deleteTaskOptimistic,
-  snoozeTaskOptimistic, addSubtaskOptimistic,
+  snoozeTaskOptimistic, addSubtaskOptimistic, postponeTaskOptimistic,
+  batchPatchOptimistic, batchCompleteOptimistic,
 } from '@/lib/tasks/mutations'
+import { BatchBar } from '@/components/tasks/batch-bar'
 import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
 import { toast } from '@/components/ui/toast'
 
@@ -178,6 +180,9 @@ type RowHandlers = {
   // Subtask drill-down: toggle a parent's expanded state / inline add
   onToggleExpand: (id: string) => void
   onAddSubtask: (parent: TaskWithRelations, title: string) => void | Promise<void>
+  // Multi-select for the batch bar: toggle a row (shift extends the
+  // range from the last toggled row, RTM-style).
+  onToggleCheck?: (id: string, shift: boolean) => void
 }
 
 // Per-view subtask plumbing: children lookup + which parents are open.
@@ -283,6 +288,11 @@ function TasksInner() {
 
   // Keyboard-selected row (j/k navigation)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Multi-select for the batch bar (checkbox / shift-click / `x`).
+  // lastCheckedRef anchors shift-range extension in DOM visual order.
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+  const lastCheckedRef = useRef<string | null>(null)
 
   // Expanded subtask drill-downs — per-session, not persisted
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
@@ -480,11 +490,14 @@ function TasksInner() {
     // Completing a parent takes its open subtasks with it — one action,
     // one toast, one undo (children resolved from the latest state).
     // onRevert cancels the exit animation (failed write / Undo) so the
-    // row reappears instantly.
-    (task: TaskWithRelations) => toggleDoneOptimistic(supabase, store, task, {
-      openSubtasks: openSubtasksOf(tasksRef.current, task.id),
-      onRevert: () => cancelExit(task.id),
-    }),
+    // row reappears instantly. The returned undo closure is only used
+    // by the batch path — single completions undo via their own toast.
+    async (task: TaskWithRelations): Promise<void> => {
+      await toggleDoneOptimistic(supabase, store, task, {
+        openSubtasks: openSubtasksOf(tasksRef.current, task.id),
+        onRevert: () => cancelExit(task.id),
+      })
+    },
     [supabase, store, cancelExit]
   )
 
@@ -524,6 +537,53 @@ function TasksInner() {
     })
   }, [])
 
+  // Toggle a row's membership in the batch set. Shift extends from the
+  // last toggled row in DOM visual order — the same order j/k walks.
+  const toggleCheck = useCallback((id: string, shift: boolean) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev)
+      if (shift && lastCheckedRef.current && lastCheckedRef.current !== id) {
+        const ids = Array.from(document.querySelectorAll<HTMLElement>('[data-task-id]'))
+          .map(el => el.dataset.taskId as string)
+        const a = ids.indexOf(lastCheckedRef.current)
+        const b = ids.indexOf(id)
+        if (a !== -1 && b !== -1) {
+          for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(ids[i])
+          lastCheckedRef.current = id
+          return next
+        }
+      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      lastCheckedRef.current = id
+      return next
+    })
+  }, [])
+
+  const clearChecked = useCallback(() => {
+    setCheckedIds(new Set())
+    lastCheckedRef.current = null
+  }, [])
+
+  // The checked set only ever grows from visible rows, but rows can
+  // leave (complete, delete, filter change) — prune quietly so the bar's
+  // count never includes ghosts.
+  useEffect(() => {
+    setCheckedIds(prev => {
+      const live = new Set(tasks.map(t => t.id))
+      const next = new Set(Array.from(prev).filter(id => live.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [tasks])
+
+  const checkedTasks = useMemo(
+    () => tasks.filter(t => checkedIds.has(t.id)), [tasks, checkedIds])
+
+  const postponeTask = useCallback((task: TaskWithRelations, days: number) => {
+    postponeTaskOptimistic(supabase, store, task,
+      postponeDate(task.due_date, days, todayISO()))
+  }, [supabase, store])
+
   const handlers: RowHandlers = useMemo(() => ({
     onEdit: t => { setEditTask(t); setShowForm(true) },
     onDone: completeTask,
@@ -535,7 +595,8 @@ function TasksInner() {
     exitPhaseOf: phaseOf,
     onToggleExpand: toggleExpand,
     onAddSubtask: (parent, title) => addSubtaskOptimistic(supabase, store, parent, title, userId),
-  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId])
+    onToggleCheck: toggleCheck,
+  }), [supabase, store, completeTask, deleteTask, taskById, phaseOf, toggleExpand, userId, toggleCheck])
 
   // Keyboard layer (desktop): j/k selection, c/s/d/e/1-4/Delete on the
   // selected row, n/q to the quick-add bar. Same mutation paths as the
@@ -550,6 +611,8 @@ function TasksInner() {
       const t = taskById(id)
       if (t) patchTaskOptimistic(supabase, store, t, { priority })
     },
+    onPostpone: id => { const t = taskById(id); if (t) postponeTask(t, 1) },
+    onToggleSelect: id => toggleCheck(id, false),
     onExpand: toggleExpand,
   })
 
@@ -799,10 +862,10 @@ function TasksInner() {
         ) : view === 'agenda' ? (
           <AgendaView tasks={renderTasks} userId={userId} handlers={handlers}
             selectedId={selectedId} properties={properties} onQuickAdd={store.insert}
-            subtaskUi={subtaskUi} />
+            subtaskUi={subtaskUi} checkedIds={checkedIds} />
         ) : view === 'review' ? (
           <ReviewView tasks={renderTasks} userId={userId} handlers={handlers} selectedId={selectedId}
-            subtaskUi={subtaskUi} />
+            subtaskUi={subtaskUi} checkedIds={checkedIds} />
         ) : (
           <div className="pb-8">
             {sections.map(section => {
@@ -850,6 +913,7 @@ function TasksInner() {
                       {sectionTasks.map(task => (
                         <TaskRow key={task.id} task={task} handlers={handlers}
                           selected={selectedId === task.id}
+                          checked={checkedIds.has(task.id)}
                           exitPhase={handlers.exitPhaseOf(task.id)}
                           subtasks={subtaskUi.subtasksOf(task.id)}
                           expanded={subtaskUi.expandedIds.has(task.id)}
@@ -886,8 +950,8 @@ function TasksInner() {
         <Keyboard size={12} className="text-slate-300 flex-shrink-0" />
         {([
           ['j/k', 'navigate'], ['c', 'complete'], ['s', 'snooze'], ['d', 'due'],
-          ['e', 'edit'], ['1–4', 'priority'], ['l/h', 'subtasks'], ['⌫', 'delete'],
-          ['n', 'quick add'],
+          ['p', 'postpone'], ['x', 'select'], ['e', 'edit'], ['1–4', 'priority'],
+          ['l/h', 'subtasks'], ['⌫', 'delete'], ['n', 'quick add'],
         ] as const).map(([key, label]) => (
           <span key={key} className="flex items-center gap-1 whitespace-nowrap">
             <kbd className="px-1 py-px bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-500">{key}</kbd>
@@ -908,6 +972,26 @@ function TasksInner() {
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}
         />
       )}
+
+      {/* Batch bar — RTM's multi-select move. Every action runs the same
+          optimistic paths as the row controls; complete replays each
+          task's full single-task path (recurrence, findings, undo). */}
+      <BatchBar
+        count={checkedTasks.length}
+        onComplete={() => {
+          const targets = checkedTasks
+          clearChecked()
+          void batchCompleteOptimistic(supabase, store, targets, {
+            openSubtasksOf: id => openSubtasksOf(tasksRef.current, id),
+            onRevert: cancelExit,
+          })
+          for (const t of targets) if (t.status !== 'done') beginExit(t)
+        }}
+        onDue={date => { void batchPatchOptimistic(supabase, store, checkedTasks, { due_date: date }, date ? `Due ${formatDateShort(date)}` : 'Due date cleared') }}
+        onSnooze={date => { void batchPatchOptimistic(supabase, store, checkedTasks, { snoozed_until: date }, `Snoozed until ${formatDateShort(date)}`) }}
+        onPriority={priority => { void batchPatchOptimistic(supabase, store, checkedTasks, { priority }, `Priority ${priority}`) }}
+        onClear={clearChecked}
+      />
     </div>
   )
 }
@@ -918,7 +1002,7 @@ function TasksInner() {
 
 const TaskRow = memo(function TaskRow({
   task, handlers, selected = false, meta, swipeable = false, subtasks, expanded = false,
-  subtaskSelectedId = null, exitPhase = null,
+  subtaskSelectedId = null, exitPhase = null, checked = false,
 }: {
   task: TaskWithRelations
   handlers: RowHandlers
@@ -929,8 +1013,9 @@ const TaskRow = memo(function TaskRow({
   expanded?: boolean              // drill-down open (page-level session state)
   subtaskSelectedId?: string | null  // keyboard selection inside the drill-down
   exitPhase?: ExitPhase | null    // presentation-only completion exit (useExitingRows)
+  checked?: boolean       // in the multi-select set (batch bar)
 }) {
-  const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect } = handlers
+  const { onEdit, onDone, onDelete, onPatch, onSnooze, onSelect, onToggleCheck } = handlers
   const [snoozeOpen, setSnoozeOpen] = useState(false)
   const isDone = task.status === 'done'
   // RTM completion feel, presentation-only: every completion surface on
@@ -968,8 +1053,27 @@ const TaskRow = memo(function TaskRow({
       className={cn(
         'flex items-center px-6 py-0 min-h-[30px] border-b border-slate-200/70 group hover:bg-slate-50 transition-colors',
         isDone && 'opacity-60',
-        selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200'
+        selected && 'bg-blue-50/70 hover:bg-blue-50/70 ring-1 ring-inset ring-blue-200',
+        checked && 'bg-indigo-50/60 hover:bg-indigo-50/60'
       )}>
+      {/* Multi-select checkbox — hover-revealed, pinned visible once
+          checked. shift-click extends the range (page logic); `x` on
+          the keyboard toggles the selected row. */}
+      {onToggleCheck && (
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onToggleCheck(task.id, e.shiftKey) }}
+          title="Select for batch actions (x)"
+          className={cn(
+            'w-4 h-4 mr-2 rounded border flex items-center justify-center flex-shrink-0 transition-all',
+            checked
+              ? 'bg-indigo-500 border-indigo-500 text-white'
+              : 'border-slate-300 text-transparent opacity-0 group-hover:opacity-100'
+          )}>
+          <CheckIcon size={11} strokeWidth={3} />
+        </button>
+      )}
+
       {/* Priority pip — click to change priority */}
       <PriorityPip priority={task.priority} isDone={isDone}
         onSave={priority => patch({ priority })} />
@@ -1121,7 +1225,7 @@ const TaskRow = memo(function TaskRow({
 // Daily driver: quick-add into my inbox, my inbox to process, then
 // everything actionable now grouped by due date, snoozed at the end.
 
-function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi }: {
+function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAdd, subtaskUi, checkedIds }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
@@ -1129,6 +1233,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
   properties: Property[]
   onQuickAdd: (task: Task) => void
   subtaskUi: SubtaskUi
+  checkedIds: Set<string>
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
@@ -1190,7 +1295,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             <span className="text-xs text-indigo-400">to process</span>
           </button>
           {inboxOpen && myInbox.map(t => (
-            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
               exitPhase={handlers.exitPhaseOf(t.id)}
               subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
               subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
@@ -1215,7 +1320,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
               </span>
             </div>
             {g.tasks.map(t => (
-              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable
+              <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
                 exitPhase={handlers.exitPhaseOf(t.id)}
                 subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
                 subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)} />
@@ -1272,16 +1377,18 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 // Guided weekly sweep: inbox to zero, waiting-on, obligations
 // horizon, rocks, and what shipped in the last 7 days.
 
-function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi }: {
+function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds }: {
   tasks: TaskWithRelations[]
   userId: string | null
   handlers: RowHandlers
   selectedId: string | null
   subtaskUi: SubtaskUi
+  checkedIds: Set<string>
 }) {
   const rowProps = (t: TaskWithRelations) =>
     ({
       task: t, handlers, selected: selectedId === t.id,
+      checked: checkedIds.has(t.id),
       exitPhase: handlers.exitPhaseOf(t.id),
       subtasks: subtaskUi.subtasksOf(t.id), expanded: subtaskUi.expandedIds.has(t.id),
       subtaskSelectedId: subtaskSelection(subtaskUi, selectedId, t.id),

@@ -66,6 +66,16 @@ export function snoozeTaskOptimistic(
   toast(`Snoozed until ${formatDateShort(date)}`)
 }
 
+// Postpone — push the due date (the `p` key and the due menu's +1d/+1w).
+// Distinct from snooze: this MOVES the deadline; snooze only hides the
+// task. The date math lives in lib/tasks/dates postponeDate.
+export function postponeTaskOptimistic(
+  supabase: Client, store: TaskStore, task: Task, date: string
+) {
+  void patchTaskOptimistic(supabase, store, task, { due_date: date })
+  toast(`Due ${formatDateShort(date)}`)
+}
+
 // Complete / un-complete toggle with an Undo toast on completion.
 // Completing a recurring task also spawns its next instance (guarded
 // against double-creation inside createNextOccurrence) BEFORE the
@@ -83,8 +93,8 @@ export function snoozeTaskOptimistic(
 // reappears instantly (see useExitingRows in complete-collapse.tsx).
 export async function toggleDoneOptimistic(
   supabase: Client, store: TaskStore, task: Task,
-  opts?: { openSubtasks?: Task[]; onRevert?: () => void }
-) {
+  opts?: { openSubtasks?: Task[]; onRevert?: () => void; quiet?: boolean }
+): Promise<{ undo: () => void } | void> {
   const wasDone = task.status === 'done'
   const now = new Date().toISOString()
   const fields: Partial<Task> = wasDone
@@ -237,10 +247,10 @@ export async function toggleDoneOptimistic(
   const message = spawned
     ? `${base} — next occurrence ${formatDateShort(spawned.due_date)}`
     : base
-  toast(message, {
-    action: {
-      label: 'Undo',
-      onClick: () => {
+  // The full walk-back as a closure: the single-task toast's Undo calls
+  // it directly; batch completion collects one per task and runs them
+  // all from a single summary toast (see batchCompleteOptimistic).
+  const undo = () => {
         opts?.onRevert?.()
         const revert: Partial<Task> = { status: task.status, completed_at: task.completed_at }
         store.update(task.id, revert)
@@ -295,8 +305,61 @@ export async function toggleDoneOptimistic(
             toast(`Could not undo: ${failed.join(', ')}`, { tone: 'error' })
           }
         })()
-      },
-    },
+  }
+
+  if (!opts?.quiet) {
+    toast(message, { action: { label: 'Undo', onClick: undo } })
+  }
+  return { undo }
+}
+
+// ── Batch operations (the multi-select bar) ──────────────────
+
+// One .in() write for a shared field change (due date, snooze,
+// priority). Optimistic with full rollback; one toast, no undo —
+// matching patchTaskOptimistic's semantics for the same edits.
+export async function batchPatchOptimistic(
+  supabase: Client, store: TaskStore, tasks: Task[], fields: Partial<Task>, label: string
+) {
+  if (tasks.length === 0) return
+  const stamped: Partial<Task> = { ...fields, updated_at: new Date().toISOString() }
+  for (const t of tasks) store.update(t.id, stamped)
+  const { error } = await supabase.from('tasks').update(stamped).in('id', tasks.map(t => t.id))
+  if (error) {
+    for (const t of tasks) {
+      const rollback: Partial<Task> = {}
+      for (const key of Object.keys(stamped) as (keyof Task)[]) {
+        ;(rollback as Record<string, unknown>)[key] = t[key]
+      }
+      store.update(t.id, rollback)
+    }
+    toast('Could not save — changes reverted', { tone: 'error' })
+    return
+  }
+  toast(`${label} — ${tasks.length} task${tasks.length === 1 ? '' : 's'}`)
+}
+
+// Batch complete: each task runs the FULL single-task completion
+// (subtask sweep, recurrence spawn, finding resolve — one code path,
+// zero drift), quieted; one summary toast whose Undo replays every
+// task's own captured walk-back.
+export async function batchCompleteOptimistic(
+  supabase: Client, store: TaskStore, tasks: Task[],
+  opts: { openSubtasksOf: (id: string) => Task[]; onRevert?: (id: string) => void }
+) {
+  const open = tasks.filter(t => t.status !== 'done')
+  if (open.length === 0) return
+  const undos: (() => void)[] = []
+  for (const task of open) {
+    const result = await toggleDoneOptimistic(supabase, store, task, {
+      openSubtasks: opts.openSubtasksOf(task.id),
+      onRevert: () => opts.onRevert?.(task.id),
+      quiet: true,
+    })
+    if (result) undos.push(result.undo)
+  }
+  toast(`Completed ${undos.length} task${undos.length === 1 ? '' : 's'}`, {
+    action: { label: 'Undo', onClick: () => { for (const undo of undos) undo() } },
   })
 }
 
