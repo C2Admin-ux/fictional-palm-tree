@@ -31,11 +31,17 @@ export const OBLIGATION_SOURCES: string[] = [
 // paused, and its cron must not start touching these.
 export const RENEWAL_SOURCE = 'renewal_offer'
 
+// Monthly renewal-rate entry tasks (same sync route): one per property
+// when a month closes without a rate entered, keyed on the cycle row id.
+export const RENEWAL_RATE_SOURCE = 'renewal_rate'
+
 // Every machine-managed source, for READERS (the Auto badge on task
-// rows). Broader than OBLIGATION_SOURCES on purpose: a renewal chase is
+// rows). Broader than OBLIGATION_SOURCES on purpose: a renewal task is
 // auto-managed and must look it — the sync rewrites title/priority on
 // drift, so an unbadged task would silently eat manual edits.
-export const AUTO_MANAGED_SOURCES: string[] = [...OBLIGATION_SOURCES, RENEWAL_SOURCE]
+export const AUTO_MANAGED_SOURCES: string[] = [
+  ...OBLIGATION_SOURCES, RENEWAL_SOURCE, RENEWAL_RATE_SOURCE,
+]
 
 // Tasks created from a confirmed call item (calls/[id] Confirm & process).
 export const CALL_AUTO_SOURCE = 'call'

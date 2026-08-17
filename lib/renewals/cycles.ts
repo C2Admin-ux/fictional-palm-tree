@@ -172,13 +172,12 @@ export function approvalTurnaroundDays(cycle: StageableCycle): number | null {
 }
 
 // ── Chase tasks ──────────────────────────────────────────────
-// One task per PROPERTY with overdue offer months, keyed (auto_source,
-// source_record_id = property id). Per-property, not per-cycle-month:
-// a chase is one email to one PM, and it covers every month they owe —
-// per-month tasks would have flooded the agenda with ~21 items on the
-// tracker's first-ever run (four generated months were already past due
-// on launch day), which is exactly the backlog dump the obligations
-// engine was paused to avoid.
+// One task per PROPERTY per overdue MONTH, keyed (auto_source,
+// source_record_id = cycle id) — Nick's explicit shape (2026-08-16,
+// matching the P&L and rate-entry cadence): each month closes
+// independently as its offers land, even when one email to the PM
+// covers several. The month is named in the title so the task list
+// reads as a checklist of exactly what's owed.
 
 export type ChaseCycle = {
   expiration_month: string
@@ -187,30 +186,22 @@ export type ChaseCycle = {
   source_url: string | null
 }
 
-// Oldest overdue month first — its due date keys the chase generation
-// (see the sync's done-twin check) and drives escalation.
-export function sortChaseCycles<T extends ChaseCycle>(cycles: T[]): T[] {
-  return [...cycles].sort((a, b) => a.due_date.localeCompare(b.due_date))
-}
-
-export function chaseTitle(cycles: ChaseCycle[], propertyName: string): string {
-  const sorted = sortChaseCycles(cycles)
-  const months = sorted.map(c => shortMonth(c.expiration_month)).join(', ')
+export function chaseTitle(cycle: ChaseCycle, propertyName: string): string {
+  const month = monthLabel(cycle.expiration_month)
   // A sheet property has no email to chase — the ask is to go look.
-  return sorted[0]?.source === 'sheet'
-    ? `Review ${propertyName} renewal sheet — ${months}`
-    : `Chase ${propertyName} renewal offers — ${months}`
+  return cycle.source === 'sheet'
+    ? `Review ${propertyName} renewal sheet — ${month}`
+    : `Chase ${propertyName} ${month} renewal offers`
 }
 
-export function chaseDescription(cycles: ChaseCycle[], today: string): string {
-  const sorted = sortChaseCycles(cycles)
-  const lines = sorted.map(c =>
-    `${monthLabel(c.expiration_month)} — due ${c.due_date} (${daysBetween(c.due_date, today)}d late)`)
-  const sheet = sorted.find(c => c.source === 'sheet')
-  if (sheet) {
+export function chaseDescription(cycle: ChaseCycle, today: string): string {
+  const lines = [
+    `Renewal offers for ${monthLabel(cycle.expiration_month)} were due ${cycle.due_date} (${daysBetween(cycle.due_date, today)}d late).`,
+  ]
+  if (cycle.source === 'sheet') {
     lines.push('This property tracks renewals in a shared spreadsheet rather than by email.')
     // The link is the whole point of the task for a sheet property.
-    if (sheet.source_url) lines.push(sheet.source_url)
+    if (cycle.source_url) lines.push(cycle.source_url)
   }
   lines.push('Auto-managed: resolves itself when the offers are marked received on the Renewals board.')
   return lines.join('\n')
@@ -222,4 +213,52 @@ export function chasePriority(daysOverdue: number): Task['priority'] {
   if (daysOverdue >= 30) return 'urgent'
   if (daysOverdue >= 14) return 'high'
   return 'medium'
+}
+
+// ── Renewal-rate entry tasks ─────────────────────────────────
+// A month's rate is knowable once the month CLOSES (move-outs final).
+// The sync creates one entry task per property for the most recent
+// closed month with no rate — per property by Nick's explicit choice
+// (2026-08-14): different PMs report at different times, and each task
+// closes as that property's number lands.
+
+// The most recent fully-closed month: last month.
+export function lastClosedMonth(today: string): string {
+  return addMonths(monthStart(today), -1)
+}
+
+// Due one week into the following month — enough time for the PM's
+// month-end report to land, early enough that the number is entered
+// while the month is still fresh.
+export function rateTaskDueDate(expirationMonth: string): string {
+  return `${addMonths(expirationMonth, 1).slice(0, 8)}07`
+}
+
+export function rateTaskTitle(expirationMonth: string, propertyName: string): string {
+  return `Enter ${monthLabel(expirationMonth)} renewal rate — ${propertyName}`
+}
+
+export function rateTaskDescription(expirationMonth: string, propertyName: string): string {
+  return [
+    `Percent of leases expiring in ${monthLabel(expirationMonth)} at ${propertyName} that renewed.`,
+    'Enter it in the rate table on the Renewals board.',
+    'Auto-managed: resolves itself when the rate is entered.',
+  ].join('\n')
+}
+
+// Simple mean of the entered rates — with hand-entered percentages there
+// is no denominator to weight by. Unit-weighting arrives with rent-roll
+// ingestion (phase 2), which carries the counts.
+export function portfolioRate(rates: (number | null)[]): number | null {
+  const entered = rates.filter((r): r is number => r != null)
+  if (entered.length === 0) return null
+  return Math.round(entered.reduce((s, r) => s + r, 0) / entered.length)
+}
+
+// The matrix's columns: the N most recent CLOSED months, oldest first —
+// the current month is still accumulating outcomes and would read as a
+// misleadingly low rate.
+export function closedMonths(today: string, count: number): string[] {
+  const last = lastClosedMonth(today)
+  return Array.from({ length: count }, (_, i) => addMonths(last, -(count - 1 - i)))
 }

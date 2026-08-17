@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { isCronRequest, getSessionUser, unauthorized } from '@/lib/api-auth'
-import { RENEWAL_SOURCE } from '@/lib/tasks/vocab'
+import { RENEWAL_SOURCE, RENEWAL_RATE_SOURCE } from '@/lib/tasks/vocab'
 import { autoResolveTask, wasAutoResolved } from '@/lib/tasks/auto-resolve'
 import {
   cadenceOf, horizonMonths, cycleDueDate, chaseTitle, chaseDescription,
-  chasePriority, sortChaseCycles, isOverdue, daysLate, addMonths, monthStart,
+  chasePriority, isOverdue, daysLate, addMonths, monthStart,
+  lastClosedMonth, rateTaskTitle, rateTaskDescription, rateTaskDueDate,
   FETCH_FLOOR_MONTHS,
 } from '@/lib/renewals/cycles'
 import { daysBetween } from '@/lib/utils'
@@ -22,11 +23,15 @@ import type { Database, RenewalCycle, RenewalSetting, Task } from '@/lib/supabas
 //      yet: due_date is re-stamped on legless cycles that aren't yet due
 //      (history is never rewritten once a cycle is late or has activity),
 //      and source/source_url follow the settings until offers arrive.
-//   3. CHASE    — one task per PROPERTY with overdue offer months
-//      (source_record_id = property id), covering all months owed —
-//      a chase is one email to one PM. Marking offers received
-//      auto-resolves it; a hand-closed task for the same chase
-//      generation is never resurrected.
+//   3. CHASE    — one task per PROPERTY per overdue MONTH
+//      (source_record_id = cycle id) — Nick's explicit shape, matching
+//      the P&L and rate-entry cadence. Marking that month's offers
+//      received auto-resolves its task; a hand-closed task for the
+//      same month is never resurrected.
+//   4. RATES    — one entry task per property when a month closes with
+//      no renewal_rate entered (source_record_id = cycle id; per
+//      property by Nick's explicit choice — PMs report at different
+//      times). Entering the rate auto-resolves it.
 //
 // The app tracks email traffic and never sends any of it: a chase task
 // tells Nick to go write the email himself.
@@ -45,6 +50,8 @@ type Counts = {
   chasesUpdated: number
   chasesResolved: number
   chasesUnchanged: number
+  rateTasksCreated: number
+  rateTasksResolved: number
 }
 
 // Cron for the nightly run; a logged-in session for the board's "Sync
@@ -81,6 +88,7 @@ export async function GET(req: NextRequest) {
     const counts: Counts = {
       cyclesCreated: 0, cyclesRefreshed: 0, chasesCreated: 0,
       chasesUpdated: 0, chasesResolved: 0, chasesUnchanged: 0,
+      rateTasksCreated: 0, rateTasksResolved: 0,
     }
 
     // ── Load (bounded — see FETCH_FLOOR_MONTHS) ────────────────
@@ -88,7 +96,8 @@ export async function GET(req: NextRequest) {
       supabase.from('properties').select('id, name, status').eq('status', 'active'),
       supabase.from('renewal_settings').select('*'),
       supabase.from('renewal_cycles').select('*').gte('expiration_month', floor),
-      supabase.from('tasks').select('*').eq('auto_source', RENEWAL_SOURCE)
+      supabase.from('tasks').select('*')
+        .in('auto_source', [RENEWAL_SOURCE, RENEWAL_RATE_SOURCE])
         .gte('due_date', addMonths(floor, -13)),
     ])
     if (propertiesRes.error) throw propertiesRes.error
@@ -102,8 +111,11 @@ export async function GET(req: NextRequest) {
     const cycles = (cyclesRes.data ?? []) as RenewalCycle[]
 
     // ── 1. Generate missing cycles ─────────────────────────────
+    // The last CLOSED month rides along with the forward horizon: the
+    // rate-entry pass (step 4) needs its rows to exist, and history
+    // seeded by hand doesn't cover every property.
     const existing = new Set(cycles.map(c => `${c.property_id}|${c.expiration_month}`))
-    const months = horizonMonths(today)
+    const months = [lastClosedMonth(today), ...horizonMonths(today)]
     const toInsert: {
       property_id: string; expiration_month: string; due_date: string
       source: 'email' | 'sheet'; source_url: string | null
@@ -171,60 +183,82 @@ export async function GET(req: NextRequest) {
       counts.cyclesRefreshed++
     }
 
-    // ── 3. Reconcile chase tasks (one per property) ────────────
+    // ── 3. Reconcile chase tasks (one per property per month) ──
     const propertyName = new Map(properties.map(p => [p.id, p.name]))
-    const pendingByProperty = new Map<string, Task>()
-    const doneByProperty = new Map<string, Task[]>()
+    const pendingChaseByCycle = new Map<string, Task>()
+    const doneChaseByCycle = new Map<string, Task[]>()
+    const pendingRateByCycle = new Map<string, Task>()
+    const doneRateByCycle = new Map<string, Task[]>()
+    const supersededChases: Task[] = []
+    const cycleIds = new Set(cycles.map(c => c.id))
     for (const t of tasksRes.data ?? []) {
       if (!t.source_record_id) continue
+      // Chase tasks from before 2026-08-16 were keyed one-per-property
+      // (source_record_id = property id, covering several months).
+      // They can't reconcile against the per-month shape — retire them
+      // below rather than leaving them to double what this pass creates.
+      if (t.auto_source === RENEWAL_SOURCE && !cycleIds.has(t.source_record_id)) {
+        if (t.status !== 'done') supersededChases.push(t)
+        continue
+      }
+      const [pending, done] = t.auto_source === RENEWAL_RATE_SOURCE
+        ? [pendingRateByCycle, doneRateByCycle]
+        : [pendingChaseByCycle, doneChaseByCycle]
       if (t.status === 'done') {
-        const list = doneByProperty.get(t.source_record_id) ?? []
+        const list = done.get(t.source_record_id) ?? []
         list.push(t)
-        doneByProperty.set(t.source_record_id, list)
+        done.set(t.source_record_id, list)
       } else {
-        pendingByProperty.set(t.source_record_id, t)
+        pending.set(t.source_record_id, t)
       }
     }
 
-    // Group this run's overdue cycles by property.
-    const overdueByProperty = new Map<string, RenewalCycle[]>()
+    for (const stale of supersededChases) {
+      const { error } = await autoResolveTask(supabase, stale, 'superseded by per-month chase tasks')
+      if (error) throw error
+      counts.chasesResolved++
+    }
+
+    // This run's chaseable cycles. Only months that can still be acted
+    // on: an expiration month already behind us can't get offers anymore
+    // — it shows as a gap in the history and the rate table, not in a
+    // chase email. (Closed months are loaded/generated for the rate pass
+    // below, so this line is load-bearing.)
+    const currentMonth = monthStart(today)
+    const chaseable = new Map<string, RenewalCycle>()
     for (const cycle of cycles) {
+      if (cycle.expiration_month < currentMonth) continue
       const cadence = cadenceOf(settingsByProperty.get(cycle.property_id))
       if (!cadence.enabled || !propertyName.has(cycle.property_id)) continue
       if (!isOverdue(cycle, today)) continue
-      const list = overdueByProperty.get(cycle.property_id) ?? []
-      list.push(cycle)
-      overdueByProperty.set(cycle.property_id, list)
+      chaseable.set(cycle.id, cycle)
     }
 
-    // Properties with a pending chase but nothing overdue → resolve.
-    for (const [propertyId, pending] of Array.from(pendingByProperty.entries())) {
-      if (overdueByProperty.has(propertyId)) continue
+    // Pending chases whose month is no longer owed → resolve.
+    for (const [cycleId, pending] of Array.from(pendingChaseByCycle.entries())) {
+      if (chaseable.has(cycleId)) continue
       const { error } = await autoResolveTask(supabase, pending, 'offers received / no longer overdue')
       if (error) throw error
       counts.chasesResolved++
     }
 
-    // Properties owing offers → create or refresh their chase task.
-    for (const [propertyId, overdue] of Array.from(overdueByProperty.entries())) {
-      const name = propertyName.get(propertyId)!
-      const sorted = sortChaseCycles(overdue)
-      const oldest = sorted[0]
-      const title = chaseTitle(sorted, name)
-      const description = chaseDescription(sorted, today)
-      const priority = chasePriority(daysLate(oldest, today))
+    // Months owed → create or refresh each month's chase task.
+    for (const cycle of Array.from(chaseable.values())) {
+      const name = propertyName.get(cycle.property_id)!
+      const title = chaseTitle(cycle, name)
+      const description = chaseDescription(cycle, today)
+      const priority = chasePriority(daysLate(cycle, today))
 
-      const pending = pendingByProperty.get(propertyId)
+      const pending = pendingChaseByCycle.get(cycle.id)
       if (pending) {
-        // Refresh as months accumulate and escalation climbs. due_date
-        // pins the OLDEST overdue month so the agenda shows true age.
+        // Refresh escalation (and the lateness line in the description).
         const changed = pending.priority !== priority
           || pending.title !== title
-          || pending.due_date !== oldest.due_date
+          || pending.due_date !== cycle.due_date
           || pending.description !== description
         if (changed) {
           const { error } = await supabase.from('tasks')
-            .update({ priority, title, due_date: oldest.due_date, description })
+            .update({ priority, title, due_date: cycle.due_date, description })
             .eq('id', pending.id)
           if (error) throw error
           counts.chasesUpdated++
@@ -234,16 +268,13 @@ export async function GET(req: NextRequest) {
         continue
       }
 
-      // A done task for the same chase generation (same oldest-overdue
-      // due date) that a PERSON closed stays closed — "I dealt with this
-      // by phone" must not resurrect every night. Two things do reopen a
-      // chase: a machine-closed task (its close reason — offers received
-      // — was undone, so the close no longer describes the world), and a
-      // NEW oldest month going overdue (a genuinely new chase). A
-      // hand-DELETED task recreates by design: the row is gone, and the
-      // task explains itself as auto-managed.
-      const handClosedTwin = (doneByProperty.get(propertyId) ?? []).some(t =>
-        t.due_date === oldest.due_date && !wasAutoResolved(t))
+      // A done task for this month that a PERSON closed stays closed —
+      // "I dealt with this by phone" must not resurrect every night. A
+      // machine-closed one may recreate: its close reason (offers
+      // received) was undone, so the close no longer describes the
+      // world. A hand-DELETED task recreates by design: the row is
+      // gone, and the task explains itself as auto-managed.
+      const handClosedTwin = (doneChaseByCycle.get(cycle.id) ?? []).some(t => !wasAutoResolved(t))
       if (handClosedTwin) {
         counts.chasesUnchanged++
         continue
@@ -252,23 +283,66 @@ export async function GET(req: NextRequest) {
       const { data: created, error } = await supabase.from('tasks').insert({
         title,
         description,
-        property_id: propertyId,
-        due_date: oldest.due_date,
+        property_id: cycle.property_id,
+        due_date: cycle.due_date,
         priority,
         status: 'next_action',
         auto_source: RENEWAL_SOURCE,
-        source_record_id: propertyId,
+        source_record_id: cycle.id,
       }).select('id').single()
       if (error) throw error
       counts.chasesCreated++
 
-      // Back-link every overdue cycle so the board can jump to the task.
-      // Best-effort: the task exists either way.
+      // Back-link so the board can jump to the task. Best-effort: the
+      // task exists either way.
       if (created?.id) {
         await supabase.from('renewal_cycles')
           .update({ chase_task_id: created.id })
-          .in('id', sorted.map(c => c.id))
+          .eq('id', cycle.id)
       }
+    }
+
+    // ── 4. Renewal-rate entry tasks ────────────────────────────
+    // Resolve first: a pending entry task closes the moment its cycle
+    // has a rate — regardless of which month it was for.
+    const cycleById = new Map(cycles.map(c => [c.id, c]))
+    for (const [cycleId, pending] of Array.from(pendingRateByCycle.entries())) {
+      const cycle = cycleById.get(cycleId)
+      if (!cycle || cycle.renewal_rate == null) continue
+      const { error } = await autoResolveTask(supabase, pending, 'rate entered')
+      if (error) throw error
+      counts.rateTasksResolved++
+    }
+
+    // Create for the most recent closed month only — never for the
+    // seeded back-history (a first run must not dump a year of entry
+    // tasks; older gaps are visible as blanks in the rate table).
+    const entryMonth = lastClosedMonth(today)
+    for (const cycle of cycles) {
+      if (cycle.expiration_month !== entryMonth || cycle.renewal_rate != null) continue
+      const cadence = cadenceOf(settingsByProperty.get(cycle.property_id))
+      const name = propertyName.get(cycle.property_id)
+      if (!cadence.enabled || !name) continue
+      if (pendingRateByCycle.has(cycle.id)) continue
+      // A hand-closed entry task means "not entering this one" — final.
+      // A machine-closed one only exists if the rate was entered then
+      // cleared; recreating is correct.
+      const handClosed = (doneRateByCycle.get(cycle.id) ?? []).some(t => !wasAutoResolved(t))
+      if (handClosed) continue
+
+      const due = rateTaskDueDate(cycle.expiration_month)
+      const { error } = await supabase.from('tasks').insert({
+        title: rateTaskTitle(cycle.expiration_month, name),
+        description: rateTaskDescription(cycle.expiration_month, name),
+        property_id: cycle.property_id,
+        due_date: due,
+        priority: 'medium',
+        status: 'next_action',
+        auto_source: RENEWAL_RATE_SOURCE,
+        source_record_id: cycle.id,
+      })
+      if (error) throw error
+      counts.rateTasksCreated++
     }
 
     return NextResponse.json({ success: true, ...counts })
