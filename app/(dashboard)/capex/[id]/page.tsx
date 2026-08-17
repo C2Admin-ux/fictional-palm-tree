@@ -9,6 +9,10 @@ import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
 import { BidsCard } from './bids-card'
 import { PhotosCard } from './photos-card'
+import { CompleteCircle } from '@/components/tasks/row-cells'
+import { DueMenu } from '@/components/tasks/due-menu'
+import { SnoozeMenu } from '@/components/tasks/snooze-menu'
+import { toggleDoneOptimistic, patchTaskOptimistic, type TaskStore } from '@/lib/tasks/mutations'
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
 import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 
@@ -117,6 +121,22 @@ export default function CapexDetailPage() {
     if (!confirm('Delete this line item?')) return
     await supabase.from('capex_line_items').delete().eq('id', lineId)
     fetchAll()
+  }
+
+  // Optimistic task actions over the linked list — the same shared
+  // mutation paths as every other task surface, adapted to this page's
+  // local state. A completed row stays visible (checked) until the next
+  // fetch drops it — removing it eagerly would strand the toast's Undo.
+  const linkedStore: TaskStore = {
+    update: (id, fields) => setLinkedTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
+    insert: () => { /* recurrence spawns land on the tasks page, not here */ },
+    remove: id => setLinkedTasks(prev => prev.filter(t => t.id !== id)),
+  }
+  async function completeLinkedTask(task: Task) {
+    await toggleDoneOptimistic(supabase, linkedStore, task, {})
+  }
+  async function patchLinkedTask(task: Task, fields: Partial<Task>) {
+    await patchTaskOptimistic(supabase, linkedStore, task, fields)
   }
 
   async function deleteProject() {
@@ -319,14 +339,31 @@ export default function CapexDetailPage() {
                 </h2>
                 <Link href={`/tasks?capex=${id}`} className="text-xs text-blue-600 hover:underline">View in Tasks →</Link>
               </div>
+              {/* Interactive since Sprint 16: complete, quick due-date,
+                  snooze, and a deep link to the task's editor — this list
+                  was previously display-only. Mutations refetch: this
+                  page reloads everything on any change anyway. */}
               <div className="space-y-1.5">
                 {linkedTasks.map(task => (
-                  <div key={task.id} className="flex items-center gap-2 py-1">
+                  <div key={task.id} className="flex items-center gap-2 py-1 group">
                     <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                       style={{ background: PRIORITY_DOT[task.priority] ?? '#94a3b8' }} />
-                    <span className="text-sm text-slate-700 flex-1 truncate">{task.title}</span>
+                    <CompleteCircle isDone={task.status === 'done'}
+                      onToggle={() => { void completeLinkedTask(task) }} />
+                    <Link href={`/tasks?task=${task.id}`}
+                      className="text-sm text-slate-700 flex-1 truncate hover:text-blue-600">
+                      {task.title}
+                    </Link>
                     <span className={`badge text-xs ${STATUS_STYLES[task.status]}`}>{STATUS_LABELS[task.status]}</span>
-                    {task.due_date && <span className="text-xs text-slate-400">{formatDate(task.due_date)}</span>}
+                    <DueMenu value={task.due_date}
+                      onSelect={date => { void patchLinkedTask(task, { due_date: date }) }}
+                      trigger={
+                        <span className="text-xs text-slate-400 hover:text-blue-600">
+                          {task.due_date ? formatDate(task.due_date) : 'no date'}
+                        </span>
+                      } />
+                    <SnoozeMenu onSnooze={date => { void patchLinkedTask(task, { snoozed_until: date }) }}
+                      buttonClassName="md:opacity-0 md:group-hover:opacity-100" />
                   </div>
                 ))}
               </div>

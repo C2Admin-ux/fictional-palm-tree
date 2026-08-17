@@ -111,8 +111,10 @@ export function CommandPalette({ properties, userId }: {
         ])
         if (taskError || capexError) return // keep whatever cache exists
         setFetched({
+          // Deep link straight to the task's editor — landing at the top
+          // of the list and hunting for the row defeated the palette.
           tasks: (taskRows ?? []).map(t => ({
-            key: `task:${t.id}`, kind: 'task' as const, label: t.title, href: '/tasks',
+            key: `task:${t.id}`, kind: 'task' as const, label: t.title, href: `/tasks?task=${t.id}`,
           })),
           capex: (capexRows ?? []).map(c => ({
             key: `capex:${c.id}`, kind: 'capex' as const, label: c.title, href: `/capex/${c.id}`,
@@ -168,7 +170,7 @@ export function CommandPalette({ properties, userId }: {
     // Findable on the very next open, even before the refetch lands.
     setFetched(prev => prev && {
       ...prev,
-      tasks: [{ key: `task:${created.id}`, kind: 'task' as const, label: created.title, href: '/tasks' }, ...prev.tasks],
+      tasks: [{ key: `task:${created.id}`, kind: 'task' as const, label: created.title, href: `/tasks?task=${created.id}` }, ...prev.tasks],
     })
     close()
     notifyTaskCreated(router)

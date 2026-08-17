@@ -235,6 +235,26 @@ function TasksInner() {
     }
   }, [searchParams])
 
+  // Deep link: /tasks?task=<id> opens that task's full editor over the
+  // list — the palette, capex rows, and renewal chase links land ON the
+  // task instead of at the top of the list. Consumed once per param
+  // value (the ref), so closing the modal doesn't bounce it back open.
+  const consumedTaskParam = useRef<string | null>(null)
+  useEffect(() => {
+    const id = searchParams.get('task')
+    if (!id || loading || consumedTaskParam.current === id) return
+    consumedTaskParam.current = id
+    const t = tasks.find(x => x.id === id)
+    if (t) {
+      setEditTask(t)
+      setShowForm(true)
+      setSelectedId(id)
+    } else {
+      toast('That task no longer exists — it may have been deleted', { tone: 'error' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, loading, tasks])
+
   // Collapsed sections (All tasks view) — keyed per grouping so a
   // collapse in one group-by doesn't leak into another.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['status:done']))
