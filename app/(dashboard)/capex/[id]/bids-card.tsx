@@ -3,19 +3,26 @@
 // Vendor bids card on the capex detail page — a sibling of the Budget
 // Overview and Line Items cards. Tracks competing quotes from request
 // through decision: add/edit bids, mark received (amount + PDF),
-// decline, compare received bids against the low bid and the project
-// budget, and select a winner (auto-rejecting the rest).
+// decline, keep a dated note log per bid while scope is refined and
+// vendors are interviewed, compare received bids against the low bid
+// and the project budget, and select a winner (auto-rejecting the rest).
+// PDF lifecycle: bid PDFs live in the app only while the decision is
+// open — selecting a winner purges the losing bids' PDFs, and the
+// winner's PDF gets a Remove action for after it's archived to the
+// deal's Google Drive folder. Bid ROWS (vendor, amount, notes) are
+// permanent history either way.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { CapexBid, CapexProject } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate, todayISO } from '@/lib/utils'
+import type { CapexBid, CapexBidNote, CapexProject } from '@/lib/supabase/types'
+import { cn, formatCurrency, formatDate, formatDateShort, todayISO } from '@/lib/utils'
 import { bidGlance } from '@/lib/capex/bids'
 import { BidChip } from '@/components/capex/bid-chip'
 import { BUCKET, signedFileUrl, removeFiles } from '@/lib/storage'
 import { Modal } from '@/components/ui/modal'
 import { toast } from '@/components/ui/toast'
-import { Plus, FileText, Trash2, Pencil } from 'lucide-react'
+import { isSchemaGapError } from '@/lib/supabase/schema-errors'
+import { Plus, FileText, Trash2, Pencil, MessageSquare } from 'lucide-react'
 
 const BID_STATUS_STYLES: Record<CapexBid['status'], string> = {
   requested: 'text-slate-600 bg-slate-50 border-slate-200',
@@ -44,6 +51,15 @@ export function BidsCard({ project, bids, onChanged }: {
   const [form, setForm] = useState<{ bid?: CapexBid; markReceived?: boolean } | null>(null)
   const [selecting, setSelecting] = useState<CapexBid | null>(null)
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({})
+  // Dated note log per bid (capex_bid_notes). The card owns this fetch so
+  // a missing table (migration 0016 not yet run) degrades to a one-line
+  // hint instead of taking the whole bids card down.
+  const [notesByBid, setNotesByBid] = useState<Record<string, CapexBidNote[]>>({})
+  const [notesGap, setNotesGap] = useState(false)
+  const [openLog, setOpenLog] = useState<Record<string, boolean>>({})
+  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({})
+  // Two-step confirm for the winner's Remove PDF (id of the bid armed)
+  const [confirmRemovePdf, setConfirmRemovePdf] = useState<string | null>(null)
   // Bid-target inline edit (null = not editing)
   const [targetDraft, setTargetDraft] = useState<string | null>(null)
   const [targetError, setTargetError] = useState<string | null>(null)
@@ -60,6 +76,71 @@ export function BidsCard({ project, bids, onChanged }: {
     b.amount != null && (b.status === 'received' || b.status === 'selected' || b.status === 'rejected'))
   const lowAmount = comparable.length ? Math.min(...comparable.map(b => b.amount as number)) : null
   const lowId = lowAmount != null ? comparable.find(b => b.amount === lowAmount)?.id : undefined
+
+  // Refetch notes when the bid set changes (joined ids, not the array
+  // identity — the parent recreates `bids` on every fetchAll).
+  const bidIds = bids.map(b => b.id).sort().join(',')
+  useEffect(() => { fetchNotes() }, [bidIds])
+
+  async function fetchNotes() {
+    if (bids.length === 0) { setNotesByBid({}); return }
+    const { data, error } = await supabase.from('capex_bid_notes')
+      .select('*').in('bid_id', bids.map(b => b.id))
+      .order('created_at', { ascending: false })
+    if (error) {
+      if (isSchemaGapError(error)) setNotesGap(true)
+      else toast(`Couldn't load bid notes — ${error.message}`, { tone: 'error' })
+      return
+    }
+    setNotesGap(false)
+    const grouped: Record<string, CapexBidNote[]> = {}
+    for (const n of data ?? []) (grouped[n.bid_id] ??= []).push(n)
+    setNotesByBid(grouped)
+  }
+
+  async function addNote(bid: CapexBid) {
+    const body = (noteDraft[bid.id] ?? '').trim()
+    if (!body) return
+    const { error } = await supabase.from('capex_bid_notes')
+      .insert({ bid_id: bid.id, body })
+    if (error) { toast(`Couldn't add note — ${error.message}`, { tone: 'error' }); return }
+    setNoteDraft(d => ({ ...d, [bid.id]: '' }))
+    fetchNotes()
+  }
+
+  // House delete pattern: act immediately, offer Undo (notes are fully
+  // restorable rows — created_at kept so the log order survives).
+  async function deleteNote(note: CapexBidNote) {
+    const { error } = await supabase.from('capex_bid_notes').delete().eq('id', note.id)
+    if (error) { toast(`Couldn't delete note — ${error.message}`, { tone: 'error' }); return }
+    fetchNotes()
+    toast('Note deleted', {
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const { error: e } = await supabase.from('capex_bid_notes').insert(note)
+          if (e) toast(`Couldn't restore note — ${e.message}`, { tone: 'error' })
+          fetchNotes()
+        },
+      },
+    })
+  }
+
+  // Winner's PDF removal — the last step of the bid lifecycle, after the
+  // owner archives the PDF to the deal's Google Drive folder. Storage
+  // deletion isn't undoable, so this is a two-step confirm (not the
+  // act-then-undo house pattern). Row first, then best-effort storage
+  // (orphaned files are acceptable, dangling file_path pointers are not).
+  async function removeWinnerPdf(bid: CapexBid) {
+    setConfirmRemovePdf(null)
+    if (!bid.file_path) return
+    const { error } = await supabase.from('capex_bids')
+      .update({ file_path: null, file_name: null }).eq('id', bid.id)
+    if (error) { toast(`Couldn't remove PDF — ${error.message}`, { tone: 'error' }); return }
+    void removeFiles(supabase, [bid.file_path])
+    onChanged()
+    toast(`PDF removed from the app — bid record kept`)
+  }
 
   async function saveTarget() {
     const v = targetDraft?.trim() ?? ''
@@ -193,6 +274,13 @@ export function BidsCard({ project, bids, onChanged }: {
         </div>
       </div>
 
+      {notesGap && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+          Bid note logs need migration 0016 (capex_bid_notes) — run it in the Supabase SQL Editor.
+          The rest of bid tracking is unaffected and nothing has been lost.
+        </p>
+      )}
+
       {sorted.length === 0 ? (
         <p className="text-sm text-slate-400 italic">
           No bids yet — add vendors as you request quotes
@@ -254,6 +342,46 @@ export function BidsCard({ project, bids, onChanged }: {
                   </p>
                 )}
 
+                {/* Dated note log — the conversation/decision trail while
+                    scope is refined and the vendor is interviewed. */}
+                {!notesGap && (() => {
+                  const log = notesByBid[b.id] ?? []
+                  const open = !!openLog[b.id]
+                  return (
+                    <div>
+                      <button onClick={() => setOpenLog(o => ({ ...o, [b.id]: !o[b.id] }))}
+                        className={cn('flex items-center gap-1 text-xs transition-colors',
+                          log.length > 0 ? 'text-slate-500 hover:text-slate-700' : 'text-slate-300 hover:text-slate-500')}>
+                        <MessageSquare size={10} />
+                        {log.length > 0 ? `Notes (${log.length})` : 'Add note'}
+                      </button>
+                      {open && (
+                        <div className="mt-1.5 space-y-1.5">
+                          <div className="flex gap-1.5">
+                            <input value={noteDraft[b.id] ?? ''}
+                              onChange={e => setNoteDraft(d => ({ ...d, [b.id]: e.target.value }))}
+                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addNote(b) } }}
+                              placeholder="e.g. Called vendor — will re-quote with full coping replacement…"
+                              className="input-sm flex-1" aria-label={`Add note for ${b.vendor_name}`} />
+                            <button onClick={() => addNote(b)} disabled={!(noteDraft[b.id] ?? '').trim()}
+                              className="btn-secondary text-xs py-1 px-2">Add</button>
+                          </div>
+                          {log.map(n => (
+                            <div key={n.id} className="group/note flex items-start gap-2 text-xs">
+                              <span className="text-slate-400 whitespace-nowrap pt-px">{formatDateShort(n.created_at)}</span>
+                              <span className="text-slate-600 whitespace-pre-line flex-1 min-w-0">{n.body}</span>
+                              <button onClick={() => deleteNote(n)} aria-label="Delete note"
+                                className="p-0.5 text-slate-300 opacity-0 group-hover/note:opacity-100 hover:text-red-400 transition-all">
+                                <Trash2 size={10} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {b.status === 'requested' && (
                     <>
@@ -266,6 +394,25 @@ export function BidsCard({ project, bids, onChanged }: {
                   {b.status === 'received' && (
                     <button onClick={() => setSelecting(b)}
                       className="btn-primary text-xs py-1 px-2.5">Select</button>
+                  )}
+                  {/* Last step of the lifecycle: once the winning PDF is
+                      archived to the deal's Drive folder, remove it from
+                      the app. Two-step confirm — storage deletes have no
+                      undo. Only offered on the winner: losers' PDFs are
+                      purged automatically at selection. */}
+                  {b.status === 'selected' && b.file_path && (
+                    confirmRemovePdf === b.id ? (
+                      <span className="flex items-center gap-1.5 text-xs">
+                        <span className="text-slate-500">Saved to Google Drive?</span>
+                        <button onClick={() => removeWinnerPdf(b)}
+                          className="btn-secondary text-xs py-1 px-2 text-red-600">Remove PDF</button>
+                        <button onClick={() => setConfirmRemovePdf(null)}
+                          className="btn-ghost text-xs py-1 px-2">Cancel</button>
+                      </span>
+                    ) : (
+                      <button onClick={() => setConfirmRemovePdf(b.id)}
+                        className="btn-ghost text-xs py-1 px-2">Remove PDF…</button>
+                    )
                   )}
                   <span className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={() => setForm({ bid: b })} aria-label="Edit bid"
@@ -478,7 +625,7 @@ function SelectBidModal({ project, bid, others, onClose, onDone }: {
 
     // 1. Server truth — the card's props may be stale (another tab/user).
     const { data: current, error: fetchError } = await supabase.from('capex_bids')
-      .select('id, vendor_name, status').eq('project_id', project.id)
+      .select('id, vendor_name, status, file_path').eq('project_id', project.id)
     if (fetchError || !current) {
       toast(`Couldn't check current bids — ${fetchError?.message ?? 'no data'}`, { tone: 'error' })
       setSaving(false)
@@ -523,6 +670,25 @@ function SelectBidModal({ project, bid, others, onClose, onDone }: {
         { tone: 'error' })
     }
 
+    // 3b. Purge the losing bids' PDFs — bids live in the app only while
+    // the decision is open; the rows (vendor, amount, notes) stay as
+    // history. Every non-winner counts as a loser here, declined and
+    // already-rejected included. Rows first, then best-effort storage
+    // (orphaned files are acceptable, dangling file_path pointers are
+    // not). NOT undoable — reopening the decision restores statuses,
+    // never files — which the confirm dialog says out loud.
+    const losersWithPdfs = current.filter(b => b.id !== bid.id && b.file_path != null)
+    if (losersWithPdfs.length > 0) {
+      const { error: e } = await supabase.from('capex_bids')
+        .update({ file_path: null, file_name: null })
+        .in('id', losersWithPdfs.map(o => o.id))
+      if (e) {
+        toast(`Winner selected, but couldn't clear losing bids' PDFs — ${e.message}`, { tone: 'error' })
+      } else {
+        void removeFiles(supabase, losersWithPdfs.map(o => o.file_path as string))
+      }
+    }
+
     // 4. Optional project write — its own error; the selection stands.
     if (applyToProject) {
       const { error: e } = await supabase.from('capex_projects')
@@ -550,6 +716,15 @@ function SelectBidModal({ project, bid, others, onClose, onDone }: {
               ? 'No other bids to reject.'
               : <>{others.length} other bid{others.length === 1 ? '' : 's'} ({others.map(o => o.vendor_name).join(', ')}) will be marked <span className="font-medium">rejected</span>.</>}
           </li>
+          {others.length > 0 && (
+            <li>
+              The other bids&apos; <span className="font-medium">PDFs are removed from the app</span> (can&apos;t
+              be undone — their amounts and notes stay).
+            </li>
+          )}
+          {bid.file_path && (
+            <li>This bid&apos;s PDF stays until you archive it to Google Drive and remove it.</li>
+          )}
         </ul>
         <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
           <input type="checkbox" checked={applyToProject}

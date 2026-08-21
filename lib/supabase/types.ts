@@ -88,6 +88,12 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['capex_bids']['Row']>
         Relationships: [{ foreignKeyName: 'capex_bids_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
+      capex_bid_notes: {
+        Row: { id: string; bid_id: string; body: string; created_by: string | null; created_at: string }
+        Insert: Partial<Database['public']['Tables']['capex_bid_notes']['Row']> & { bid_id: string; body: string }
+        Update: Partial<Database['public']['Tables']['capex_bid_notes']['Row']>
+        Relationships: [{ foreignKeyName: 'capex_bid_notes_bid_id_fkey'; columns: ['bid_id']; isOneToOne: false; referencedRelation: 'capex_bids'; referencedColumns: ['id'] }]
+      }
       capex_photos: {
         Row: { id: string; project_id: string; file_path: string; file_name: string | null; caption: string | null; sort_order: number; created_by: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['capex_photos']['Row']> & { project_id: string; file_path: string }
@@ -223,6 +229,7 @@ export type TaskView = Database['public']['Tables']['task_views']['Row']
 export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type CapexBid = Database['public']['Tables']['capex_bids']['Row']
+export type CapexBidNote = Database['public']['Tables']['capex_bid_notes']['Row']
 export type CapexPhoto = Database['public']['Tables']['capex_photos']['Row']
 export type RenewalCycle = Database['public']['Tables']['renewal_cycles']['Row']
 export type RenewalSetting = Database['public']['Tables']['renewal_settings']['Row']
