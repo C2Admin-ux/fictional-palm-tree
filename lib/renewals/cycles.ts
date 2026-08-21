@@ -171,44 +171,100 @@ export function approvalTurnaroundDays(cycle: StageableCycle): number | null {
   return daysBetween(cycle.offer_received_at, cycle.approved_at)
 }
 
-// ── Chase tasks ──────────────────────────────────────────────
-// One task per PROPERTY per overdue MONTH, keyed (auto_source,
-// source_record_id = cycle id) — Nick's explicit shape (2026-08-16,
-// matching the P&L and rate-entry cadence): each month closes
-// independently as its offers land, even when one email to the PM
-// covers several. The month is named in the title so the task list
-// reads as a checklist of exactly what's owed.
+// ── Review tasks ─────────────────────────────────────────────
+// ONE task per property — "Review {property} renewal offers — Oct + Nov
+// 2026" — keyed (auto_source, source_record_id = property id). Nick's
+// shape (2026-08-21, replacing the per-month chase tasks that stacked
+// one per overdue month): the task is fundamentally a REVIEW. Offers in
+// hand → review and approve them on the board. Not received → he
+// snoozes the task, and when it resurfaces it IS the chase reminder.
+// The app never auto-snoozes; snoozing is the human's call.
+//
+// A cycle rides on the review task while its month is still actionable
+// and not yet approved — whether that's awaiting the offers (chase) or
+// awaiting his review of offers in hand. Offers arriving EARLY put the
+// month on the task before its due date: reviewable now is reviewable.
 
-export type ChaseCycle = {
+export type ReviewableCycle = {
+  id: string
   expiration_month: string
   due_date: string
-  source: string
-  source_url: string | null
+  offer_received_at: string | null
+  approved_at: string | null
 }
 
-export function chaseTitle(cycle: ChaseCycle, propertyName: string): string {
-  const month = monthLabel(cycle.expiration_month)
-  // A sheet property has no email to chase — the ask is to go look.
-  return cycle.source === 'sheet'
-    ? `Review ${propertyName} renewal sheet — ${month}`
-    : `Chase ${propertyName} ${month} renewal offers`
+export function owedForReview(cycle: ReviewableCycle, today: string): boolean {
+  // Months already begun can't get offers anymore — they show as gaps in
+  // the history, not on the task (same floor the generator displays).
+  if (cycle.expiration_month < monthStart(today)) return false
+  if (cycle.approved_at) return false
+  return cycle.due_date < today || cycle.offer_received_at != null
 }
 
-export function chaseDescription(cycle: ChaseCycle, today: string): string {
-  const lines = [
-    `Renewal offers for ${monthLabel(cycle.expiration_month)} were due ${cycle.due_date} (${daysBetween(cycle.due_date, today)}d late).`,
-  ]
-  if (cycle.source === 'sheet') {
+// "October 2026" for one month; compact for several, grouped by year so
+// a Dec + Jan span can't read as one year: "Nov + Dec 2026, Jan 2027".
+export function monthListLabel(months: string[]): string {
+  const sorted = [...months].sort()
+  if (sorted.length === 1) return monthLabel(sorted[0])
+  const byYear = new Map<string, string[]>()
+  for (const m of sorted) {
+    const y = m.slice(0, 4)
+    const list = byYear.get(y) ?? []
+    list.push(shortMonth(m))
+    byYear.set(y, list)
+  }
+  return Array.from(byYear.entries()).map(([y, ms]) => `${ms.join(' + ')} ${y}`).join(', ')
+}
+
+export function reviewTitle(propertyName: string, source: string, months: string[]): string {
+  const label = monthListLabel(months)
+  // A sheet property has no email traffic — the ask is to go look.
+  return source === 'sheet'
+    ? `Review ${propertyName} renewal sheet — ${label}`
+    : `Review ${propertyName} renewal offers — ${label}`
+}
+
+export function reviewDescription(
+  owed: ReviewableCycle[], today: string, source: string, sourceUrl: string | null,
+): string {
+  const lines = [...owed]
+    .sort((a, b) => a.expiration_month.localeCompare(b.expiration_month))
+    .map(cycle => {
+      const label = monthLabel(cycle.expiration_month)
+      if (cycle.offer_received_at) {
+        return `${label} — offers in hand (received ${cycle.offer_received_at}); review and approve on the Renewals board.`
+      }
+      const late = daysBetween(cycle.due_date, today)
+      return late > 0
+        ? `${label} — offers due ${cycle.due_date} (${late}d late), not received.`
+        : `${label} — offers due ${cycle.due_date}, not received.`
+    })
+  if (source === 'sheet') {
     lines.push('This property tracks renewals in a shared spreadsheet rather than by email.')
     // The link is the whole point of the task for a sheet property.
-    if (cycle.source_url) lines.push(cycle.source_url)
+    if (sourceUrl) lines.push(sourceUrl)
   }
-  lines.push('Auto-managed: resolves itself when the offers are marked received on the Renewals board.')
+  lines.push('Not received yet? Chase the PM, then snooze this task until you expect the offers — when it resurfaces, it IS the chase.')
+  lines.push('Auto-managed: months drop off as they are approved on the Renewals board, and the task closes itself once nothing is owed.')
   return lines.join('\n')
 }
 
-// Escalates the longer a PM sits on it. Deliberately starts at medium:
-// a cycle one day late is a nudge, not an emergency.
+// The task is due when the oldest owed month's offers were due.
+export function reviewDueDate(owed: ReviewableCycle[]): string {
+  return owed.map(c => c.due_date).sort()[0]
+}
+
+// Escalates the longer a PM sits on missing offers. Months merely
+// awaiting Nick's own review don't escalate — nothing chases us but us.
+export function reviewPriority(owed: ReviewableCycle[], today: string): Task['priority'] {
+  const late = owed
+    .filter(c => !c.offer_received_at && c.due_date < today)
+    .map(c => daysBetween(c.due_date, today))
+  return chasePriority(late.length > 0 ? Math.max(...late) : 0)
+}
+
+// Deliberately starts at medium: a cycle one day late is a nudge, not an
+// emergency.
 export function chasePriority(daysOverdue: number): Task['priority'] {
   if (daysOverdue >= 30) return 'urgent'
   if (daysOverdue >= 14) return 'high'
