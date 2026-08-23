@@ -125,7 +125,10 @@ function BoardColumn({ status, label, projects, onOpen }: {
         <span className="text-xs text-slate-400">{projects.length}</span>
         {budget > 0 && <span className="ml-auto text-xs text-slate-400">{formatCurrency(budget, true)}</span>}
       </div>
-      <div className="space-y-2 flex-1 min-h-[48px]">
+      {/* Columns scroll internally past ~5 cards so a tall column (e.g.
+          Complete) can't push the detail table below off the page —
+          the board stays a fixed-height strip above the table. */}
+      <div className="space-y-2 flex-1 min-h-[48px] max-h-[26rem] overflow-y-auto pr-0.5">
         {projects.map(p => (
           <DraggableCard key={p.id} project={p} onOpen={() => onOpen(p.id)} />
         ))}
