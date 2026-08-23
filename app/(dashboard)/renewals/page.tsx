@@ -178,7 +178,7 @@ export default function RenewalsPage() {
       }
       const bits = [
         json.cyclesCreated ? `${json.cyclesCreated} cycle${json.cyclesCreated === 1 ? '' : 's'} added` : null,
-        json.chasesCreated ? `${json.chasesCreated} chase task${json.chasesCreated === 1 ? '' : 's'} created` : null,
+        json.chasesCreated ? `${json.chasesCreated} review task${json.chasesCreated === 1 ? '' : 's'} created` : null,
         json.chasesResolved ? `${json.chasesResolved} resolved` : null,
       ].filter(Boolean)
       toast(bits.length > 0 ? bits.join(' · ') : 'Everything already up to date')
@@ -578,12 +578,12 @@ function CycleRow({ cycle, name, cadence, today, onSetLeg }: {
       )}
 
       {/* ?property= is the filter the tasks page actually reads — it
-          lands on the All view scoped to this property, chase task on
+          lands on the All view scoped to this property, review task on
           top (it's overdue by definition). */}
       {cycle.chase_task_id && late && (
         <Link href={`/tasks?property=${cycle.property_id}`}
           className="text-xs text-amber-700 hover:underline flex items-center gap-1">
-          <ListTodo size={11} />Chase task
+          <ListTodo size={11} />Review task
         </Link>
       )}
 

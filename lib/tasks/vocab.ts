@@ -24,9 +24,11 @@ export const OBLIGATION_SOURCES: string[] = [
   INSURANCE_SOURCE, CONTRACT_SOURCE, ...SEASONAL_BID_SOURCES,
 ]
 
-// Renewal chase tasks (app/api/renewals/sync). One per PROPERTY with
-// overdue offer months (source_record_id = property id), reconciled with
-// the same (auto_source, source_record_id) rules as the engine.
+// Renewal review tasks (app/api/renewals/sync). ONE per property
+// (source_record_id = property id) covering every owed month: offers in
+// hand → review/approve on the board; not received → Nick snoozes it
+// and its return IS the chase. Reconciled with the same (auto_source,
+// source_record_id) rules as the engine.
 // Deliberately NOT in OBLIGATION_SOURCES: the obligations engine is
 // paused, and its cron must not start touching these.
 export const RENEWAL_SOURCE = 'renewal_offer'
