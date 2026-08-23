@@ -23,9 +23,9 @@ import Link from 'next/link'
 import { BidChip } from '@/components/capex/bid-chip'
 import { CapexBoard, ProjectCard, budgetUsage, type CapexWithProp, type CapexStatus } from './capex-board'
 
-// Status values derive from the shared options so every status surface
+// Status vocabulary (values + Nick's labels) comes from
+// CAPEX_STATUS_OPTIONS / CAPEX_STATUS_LABELS so every status surface
 // (board columns, inline select, filters, form) stays in lockstep.
-const STATUSES = CAPEX_STATUS_OPTIONS.map(o => o.value as CapexProject['status'])
 const ACTIVE_STATUSES: CapexProject['status'][] = ['planning', 'approved', 'in_progress']
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
 
@@ -355,7 +355,7 @@ export default function CapexPage() {
                 <FilterSelect value={filterStatus} onChange={setFilterStatus}>
                   <option value="active">Active</option>
                   <option value="all">All statuses</option>
-                  {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                  {CAPEX_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </FilterSelect>
                 <FilterSelect value={groupBy} onChange={v => setGroupBy(v as 'property' | 'none')}
                   ariaLabel="Group by"
@@ -462,7 +462,7 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div><label className="label">Property *</label><select required value={form.property_id} onChange={e => setForm(f => ({ ...f, property_id: e.target.value }))} className="input"><option value="">Select</option>{properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             <div><label className="label">Category</label><select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} className="input"><option value="">None</option>{CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}</select></div>
-            <div><label className="label">Status</label><select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as CapexProject['status'] }))} className="input">{STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}</select></div>
+            <div><label className="label">Status</label><select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as CapexProject['status'] }))} className="input">{CAPEX_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
             <div><label className="label">Budget ($)</label><input type="number" value={form.budget} onChange={e => setForm(f => ({ ...f, budget: e.target.value }))} className="input" placeholder="0" /></div>
             <div><label className="label">Vendor</label><input value={form.vendor_name} onChange={e => setForm(f => ({ ...f, vendor_name: e.target.value }))} className="input" /></div>
             <div><label className="label">Target Completion</label><input type="date" value={form.target_completion} onChange={e => setForm(f => ({ ...f, target_completion: e.target.value }))} className="input" /></div>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, CapexLineItem, CapexBid, Task } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, STATUS_STYLES, STATUS_LABELS, PRIORITY_DOT } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_LABELS, STATUS_STYLES, STATUS_LABELS, PRIORITY_DOT } from '@/lib/utils'
 import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
 import { BidsCard } from './bids-card'
@@ -178,7 +178,7 @@ export default function CapexDetailPage() {
                 ? <input value={form.title ?? ''} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input text-xl font-semibold w-auto" />
                 : <h1 className="text-xl font-semibold text-slate-900">{project.title}</h1>
               }
-              <span className={`badge ${CAPEX_STATUS_STYLES[project.status]}`}>{project.status.replace('_', ' ')}</span>
+              <span className={`badge ${CAPEX_STATUS_STYLES[project.status]}`}>{CAPEX_STATUS_LABELS[project.status]}</span>
             </div>
             <p className="text-sm text-slate-400 mt-1">
               {project.properties?.name}
@@ -379,9 +379,9 @@ export default function CapexDetailPage() {
               <Field label="Status">
                 {editMode
                   ? <select value={form.status ?? ''} onChange={e => setForm(f => ({ ...f, status: e.target.value as any }))} className="input text-sm">
-                      {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                      {STATUSES.map(s => <option key={s} value={s}>{CAPEX_STATUS_LABELS[s] ?? s}</option>)}
                     </select>
-                  : <span className={`badge ${CAPEX_STATUS_STYLES[project.status]}`}>{project.status.replace('_', ' ')}</span>
+                  : <span className={`badge ${CAPEX_STATUS_STYLES[project.status]}`}>{CAPEX_STATUS_LABELS[project.status]}</span>
                 }
               </Field>
               <Field label="Category">

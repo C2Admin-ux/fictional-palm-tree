@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { cn } from '@/lib/utils'
+import { cn, CAPEX_STATUS_LABELS } from '@/lib/utils'
 import { Check } from 'lucide-react'
 
 // ── useClickOutside ──────────────────────────────────────────
@@ -255,12 +255,14 @@ export const PRIORITY_OPTIONS: Option[] = [
   { value: 'low',    label: 'Low',    dot: '#94a3b8' },
 ]
 
+// Labels come from CAPEX_STATUS_LABELS (lib/utils) — the single source
+// for Nick's pipeline vocabulary (Proposed / Vendor Selection / …).
 export const CAPEX_STATUS_OPTIONS: Option[] = [
-  { value: 'planning',    label: 'Planning',    className: 'text-slate-600 bg-slate-50 border border-slate-200',   dot: '#94a3b8' },
-  { value: 'approved',    label: 'Approved',    className: 'text-blue-700 bg-blue-50 border border-blue-200',      dot: '#3b82f6' },
-  { value: 'in_progress', label: 'In Progress', className: 'text-amber-700 bg-amber-50 border border-amber-200',   dot: '#f59e0b' },
-  { value: 'complete',    label: 'Complete',    className: 'text-emerald-700 bg-emerald-50 border border-emerald-200', dot: '#16a34a' },
-  { value: 'on_hold',     label: 'On Hold',     className: 'text-orange-700 bg-orange-50 border border-orange-200', dot: '#ea580c' },
+  { value: 'planning',    label: CAPEX_STATUS_LABELS.planning,    className: 'text-slate-600 bg-slate-50 border border-slate-200',   dot: '#94a3b8' },
+  { value: 'approved',    label: CAPEX_STATUS_LABELS.approved,    className: 'text-blue-700 bg-blue-50 border border-blue-200',      dot: '#3b82f6' },
+  { value: 'in_progress', label: CAPEX_STATUS_LABELS.in_progress, className: 'text-amber-700 bg-amber-50 border border-amber-200',   dot: '#f59e0b' },
+  { value: 'complete',    label: CAPEX_STATUS_LABELS.complete,    className: 'text-emerald-700 bg-emerald-50 border border-emerald-200', dot: '#16a34a' },
+  { value: 'on_hold',     label: CAPEX_STATUS_LABELS.on_hold,     className: 'text-orange-700 bg-orange-50 border border-orange-200', dot: '#ea580c' },
 ]
 
 export const CAPEX_CATEGORY_OPTIONS: Option[] = [

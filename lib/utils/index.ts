@@ -180,6 +180,18 @@ export const STATUS_LABELS: Record<string, string> = {
   done:        'Done',
 }
 
+// Nick's capex pipeline vocabulary (2026-08-23): "planning" reads as
+// Proposed (no work done yet) and "approved" as Vendor Selection —
+// label-layer only, DB values unchanged. Single source for every
+// surface that names a capex status (badges, selects, board columns).
+export const CAPEX_STATUS_LABELS: Record<string, string> = {
+  planning:    'Proposed',
+  approved:    'Vendor Selection',
+  in_progress: 'In Progress',
+  complete:    'Complete',
+  on_hold:     'On Hold',
+}
+
 export const CAPEX_STATUS_STYLES: Record<string, string> = {
   planning:    'text-slate-600 bg-slate-50 border-slate-200',
   approved:    'text-blue-700 bg-blue-50 border-blue-200',

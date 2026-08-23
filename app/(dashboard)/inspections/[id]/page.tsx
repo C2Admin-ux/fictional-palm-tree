@@ -14,7 +14,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { Inspection, InspectionItem } from '@/lib/supabase/types'
 import {
   cn, propertyColor, formatDate,
-  PRIORITY_STYLES, INSPECTION_STATUS_STYLES,
+  PRIORITY_STYLES, INSPECTION_STATUS_STYLES, CAPEX_STATUS_LABELS,
 } from '@/lib/utils'
 import {
   TEMPLATE_SECTIONS, INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS,
@@ -1374,7 +1374,7 @@ function CapexAttachModal({ item, propertyId, onClose, onDone }: {
                       className="input mt-1.5" aria-label="CapEx project">
                       {projects.map(p => (
                         <option key={p.id} value={p.id}>
-                          {p.title} ({p.status.replace('_', ' ')})
+                          {p.title} ({CAPEX_STATUS_LABELS[p.status] ?? p.status})
                         </option>
                       ))}
                     </select>
