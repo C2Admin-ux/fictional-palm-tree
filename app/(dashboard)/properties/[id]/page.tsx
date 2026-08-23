@@ -4,7 +4,7 @@ import Link from 'next/link'
 import {
   formatCurrency, formatPct, formatDate,
   occupancyColor, delinquencyColor, noiVarianceColor,
-  TRAFFIC_LIGHT, daysUntil, propertyColor, PRIORITY_DOT,
+  TRAFFIC_LIGHT, daysUntil, propertyColor, PRIORITY_DOT, CAPEX_STATUS_LABELS,
 } from '@/lib/utils'
 import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert } from 'lucide-react'
 import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
@@ -305,7 +305,7 @@ export default async function PropertyPage({
                       <div key={cx.id} className="mb-3 last:mb-0">
                         <div className="flex items-center justify-between text-xs mb-1">
                           <Link href={`/capex/${cx.id}`} className="font-medium text-slate-700 hover:text-blue-600 truncate max-w-[200px]">{cx.title}</Link>
-                          <StatusBadge value={cx.status} kind="capex" label={cx.status.replace('_', ' ')} />
+                          <StatusBadge value={cx.status} kind="capex" label={CAPEX_STATUS_LABELS[cx.status]} />
                         </div>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 bg-slate-100 rounded-full h-1.5">
@@ -437,7 +437,7 @@ export default async function PropertyPage({
                             <div className="font-medium text-slate-900 text-sm">{cx.title}</div>
                             <div className="text-xs text-slate-400 mt-0.5">{cx.vendor_name ?? 'Vendor TBD'}</div>
                           </div>
-                          <StatusBadge value={cx.status} kind="capex" label={cx.status.replace('_', ' ')} className="flex-shrink-0" />
+                          <StatusBadge value={cx.status} kind="capex" label={CAPEX_STATUS_LABELS[cx.status]} className="flex-shrink-0" />
                         </div>
                         <div className="flex items-center gap-3">
                           <div className="flex-1 bg-slate-100 rounded-full h-1.5">

@@ -8,7 +8,7 @@ import {
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import type { CapexProject } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT, CAPEX_STATUS_STYLES } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, isOverdue, propertyColor, CAPEX_STATUS_DOT, CAPEX_STATUS_STYLES, CAPEX_STATUS_LABELS } from '@/lib/utils'
 import { type BidLike } from '@/lib/capex/bids'
 import { BidChip } from '@/components/capex/bid-chip'
 import { CAPEX_PRIORITY_OPTIONS, CAPEX_STATUS_OPTIONS } from '@/components/ui/inline-edit'
@@ -35,8 +35,12 @@ export function budgetUsage(p: CapexProject): { pct: number; over: boolean } {
 
 // Labels come from CAPEX_STATUS_OPTIONS — the same source the list's
 // inline status select uses — so the board can't drift from it. Only the
-// column ORDER is a board-layout concern (terminal column last).
-const COLUMN_ORDER: CapexStatus[] = ['planning', 'approved', 'in_progress', 'on_hold', 'complete']
+// column ORDER is a board-layout concern. Nick's pipeline (2026-08-23):
+// Proposed → Vendor Selection → In Progress, On Hold parked last.
+// Complete is deliberately NOT a column — finished projects live in the
+// table (status filter), not on the board; mark complete from the
+// table's status select or the detail page.
+const COLUMN_ORDER: CapexStatus[] = ['planning', 'approved', 'in_progress', 'on_hold']
 const COLUMNS: { status: CapexStatus; label: string }[] = COLUMN_ORDER.map(status => ({
   status,
   label: CAPEX_STATUS_OPTIONS.find(o => o.value === status)?.label ?? status,
@@ -85,7 +89,7 @@ export function CapexBoard({ projects, onMove }: {
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart}
       onDragEnd={handleDragEnd} onDragCancel={() => setActiveId(null)}>
-      <div className="flex gap-3 overflow-x-auto pb-2 xl:grid xl:grid-cols-5 xl:overflow-visible">
+      <div className="flex gap-3 overflow-x-auto pb-2 lg:grid lg:grid-cols-4 lg:overflow-visible">
         {COLUMNS.map(col => (
           <BoardColumn key={col.status} status={col.status} label={col.label}
             projects={projects.filter(p => p.status === col.status)}
@@ -96,7 +100,7 @@ export function CapexBoard({ projects, onMove }: {
         ))}
       </div>
       <DragOverlay dropAnimation={{ duration: 180, easing: 'ease' }}>
-        {activeProject ? <ProjectCard project={activeProject} className="shadow-lg rotate-2" /> : null}
+        {activeProject ? <ProjectCard project={activeProject} compact className="shadow-lg rotate-2" /> : null}
       </DragOverlay>
     </DndContext>
   )
@@ -132,6 +136,9 @@ function BoardColumn({ status, label, projects, onOpen }: {
         {projects.map(p => (
           <DraggableCard key={p.id} project={p} onOpen={() => onOpen(p.id)} />
         ))}
+        {projects.length === 0 && (
+          <p className="text-xs text-slate-300 italic px-1.5 py-2">Drop projects here</p>
+        )}
       </div>
     </div>
   )
@@ -150,7 +157,7 @@ function DraggableCard({ project, onOpen }: {
         'cursor-grab active:cursor-grabbing touch-manipulation select-none',
         isDragging && 'opacity-40',
       )}>
-      <ProjectCard project={project} className="hover:shadow-md transition-shadow" />
+      <ProjectCard project={project} compact className="hover:shadow-md transition-shadow" />
     </div>
   )
 }
@@ -158,10 +165,11 @@ function DraggableCard({ project, onOpen }: {
 // Shared between the board columns/drag overlay and the list's mobile
 // cards — one place for the title row, property dot, budget bar and
 // overdue-date logic (incl. the status !== 'complete' guard).
-export function ProjectCard({ project: p, showStatus = false, showChevron = false, className }: {
+export function ProjectCard({ project: p, showStatus = false, showChevron = false, compact = false, className }: {
   project: CapexWithProp
   showStatus?: boolean   // list context: column doesn't imply the status
   showChevron?: boolean  // list context: card is a link to the detail page
+  compact?: boolean      // board context: no budget/spend block — Nick wants glanceable tiles
   className?: string
 }) {
   const { pct, over } = budgetUsage(p)
@@ -173,8 +181,8 @@ export function ProjectCard({ project: p, showStatus = false, showChevron = fals
       <div className="flex items-start gap-1.5">
         <span className="text-sm font-medium text-slate-900 leading-snug flex-1">{p.title}</span>
         {showStatus ? (
-          <span className={cn('badge capitalize flex-shrink-0', CAPEX_STATUS_STYLES[p.status])}>
-            {p.status.replace('_', ' ')}
+          <span className={cn('badge flex-shrink-0', CAPEX_STATUS_STYLES[p.status])}>
+            {CAPEX_STATUS_LABELS[p.status]}
           </span>
         ) : pip ? (
           <span title={`${p.priority} priority`}
@@ -189,7 +197,7 @@ export function ProjectCard({ project: p, showStatus = false, showChevron = fals
         {showChevron && <ChevronRight size={14} className="text-slate-300 ml-auto flex-shrink-0" />}
       </div>
       <BidChip bids={p.capex_bids} target={p.bids_target} />
-      {(p.budget != null || p.actual_spend != null) && (
+      {!compact && (p.budget != null || p.actual_spend != null) && (
         <div>
           <div className="flex items-center justify-between gap-2 text-xs mb-1">
             <span className="text-slate-500">
