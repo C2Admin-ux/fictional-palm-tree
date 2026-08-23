@@ -1,12 +1,19 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+// CapEx page — Nick's layout (2026-08-23): filterable kanban board on
+// top for the quick pipeline read, filterable detail table underneath,
+// click through either to the project detail page — which is where the
+// full status and the bid comparison live. One shared filter bar
+// (search / property / category) feeds BOTH surfaces; the table adds
+// its own status filter (default Active) and group-by, since on the
+// board status is already the columns.
+
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, propertyColor } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, HardHat, Search, List, LayoutGrid, AlertTriangle } from 'lucide-react'
+import { Plus, X, HardHat, Search, AlertTriangle } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -22,7 +29,7 @@ const STATUSES = CAPEX_STATUS_OPTIONS.map(o => o.value as CapexProject['status']
 const ACTIVE_STATUSES: CapexProject['status'][] = ['planning', 'approved', 'in_progress']
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
 
-// ── Property grouping (list view) ────────────────────────────
+// ── Property grouping (table) ────────────────────────────────
 // Sections in property-name order, projects without a property under
 // "No property" last. Input order (the active column sort) is
 // preserved within each group.
@@ -69,29 +76,19 @@ function GroupHeader({ group }: { group: PropertyGroup }) {
 }
 
 export default function CapexPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-sm text-slate-400">Loading…</div>}>
-      <CapexInner />
-    </Suspense>
-  )
-}
-
-function CapexInner() {
   const supabase = createClient()
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const view: 'list' | 'board' = searchParams.get('view') === 'board' ? 'board' : 'list'
 
   const [projects, setProjects] = useState<CapexWithProp[]>([])
   const [properties, setProperties] = useState<Property[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [showForm, setShowForm] = useState(false)
+  // Shared filters — narrow the board AND the table.
   const [filterProp, setFilterProp] = useState('')
-  const [filterStatus, setFilterStatus] = useState('active')
   const [filterCategory, setFilterCategory] = useState('')
   const [search, setSearch] = useState('')
-  // List-view sectioning — grouped by property by default.
+  // Table-only controls: on the board, status is the columns.
+  const [filterStatus, setFilterStatus] = useState('active')
   const [groupBy, setGroupBy] = useState<'property' | 'none'>('property')
   const [moveError, setMoveError] = useState<string | null>(null)
   // Monotonic fetch sequence: responses that don't match the latest seq are
@@ -99,14 +96,10 @@ function CapexInner() {
   const fetchSeq = useRef(0)
   const { sort, dir, toggle, sortFn } = useSort<string>('created_at', 'desc')
 
-  function setView(v: 'list' | 'board') {
-    router.replace(v === 'board' ? '/capex?view=board' : '/capex', { scroll: false })
-  }
-
   const fetchProjects = useCallback(async () => {
-    // Always fetch every status so list and board share one dataset — the
-    // list's status filter is applied client-side in `displayed`. Only
-    // property/category narrow the query server-side.
+    // Always fetch every status — board and table share one dataset; the
+    // table's status filter is applied client-side. Only property/category
+    // narrow the query server-side.
     const seq = ++fetchSeq.current
     setRefreshing(true)
     // capex_bids embed is lean on purpose — just what bidGlance needs
@@ -126,30 +119,33 @@ function CapexInner() {
     supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? []))
   }, [])
 
-  const displayed = [...projects]
+  // Board set: shared filters only (every status — the columns carry it).
+  const boardProjects = [...projects].filter(p => {
+    if (!search) return true
+    const s = search.toLowerCase()
+    return p.title.toLowerCase().includes(s) ||
+      (p.properties?.name ?? '').toLowerCase().includes(s) ||
+      (p.vendor_name ?? '').toLowerCase().includes(s)
+  })
+
+  // Table set: board set narrowed by the status filter, column-sorted.
+  const tableRows = boardProjects
     .filter(p => {
-      // Status narrows the list only — the board always shows all columns.
-      if (view === 'list') {
-        if (filterStatus === 'active' && !ACTIVE_STATUSES.includes(p.status)) return false
-        if (filterStatus !== 'active' && filterStatus !== 'all' && p.status !== filterStatus) return false
-      }
-      if (!search) return true
-      const s = search.toLowerCase()
-      return p.title.toLowerCase().includes(s) ||
-        (p.properties?.name ?? '').toLowerCase().includes(s) ||
-        (p.vendor_name ?? '').toLowerCase().includes(s)
+      if (filterStatus === 'active') return ACTIVE_STATUSES.includes(p.status)
+      if (filterStatus === 'all') return true
+      return p.status === filterStatus
     })
     .sort(sortFn)
 
-  const totalBudget = displayed.reduce((s, p) => s + (p.budget ?? 0), 0)
-  const totalSpend  = displayed.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
+  const totalBudget = boardProjects.reduce((s, p) => s + (p.budget ?? 0), 0)
+  const totalSpend  = boardProjects.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
 
-  // Sections for the grouped list; null renders the flat table. A single
+  // Sections for the grouped table; null renders the flat table. A single
   // group (e.g. a property filter is active) also renders flat — the
   // header would just repeat the filter.
   const groups = (() => {
-    if (view !== 'list' || groupBy !== 'property') return null
-    const g = groupByProperty(displayed)
+    if (groupBy !== 'property') return null
+    const g = groupByProperty(tableRows)
     return g.length > 1 ? g : null
   })()
 
@@ -174,10 +170,10 @@ function CapexInner() {
     }
   }
 
-  const filtersActive = filterProp || filterCategory || search || (view === 'list' && filterStatus !== 'active')
+  const filtersActive = filterProp || filterCategory || search
 
-  // Mobile card — shared by the flat and grouped lists. Inline editing
-  // is desktop-only; tap through to detail.
+  // Mobile card — the table section's small-screen rendering. Tap
+  // through to detail; inline editing is desktop-only.
   function renderCard(p: CapexWithProp) {
     return (
       <Link key={p.id} href={`/capex/${p.id}`} className="block">
@@ -187,7 +183,9 @@ function CapexInner() {
     )
   }
 
-  // Desktop table row — shared by the flat and grouped tables.
+  // Desktop table row. The title links to the detail page — full status
+  // and the bid comparison live there; the other cells stay
+  // inline-editable for quick fixes without leaving the table.
   function renderRow(p: CapexWithProp) {
     const { pct, over } = budgetUsage(p)
 
@@ -200,11 +198,10 @@ function CapexInner() {
       <tr key={p.id} className="hover:bg-slate-50 group">
         <td className="px-4 py-2.5 text-xs text-slate-500">{p.properties?.name ?? '—'}</td>
         <td className="px-3 py-2.5">
-          <InlineText
-            value={p.title}
-            onSave={v => patch({ title: v })}
-            displayClassName="font-medium text-slate-900 text-sm"
-          />
+          <Link href={`/capex/${p.id}`}
+            className="font-medium text-slate-900 text-sm hover:text-blue-700 hover:underline underline-offset-2">
+            {p.title}
+          </Link>
         </td>
         <td className="px-3 py-2.5">
           <InlineSelect
@@ -274,43 +271,30 @@ function CapexInner() {
   }
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-5">
+    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="page-title">CapEx Projects</h1>
-          <p className="text-sm text-slate-500 mt-0.5">
-            {displayed.length} projects
-            {view === 'board' && <span className="text-slate-400"> (all statuses)</span>}
-          </p>
+          <p className="text-sm text-slate-500 mt-0.5">{boardProjects.length} projects</p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-primary">
           <Plus size={14} />New Project
         </button>
       </div>
 
-      {/* KPI strip */}
+      {/* KPI strip — follows the shared filters, every status */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
           { label: 'Total Budget', value: formatCurrency(totalBudget, true) },
           { label: 'Actual Spend', value: formatCurrency(totalSpend, true) },
           { label: '% Used', value: totalBudget > 0 ? `${Math.round(totalSpend / totalBudget * 100)}%` : '—' },
         ].map(({ label, value }) => (
-          <StatTile key={label} label={label} value={value}
-            sub={view === 'board' ? '(all statuses)' : undefined} />
+          <StatTile key={label} label={label} value={value} />
         ))}
       </div>
 
-      {/* View toggle + filters */}
+      {/* Shared filters — narrow the board and the table together */}
       <div className="flex flex-wrap gap-2 items-center">
-        <div className="flex rounded-lg border border-slate-200 overflow-hidden" role="group" aria-label="View">
-          {([['list', 'List', List], ['board', 'Board', LayoutGrid]] as const).map(([v, label, Icon]) => (
-            <button key={v} onClick={() => setView(v)} aria-pressed={view === v}
-              className={cn('px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-colors',
-                view === v ? 'bg-blue-50 text-blue-700' : 'bg-white text-slate-500 hover:bg-slate-50')}>
-              <Icon size={13} />{label}
-            </button>
-          ))}
-        </div>
         <div className="relative">
           <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
           <input value={search} onChange={e => setSearch(e.target.value)}
@@ -321,27 +305,12 @@ function CapexInner() {
           <option value="">All properties</option>
           {properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </FilterSelect>
-        {view === 'list' && (
-          <FilterSelect value={filterStatus} onChange={setFilterStatus}>
-            <option value="active">Active</option>
-            <option value="all">All statuses</option>
-            {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-          </FilterSelect>
-        )}
         <FilterSelect value={filterCategory} onChange={setFilterCategory}>
           <option value="">All categories</option>
           {CATEGORIES.map(c => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
         </FilterSelect>
-        {view === 'list' && (
-          <FilterSelect value={groupBy} onChange={v => setGroupBy(v as 'property' | 'none')}
-            ariaLabel="Group by"
-            options={[
-              { value: 'property', label: 'Group: Property' },
-              { value: 'none',     label: 'Group: None' },
-            ]} />
-        )}
         {filtersActive && (
-          <button onClick={() => { setFilterProp(''); setFilterStatus('active'); setFilterCategory(''); setSearch('') }}
+          <button onClick={() => { setFilterProp(''); setFilterCategory(''); setSearch('') }}
             className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
             <X size={11} />Clear
           </button>
@@ -365,67 +334,101 @@ function CapexInner() {
       ) : (
       // Dim (but keep interactive) while a refetch is in flight so filter
       // changes and edits don't render against silently-stale data.
-      <div className={cn('transition-opacity', refreshing && 'opacity-60')} aria-busy={refreshing || undefined}>
-      {displayed.length === 0 ? (
+      <div className={cn('transition-opacity space-y-6', refreshing && 'opacity-60')} aria-busy={refreshing || undefined}>
+      {boardProjects.length === 0 ? (
         <EmptyState icon={<HardHat size={32} />} title="No projects match your filters" />
-      ) : view === 'board' ? (
-        <CapexBoard projects={displayed} onMove={moveProject} />
       ) : (
         <>
-          {/* Mobile cards */}
-          {groups ? (
-            <div className="space-y-4 md:hidden">
-              {groups.map(g => (
-                <div key={g.key} className="space-y-2">
-                  <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
-                    <GroupHeader group={g} />
-                  </div>
-                  {g.projects.map(renderCard)}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="space-y-2 md:hidden">
-              {displayed.map(renderCard)}
-            </div>
-          )}
+          {/* Kanban board — the quick pipeline read; drag between
+              columns to change status, click a card for full status. */}
+          <CapexBoard projects={boardProjects} onMove={moveProject} />
 
-          {/* Desktop table */}
-          <div className="card overflow-x-auto hidden md:block">
-            <table className="w-full text-sm min-w-[800px]">
-              <thead className="bg-slate-50 border-b border-slate-200/70">
-                <tr>
-                  <Th label="Property" field="property_id" current={sort} dir={dir} onSort={toggle} className="pl-4" />
-                  <Th label="Title" field="title" current={sort} dir={dir} onSort={toggle} />
-                  <Th label="Category" field="category" current={sort} dir={dir} onSort={toggle} />
-                  <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
-                  <Th label="Budget" field="budget" current={sort} dir={dir} onSort={toggle} align="right" />
-                  <Th label="Spent" field="actual_spend" current={sort} dir={dir} onSort={toggle} align="right" />
-                  <Th label="% Used" align="right" />
-                  <Th label="Vendor" field="vendor_name" current={sort} dir={dir} onSort={toggle} />
-                  <Th label="Target" field="target_completion" current={sort} dir={dir} onSort={toggle} />
-                </tr>
-              </thead>
-              {groups ? groups.map(g => (
-                // One tbody per property: a section header row (slightly
-                // stronger top edge for scanability), then the project
-                // rows — the active column sort applies within the group.
-                <tbody key={g.key} className="divide-y divide-slate-200/70">
-                  <tr className="bg-slate-50 border-t border-slate-200">
-                    <td colSpan={9} className="px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <GroupHeader group={g} />
+          {/* Detail table — its own status filter (the board's columns
+              already show status) and group-by. */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h2 className="text-sm font-semibold text-slate-700">
+                Project details
+                <span className="ml-2 text-xs font-normal text-slate-400">{tableRows.length} shown</span>
+              </h2>
+              <div className="flex items-center gap-2">
+                <FilterSelect value={filterStatus} onChange={setFilterStatus}>
+                  <option value="active">Active</option>
+                  <option value="all">All statuses</option>
+                  {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                </FilterSelect>
+                <FilterSelect value={groupBy} onChange={v => setGroupBy(v as 'property' | 'none')}
+                  ariaLabel="Group by"
+                  options={[
+                    { value: 'property', label: 'Group: Property' },
+                    { value: 'none',     label: 'Group: None' },
+                  ]} />
+              </div>
+            </div>
+
+            {tableRows.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">
+                No projects match the table&apos;s status filter — the board above still shows every status.
+              </p>
+            ) : (
+              <>
+                {/* Mobile cards */}
+                {groups ? (
+                  <div className="space-y-4 md:hidden">
+                    {groups.map(g => (
+                      <div key={g.key} className="space-y-2">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg">
+                          <GroupHeader group={g} />
+                        </div>
+                        {g.projects.map(renderCard)}
                       </div>
-                    </td>
-                  </tr>
-                  {g.projects.map(renderRow)}
-                </tbody>
-              )) : (
-                <tbody className="divide-y divide-slate-200/70">
-                  {displayed.map(renderRow)}
-                </tbody>
-              )}
-            </table>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-2 md:hidden">
+                    {tableRows.map(renderCard)}
+                  </div>
+                )}
+
+                {/* Desktop table */}
+                <div className="card overflow-x-auto hidden md:block">
+                  <table className="w-full text-sm min-w-[800px]">
+                    <thead className="bg-slate-50 border-b border-slate-200/70">
+                      <tr>
+                        <Th label="Property" field="property_id" current={sort} dir={dir} onSort={toggle} className="pl-4" />
+                        <Th label="Title" field="title" current={sort} dir={dir} onSort={toggle} />
+                        <Th label="Category" field="category" current={sort} dir={dir} onSort={toggle} />
+                        <Th label="Status" field="status" current={sort} dir={dir} onSort={toggle} />
+                        <Th label="Budget" field="budget" current={sort} dir={dir} onSort={toggle} align="right" />
+                        <Th label="Spent" field="actual_spend" current={sort} dir={dir} onSort={toggle} align="right" />
+                        <Th label="% Used" align="right" />
+                        <Th label="Vendor" field="vendor_name" current={sort} dir={dir} onSort={toggle} />
+                        <Th label="Target" field="target_completion" current={sort} dir={dir} onSort={toggle} />
+                      </tr>
+                    </thead>
+                    {groups ? groups.map(g => (
+                      // One tbody per property: a section header row (slightly
+                      // stronger top edge for scanability), then the project
+                      // rows — the active column sort applies within the group.
+                      <tbody key={g.key} className="divide-y divide-slate-200/70">
+                        <tr className="bg-slate-50 border-t border-slate-200">
+                          <td colSpan={9} className="px-4 py-2">
+                            <div className="flex items-center gap-2">
+                              <GroupHeader group={g} />
+                            </div>
+                          </td>
+                        </tr>
+                        {g.projects.map(renderRow)}
+                      </tbody>
+                    )) : (
+                      <tbody className="divide-y divide-slate-200/70">
+                        {tableRows.map(renderRow)}
+                      </tbody>
+                    )}
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
