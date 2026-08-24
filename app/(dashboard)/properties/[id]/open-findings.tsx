@@ -22,7 +22,7 @@ import { signedPhotoUrls, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { instanceLabel } from '@/lib/inspections/sections'
 import { isOpenFinding, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
-import { Camera, ClipboardCheck } from 'lucide-react'
+import { Camera, ClipboardCheck, Printer } from 'lucide-react'
 
 // Lean row the server page assembles — first photo only, minimal
 // inspection join.
@@ -120,10 +120,18 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
   const thumbs = useSignedThumbs(rows)
   return (
     <div className="card p-4">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <h3 className="text-sm font-semibold text-slate-700">Open findings ({count})</h3>
-        <Link href={`/properties/${propertyId}?tab=inspections`}
-          className="text-xs text-blue-600 hover:underline">View all →</Link>
+        <div className="flex items-center gap-3">
+          {/* Printable checklist of the flagged + watch subset — for
+              walking the site and checking off what's actually fixed. */}
+          <Link href={`/properties/${propertyId}/walk-sheet`}
+            className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+            <Printer size={11} />Walk sheet
+          </Link>
+          <Link href={`/properties/${propertyId}?tab=inspections`}
+            className="text-xs text-blue-600 hover:underline">View all →</Link>
+        </div>
       </div>
       {rows.length === 0
         ? <p className="text-xs text-slate-400 italic">No open findings</p>
@@ -149,7 +157,7 @@ const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => bool
   { id: 'settled', label: 'Settled', match: r => isSettled(r.disposition) },
 ]
 
-export function PropertyFindingsList({ rows }: { rows: OpenFindingRow[] }) {
+export function PropertyFindingsList({ rows, propertyId }: { rows: OpenFindingRow[]; propertyId?: string }) {
   const [filter, setFilter] = useState<FilterId>('all')
   const thumbs = useSignedThumbs(rows)
 
@@ -161,7 +169,15 @@ export function PropertyFindingsList({ rows }: { rows: OpenFindingRow[] }) {
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <h3 className="text-sm font-semibold text-slate-700">Findings ({rows.length})</h3>
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-3">
+          Findings ({rows.length})
+          {propertyId && (
+            <Link href={`/properties/${propertyId}/walk-sheet`}
+              className="text-xs font-normal text-blue-600 hover:underline flex items-center gap-1">
+              <Printer size={11} />Walk sheet
+            </Link>
+          )}
+        </h3>
         {/* Opt-in narrowing — All is the default; nothing is ever hidden
             without the viewer asking. */}
         <div className="flex items-center gap-1 flex-wrap">
