@@ -7,7 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, CheckSquare, Wrench, TrendingUp,
   FileSignature, Shield, FileBarChart, ClipboardCheck, Phone, Settings,
-  CalendarClock,
+  CalendarClock, Scale,
 } from 'lucide-react'
 
 export type NavItem = { href: string; label: string; icon: LucideIcon }
@@ -20,6 +20,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/performance',        label: 'PM Performance', icon: TrendingUp },
   { href: '/documents',          label: 'Contracts',      icon: FileSignature },
   { href: '/insurance/policies', label: 'Insurance',      icon: Shield },
+  { href: '/litigation',         label: 'Litigation',     icon: Scale },
   { href: '/reports',            label: 'Reports',        icon: FileBarChart },
   { href: '/inspections',        label: 'Inspections',    icon: ClipboardCheck },
   { href: '/calls',              label: 'Calls',          icon: Phone },
