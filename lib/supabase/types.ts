@@ -88,6 +88,32 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['capex_bids']['Row']>
         Relationships: [{ foreignKeyName: 'capex_bids_project_id_fkey'; columns: ['project_id']; isOneToOne: false; referencedRelation: 'capex_projects'; referencedColumns: ['id'] }]
       }
+      litigation_cases: {
+        Row: {
+          id: string; property_id: string | null; title: string; litigant: string | null
+          case_type: 'lawsuit' | 'eviction' | 'appeal' | 'fair_housing' | 'insurance_claim' | 'demand' | 'other'
+          status: 'active' | 'stayed' | 'settlement' | 'closed'
+          case_number: string | null; court: string | null
+          date_of_notice: string | null; next_deadline: string | null; next_deadline_label: string | null
+          our_counsel: string | null; opposing_counsel: string | null
+          insurance_policy_id: string | null; claim_number: string | null
+          adjuster_name: string | null; adjuster_email: string | null; adjuster_phone: string | null
+          demand_amount: number | null; settlement_amount: number | null; resolved_at: string | null
+          notes: string | null; created_at: string; updated_at: string
+        }
+        Insert: Partial<Database['public']['Tables']['litigation_cases']['Row']> & { title: string }
+        Update: Partial<Database['public']['Tables']['litigation_cases']['Row']>
+        Relationships: [
+          { foreignKeyName: 'litigation_cases_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] },
+          { foreignKeyName: 'litigation_cases_insurance_policy_id_fkey'; columns: ['insurance_policy_id']; isOneToOne: false; referencedRelation: 'insurance_policies'; referencedColumns: ['id'] }
+        ]
+      }
+      litigation_updates: {
+        Row: { id: string; case_id: string; body: string; created_by: string | null; created_at: string }
+        Insert: Partial<Database['public']['Tables']['litigation_updates']['Row']> & { case_id: string; body: string }
+        Update: Partial<Database['public']['Tables']['litigation_updates']['Row']>
+        Relationships: [{ foreignKeyName: 'litigation_updates_case_id_fkey'; columns: ['case_id']; isOneToOne: false; referencedRelation: 'litigation_cases'; referencedColumns: ['id'] }]
+      }
       capex_bid_notes: {
         Row: { id: string; bid_id: string; body: string; created_by: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['capex_bid_notes']['Row']> & { bid_id: string; body: string }
@@ -230,6 +256,8 @@ export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type CapexBid = Database['public']['Tables']['capex_bids']['Row']
 export type CapexBidNote = Database['public']['Tables']['capex_bid_notes']['Row']
+export type LitigationCase = Database['public']['Tables']['litigation_cases']['Row']
+export type LitigationUpdate = Database['public']['Tables']['litigation_updates']['Row']
 export type CapexPhoto = Database['public']['Tables']['capex_photos']['Row']
 export type RenewalCycle = Database['public']['Tables']['renewal_cycles']['Row']
 export type RenewalSetting = Database['public']['Tables']['renewal_settings']['Row']
