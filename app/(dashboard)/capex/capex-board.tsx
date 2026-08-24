@@ -129,10 +129,10 @@ function BoardColumn({ status, label, projects, onOpen }: {
         <span className="text-xs text-slate-400">{projects.length}</span>
         {budget > 0 && <span className="ml-auto text-xs text-slate-400">{formatCurrency(budget, true)}</span>}
       </div>
-      {/* Columns scroll internally past ~5 cards so a tall column (e.g.
-          Complete) can't push the detail table below off the page —
-          the board stays a fixed-height strip above the table. */}
-      <div className="space-y-2 flex-1 min-h-[48px] max-h-[26rem] overflow-y-auto pr-0.5">
+      {/* Columns grow to fit every card — Nick wants the whole board
+          visible with only the page scrolling, no inner scrollbars
+          (2026-08-25, reversing the earlier fixed-height strip). */}
+      <div className="space-y-2 flex-1 min-h-[48px]">
         {projects.map(p => (
           <DraggableCard key={p.id} project={p} onOpen={() => onOpen(p.id)} />
         ))}
