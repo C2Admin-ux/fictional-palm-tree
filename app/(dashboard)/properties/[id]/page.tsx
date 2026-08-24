@@ -498,7 +498,7 @@ export default async function PropertyPage({
           </div>
         )}
 
-        {tab === 'inspections' && <InspectionsTab inspections={propInspections} findings={tabFindings} />}
+        {tab === 'inspections' && <InspectionsTab inspections={propInspections} findings={tabFindings} propertyId={params.id} />}
 
         {tab === 'building' && (
           <BuildingTab

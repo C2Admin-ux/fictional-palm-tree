@@ -28,11 +28,12 @@ export type InspectionTabRow = {
   inspection_items: { requires_action: boolean; action_priority: string | null; disposition: string }[]
 }
 
-export default function InspectionsTab({ inspections, findings }: {
+export default function InspectionsTab({ inspections, findings, propertyId }: {
   inspections: InspectionTabRow[]
   // Every finding across the property's inspections (all dispositions) —
   // rendered below the rollup table with opt-in filter chips.
   findings: OpenFindingRow[]
+  propertyId?: string
 }) {
   const supabase = createClient()
   const [error, setError] = useState<string | null>(null)
@@ -153,7 +154,7 @@ export default function InspectionsTab({ inspections, findings }: {
 
       {/* Every finding across the property's walks — filter chips narrow
           the view (All by default; nothing is hidden unasked). */}
-      <PropertyFindingsList rows={findings} />
+      <PropertyFindingsList rows={findings} propertyId={propertyId} />
     </div>
   )
 }

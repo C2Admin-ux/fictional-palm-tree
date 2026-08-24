@@ -81,7 +81,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
+    // print: overrides let printable pages (the property walk sheet) flow
+    // onto paper — the locked-viewport shell would otherwise clip
+    // everything past page one, and the chrome would print with it.
+    <div className="flex h-screen overflow-hidden bg-slate-50 print:h-auto print:overflow-visible print:bg-white">
       {/* Mobile drawer backdrop — above the bottom tab bar (z-40) so
           the bar is dimmed and a tap in that strip closes the drawer;
           the drawer itself stays above the backdrop at z-50 */}
@@ -95,7 +98,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       {/* Sidebar: fixed drawer on mobile, static column on md+ */}
       <aside className={cn(
-        'fixed inset-y-0 left-0 z-50 w-56 bg-[#1a2332] flex flex-col overflow-hidden',
+        'fixed inset-y-0 left-0 z-50 w-56 bg-[#1a2332] flex flex-col overflow-hidden print:hidden',
         'transition-transform duration-200 ease-out',
         'md:static md:z-auto md:flex-shrink-0 md:translate-x-0 md:transition-none',
         sidebarOpen ? 'translate-x-0' : '-translate-x-full',
@@ -179,9 +182,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </aside>
 
       {/* Main column */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0 print:overflow-visible">
         {/* Mobile top bar */}
-        <header className="md:hidden flex items-center gap-3 px-4 py-3 bg-[#1a2332] flex-shrink-0">
+        <header className="md:hidden print:hidden flex items-center gap-3 px-4 py-3 bg-[#1a2332] flex-shrink-0">
           <button
             onClick={() => setSidebarOpen(true)}
             className="p-1 -ml-1 text-white"
@@ -204,12 +207,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Bottom padding below md reserves room for the fixed tab bar,
             so page footers/sticky bars land above it, not behind it */}
-        <main className="flex-1 overflow-y-auto pb-[calc(3.5rem_+_env(safe-area-inset-bottom))] md:pb-0">
+        <main className="flex-1 overflow-y-auto pb-[calc(3.5rem_+_env(safe-area-inset-bottom))] md:pb-0 print:overflow-visible print:pb-0">
           {children}
         </main>
       </div>
 
-      <BottomTabBar onToggleProperties={() => setSidebarOpen(o => !o)} />
+      {/* display:contents on screen; the wrapper exists only so the fixed
+          tab bar can be print-hidden without touching its component. */}
+      <div className="contents print:hidden">
+        <BottomTabBar onToggleProperties={() => setSidebarOpen(o => !o)} />
+      </div>
 
       <GlobalQuickAdd
         open={quickAddOpen}
