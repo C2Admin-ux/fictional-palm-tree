@@ -173,7 +173,9 @@ export function ProjectCard({ project: p, showStatus = false, showChevron = fals
   className?: string
 }) {
   const { pct, over } = budgetUsage(p)
-  const overdue = !!p.target_completion && isOverdue(p.target_completion) && p.status !== 'complete'
+  // A parked (postponed) project's target date is moot until the annual
+  // review restores it — don't paint it overdue.
+  const overdue = !!p.target_completion && isOverdue(p.target_completion) && p.status !== 'complete' && p.status !== 'postponed'
   const pip = CAPEX_PRIORITY_OPTIONS.find(o => o.value === p.priority)?.dot
 
   return (

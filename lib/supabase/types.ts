@@ -71,7 +71,7 @@ export type Database = {
         Relationships: []
       }
       capex_projects: {
-        Row: { id: string; property_id: string; title: string; category: string | null; status: 'planning' | 'approved' | 'in_progress' | 'complete' | 'on_hold'; priority: 'low' | 'medium' | 'high'; budget: number | null; committed: number | null; actual_spend: number | null; vendor_name: string | null; vendor_contact: string | null; bids_target: number | null; start_date: string | null; target_completion: string | null; actual_completion: string | null; notes: string | null; created_by: string | null; created_at: string; updated_at: string }
+        Row: { id: string; property_id: string; title: string; category: string | null; status: 'planning' | 'approved' | 'in_progress' | 'complete' | 'on_hold' | 'postponed'; priority: 'low' | 'medium' | 'high'; budget: number | null; committed: number | null; actual_spend: number | null; vendor_name: string | null; vendor_contact: string | null; bids_target: number | null; start_date: string | null; target_completion: string | null; actual_completion: string | null; notes: string | null; postponed_at: string | null; created_by: string | null; created_at: string; updated_at: string }
         Insert: Partial<Database['public']['Tables']['capex_projects']['Row']> & { property_id: string; title: string }
         Update: Partial<Database['public']['Tables']['capex_projects']['Row']>
         Relationships: [{ foreignKeyName: 'capex_projects_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]

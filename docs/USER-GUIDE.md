@@ -183,7 +183,7 @@ The inspections list shows every walk with filters (property / type / status), s
 **List vs Board** — toggle at the top (the board is also linkable at `/capex?view=board`).
 
 - **List** defaults to *active* projects (planning / approved / in progress); switch the status filter for the rest. Desktop rows are inline-editable — title, category, status, budget, vendor, target date — no modal needed. Mobile shows cards that tap through to detail. Search covers title, property, vendor. KPI strip: total budget, actual spend, % used (for the filtered set).
-- **Board** shows five status columns — Planning, Approved, In Progress, On Hold, Complete — always all statuses. **Drag a card to another column to change its status** (long-press to lift on touch); each column header shows count and budget total. Click a card to open its detail.
+- **Board** shows four status columns — Proposed, Vendor Selection, In Progress, On Hold. **Drag a card to another column to change its status** (long-press to lift on touch); each column header shows count and budget total. Click a card to open its detail. Complete and Postponed are deliberately not columns: complete projects live in the table (status filter), postponed ones in the collapsed **Postponed bucket** below the table — parked until the annual capex budgeting review, with a one-click Restore back to Proposed.
 
 **Project detail** (`/capex/<id>`):
 
@@ -293,7 +293,7 @@ Dated → Next action; undated → Inbox.
 
 - **Tasks:** inbox → next action / waiting / blocked → done
 - **Inspections:** draft → submitted → report sent
-- **CapEx:** planning → approved → in progress → on hold → complete
+- **CapEx:** proposed (planning) → vendor selection (approved) → in progress → complete, with on hold (short pause) and postponed (parked for annual budgeting) off the main line
 - **Contracts:** active, pending, expired, terminated, archived, superseded
 - **Insurance policies:** active, expired, cancelled, archived
 - **Claims:** reported → under review → negotiating → settlement → closed / denied

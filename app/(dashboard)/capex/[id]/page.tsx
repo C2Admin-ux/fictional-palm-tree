@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, CapexLineItem, CapexBid, Task } from '@/lib/supabase/types'
-import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_LABELS, STATUS_STYLES, STATUS_LABELS, PRIORITY_DOT } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, CAPEX_STATUS_STYLES, CAPEX_STATUS_LABELS, STATUS_STYLES, STATUS_LABELS, PRIORITY_DOT, capexStatusPatch } from '@/lib/utils'
 import { ArrowLeft, Plus, Trash2, CheckSquare } from 'lucide-react'
 import Link from 'next/link'
 import { BidsCard } from './bids-card'
@@ -16,7 +16,7 @@ import { toggleDoneOptimistic, patchTaskOptimistic, type TaskStore } from '@/lib
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
 import { isSchemaGapError } from '@/lib/supabase/schema-errors'
 
-const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold'] as const
+const STATUSES = ['planning', 'approved', 'in_progress', 'complete', 'on_hold', 'postponed'] as const
 const CATEGORIES = ['roof', 'hvac', 'plumbing', 'exterior', 'unit_turn', 'amenity', 'other'] as const
 
 type ProjectWithProp = CapexProject & { properties?: { name: string } | null }
@@ -81,7 +81,7 @@ export default function CapexDetailPage() {
   async function saveProject() {
     setSaving(true)
     await supabase.from('capex_projects').update({
-      title: form.title, status: form.status, priority: form.priority,
+      title: form.title, ...capexStatusPatch(form.status!, project?.status), priority: form.priority,
       category: form.category, budget: form.budget, committed: form.committed,
       vendor_name: form.vendor_name, vendor_contact: form.vendor_contact,
       start_date: form.start_date, target_completion: form.target_completion,
@@ -179,6 +179,9 @@ export default function CapexDetailPage() {
                 : <h1 className="text-xl font-semibold text-slate-900">{project.title}</h1>
               }
               <span className={`badge ${CAPEX_STATUS_STYLES[project.status]}`}>{CAPEX_STATUS_LABELS[project.status]}</span>
+              {project.status === 'postponed' && project.postponed_at && (
+                <span className="text-xs text-slate-400">since {formatDate(project.postponed_at)} — reviewed at annual capex budgeting</span>
+              )}
             </div>
             <p className="text-sm text-slate-400 mt-1">
               {project.properties?.name}
