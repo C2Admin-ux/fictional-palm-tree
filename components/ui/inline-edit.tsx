@@ -263,6 +263,7 @@ export const CAPEX_STATUS_OPTIONS: Option[] = [
   { value: 'in_progress', label: CAPEX_STATUS_LABELS.in_progress, className: 'text-amber-700 bg-amber-50 border border-amber-200',   dot: '#f59e0b' },
   { value: 'complete',    label: CAPEX_STATUS_LABELS.complete,    className: 'text-emerald-700 bg-emerald-50 border border-emerald-200', dot: '#16a34a' },
   { value: 'on_hold',     label: CAPEX_STATUS_LABELS.on_hold,     className: 'text-orange-700 bg-orange-50 border border-orange-200', dot: '#ea580c' },
+  { value: 'postponed',   label: CAPEX_STATUS_LABELS.postponed,   className: 'text-violet-700 bg-violet-50 border border-violet-200', dot: '#8b5cf6' },
 ]
 
 export const CAPEX_CATEGORY_OPTIONS: Option[] = [

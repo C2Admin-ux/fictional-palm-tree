@@ -190,6 +190,7 @@ export const CAPEX_STATUS_LABELS: Record<string, string> = {
   in_progress: 'In Progress',
   complete:    'Complete',
   on_hold:     'On Hold',
+  postponed:   'Postponed',
 }
 
 export const CAPEX_STATUS_STYLES: Record<string, string> = {
@@ -198,6 +199,7 @@ export const CAPEX_STATUS_STYLES: Record<string, string> = {
   in_progress: 'text-amber-700 bg-amber-50 border-amber-200',
   complete:    'text-emerald-700 bg-emerald-50 border-emerald-200',
   on_hold:     'text-orange-700 bg-orange-50 border-orange-200',
+  postponed:   'text-violet-700 bg-violet-50 border-violet-200',
 }
 
 // Keep in sync with CAPEX_STATUS_OPTIONS dots (components/ui/inline-edit) —
@@ -208,6 +210,16 @@ export const CAPEX_STATUS_DOT: Record<string, string> = {
   in_progress: '#f59e0b',
   complete:    '#16a34a',
   on_hold:     '#ea580c',
+  postponed:   '#8b5cf6',
+}
+
+// Every capex status write goes through this: entering Postponed stamps
+// postponed_at (the bucket shows how long a project has been parked, and
+// updated_at moves on every edit); leaving clears it; re-saving a
+// still-postponed project must NOT re-stamp the original park date.
+export function capexStatusPatch<S extends string>(next: S, prev?: string | null): { status: S; postponed_at?: string | null } {
+  if (next === prev) return { status: next }
+  return { status: next, postponed_at: next === 'postponed' ? new Date().toISOString() : null }
 }
 
 export const INSPECTION_STATUS_STYLES: Record<string, string> = {

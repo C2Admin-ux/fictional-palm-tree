@@ -11,9 +11,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { CapexProject, Property } from '@/lib/supabase/types'
-import { cn, formatCurrency, propertyColor } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, propertyColor, capexStatusPatch } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
-import { Plus, X, HardHat, Search, AlertTriangle } from 'lucide-react'
+import { Plus, X, HardHat, Search, AlertTriangle, ChevronRight, ArchiveRestore } from 'lucide-react'
 import { InlineText, InlineSelect, InlineDate, CAPEX_STATUS_OPTIONS, CAPEX_CATEGORY_OPTIONS } from '@/components/ui/inline-edit'
 import { FilterSelect } from '@/components/ui/select'
 import { Modal } from '@/components/ui/modal'
@@ -129,13 +129,23 @@ export default function CapexPage() {
   })
 
   // Table set: board set narrowed by the status filter, column-sorted.
+  // Postponed never joins the table (even under "All statuses") — those
+  // projects live in the bucket below, parked until the annual capex
+  // budgeting review.
   const tableRows = boardProjects
     .filter(p => {
+      if (p.status === 'postponed') return false
       if (filterStatus === 'active') return ACTIVE_STATUSES.includes(p.status)
       if (filterStatus === 'all') return true
       return p.status === filterStatus
     })
     .sort(sortFn)
+
+  // Bucket set: follows the shared filters like everything else;
+  // longest-parked first so the annual review reads oldest decisions first.
+  const postponedProjects = boardProjects
+    .filter(p => p.status === 'postponed')
+    .sort((a, b) => (a.postponed_at ?? a.updated_at).localeCompare(b.postponed_at ?? b.updated_at))
 
   const totalBudget = boardProjects.reduce((s, p) => s + (p.budget ?? 0), 0)
   const totalSpend  = boardProjects.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
@@ -161,7 +171,7 @@ export default function CapexPage() {
     fetchSeq.current++
     setRefreshing(false)
     setProjects(ps => ps.map(p => p.id === id ? { ...p, status } : p))
-    const { error } = await supabase.from('capex_projects').update({ status }).eq('id', id)
+    const { error } = await supabase.from('capex_projects').update(capexStatusPatch(status, prevStatus)).eq('id', id)
     if (error) {
       // Compare-and-swap rollback: only revert if the card still holds the
       // status THIS call set — a later move (or edit) may have won since.
@@ -219,7 +229,7 @@ export default function CapexPage() {
           <InlineSelect
             value={p.status}
             options={CAPEX_STATUS_OPTIONS}
-            onSave={v => patch({ status: v })}
+            onSave={v => patch(capexStatusPatch(v, p.status))}
           />
         </td>
         <td className="px-3 py-2.5 text-right">
@@ -355,7 +365,9 @@ export default function CapexPage() {
                 <FilterSelect value={filterStatus} onChange={setFilterStatus}>
                   <option value="active">Active</option>
                   <option value="all">All statuses</option>
-                  {CAPEX_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {/* No Postponed choice — the bucket below is that view */}
+                  {CAPEX_STATUS_OPTIONS.filter(o => o.value !== 'postponed')
+                    .map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </FilterSelect>
                 <FilterSelect value={groupBy} onChange={v => setGroupBy(v as 'property' | 'none')}
                   ariaLabel="Group by"
@@ -430,6 +442,14 @@ export default function CapexPage() {
               </>
             )}
           </div>
+
+          {/* Postponed bucket — off the board, off the table. Parked
+              projects wait here for the annual capex budgeting review
+              (Nick, 2026-08-25); restore drops one back into Proposed. */}
+          {postponedProjects.length > 0 && (
+            <PostponedBucket projects={postponedProjects}
+              onRestore={id => moveProject(id, 'planning')} />
+          )}
         </>
       )}
       </div>
@@ -444,6 +464,51 @@ export default function CapexPage() {
   )
 }
 
+// Collapsed by default — the count is the always-visible part; the rows
+// only matter during the annual budgeting pass. Rows stay lean (title,
+// property, budget, parked-since) with a one-click restore; everything
+// else lives on the detail page.
+function PostponedBucket({ projects, onRestore }: { projects: CapexWithProp[]; onRestore: (id: string) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="card">
+      <button onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-50 transition-colors rounded-xl">
+        <ChevronRight size={14} className={cn('text-slate-400 flex-shrink-0 transition-transform', open && 'rotate-90')} />
+        <span className="text-sm font-semibold text-slate-700">Postponed</span>
+        <span className="text-xs text-slate-500 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded-full">{projects.length}</span>
+        <span className="ml-auto pl-2 text-xs text-slate-400 whitespace-nowrap">reviewed at annual capex budgeting</span>
+      </button>
+      {open && (
+        <ul className="border-t border-slate-200/70 divide-y divide-slate-200/70">
+          {projects.map(p => (
+            <li key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+              <span className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ background: propertyColor(p.properties?.name ?? null) }} />
+              <div className="min-w-0 flex-1">
+                <Link href={`/capex/${p.id}`}
+                  className="text-sm font-medium text-slate-800 hover:text-blue-700 hover:underline underline-offset-2">
+                  {p.title}
+                </Link>
+                <p className="text-xs text-slate-400 truncate">
+                  {p.properties?.name ?? 'No property'}
+                  {p.budget != null && p.budget > 0 && <> · {formatCurrency(p.budget, true)} budget</>}
+                  {p.postponed_at && <> · postponed {formatDate(p.postponed_at)}</>}
+                </p>
+              </div>
+              <button onClick={() => onRestore(p.id)}
+                className="btn-ghost text-xs py-1 px-2 flex items-center gap-1 flex-shrink-0"
+                title="Move back to Proposed">
+                <ArchiveRestore size={12} />Restore
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function CapexFormModal({ properties, onClose, onSave }: { properties: Property[]; onClose: () => void; onSave: () => void }) {
   const supabase = createClient()
   const [form, setForm] = useState({ title: '', property_id: '', category: '', status: 'planning' as CapexProject['status'], priority: 'medium' as CapexProject['priority'], budget: '', vendor_name: '', vendor_contact: '', start_date: '', target_completion: '', notes: '' })
@@ -452,7 +517,7 @@ function CapexFormModal({ properties, onClose, onSave }: { properties: Property[
     e.preventDefault()
     if (!form.property_id) return
     setSaving(true)
-    await supabase.from('capex_projects').insert({ title: form.title, property_id: form.property_id, category: form.category || null, status: form.status, priority: form.priority, budget: form.budget ? parseFloat(form.budget) : null, vendor_name: form.vendor_name || null, vendor_contact: form.vendor_contact || null, start_date: form.start_date || null, target_completion: form.target_completion || null, notes: form.notes || null })
+    await supabase.from('capex_projects').insert({ title: form.title, property_id: form.property_id, category: form.category || null, ...capexStatusPatch(form.status), priority: form.priority, budget: form.budget ? parseFloat(form.budget) : null, vendor_name: form.vendor_name || null, vendor_contact: form.vendor_contact || null, start_date: form.start_date || null, target_completion: form.target_completion || null, notes: form.notes || null })
     setSaving(false); onSave()
   }
   return (
