@@ -145,6 +145,20 @@ Every property page has a hero header (name, city, units, PMC, parcel; occupancy
 
 Tabs are URL-driven (`?tab=building`), so they're linkable.
 
+### Site-visit sheet
+
+The **Site visit** button in the hero header (also on the Overview open-findings card, the Inspections-tab findings list, and the Cmd+K palette — type "visit") opens `/properties/<id>/site-visit`: one internal working page for walking the property. Nothing on it is emailed or PM-facing.
+
+- **Due tasks** — the full task toolkit (complete, snooze, postpone, edit, quick-add pre-set to the property). Later and No-date groups sit collapsed behind counts so the backlog can't bury the walk; quick-adding into a collapsed group pops it open.
+- **Open findings** — every unsettled finding (flagged, watch, task, capex, and untriaged), grouped in section/unit walking order with photo thumbnails. The Watch / Flag / Resolved buttons write the real records (with undo), and any change invalidates that inspection's stored report, same as everywhere else.
+- **CapEx in flight** — active projects with status, bids chip, budget, and past-due target highlighting.
+- **PM / team discussion** — renewal offers owed (or in hand awaiting approval), waiting-on tasks with aging, and open call items.
+- **Litigation** — open cases with deadlines (red inside 14 days).
+
+**Scratch notes** (amber boxes) save as you type, keyed to the property and the visit date: a general box up top, one per section, and a per-item **Note** on findings and capex rows. A later visit starts fresh; earlier notes stay readable under **Past visit notes** at the bottom.
+
+**Print** renders the sheet as a paper checklist — checkboxes on findings and due tasks, notes as text, empty note boxes as writing lines. (This replaced the old walk-sheet page; old links redirect.)
+
 ---
 
 ## 4. Inspections
