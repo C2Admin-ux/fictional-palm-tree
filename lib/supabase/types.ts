@@ -114,6 +114,12 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['litigation_updates']['Row']>
         Relationships: [{ foreignKeyName: 'litigation_updates_case_id_fkey'; columns: ['case_id']; isOneToOne: false; referencedRelation: 'litigation_cases'; referencedColumns: ['id'] }]
       }
+      site_visit_notes: {
+        Row: { id: string; property_id: string; visit_date: string; scope: string; body: string; created_by: string | null; created_at: string; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['site_visit_notes']['Row']> & { property_id: string; visit_date: string; scope: string; body: string }
+        Update: Partial<Database['public']['Tables']['site_visit_notes']['Row']>
+        Relationships: [{ foreignKeyName: 'site_visit_notes_property_id_fkey'; columns: ['property_id']; isOneToOne: false; referencedRelation: 'properties'; referencedColumns: ['id'] }]
+      }
       capex_bid_notes: {
         Row: { id: string; bid_id: string; body: string; created_by: string | null; created_at: string }
         Insert: Partial<Database['public']['Tables']['capex_bid_notes']['Row']> & { bid_id: string; body: string }
@@ -273,3 +279,4 @@ export type PropertyPermit = Database['public']['Tables']['property_permits']['R
 export type Call = Database['public']['Tables']['calls']['Row']
 export type CallItem = Database['public']['Tables']['call_items']['Row']
 export type AlertSetting = Database['public']['Tables']['alert_settings']['Row']
+export type SiteVisitNote = Database['public']['Tables']['site_visit_notes']['Row']
