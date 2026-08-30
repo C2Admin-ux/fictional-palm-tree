@@ -5,14 +5,16 @@
 // date picker for everything else, and Clear. One component for every
 // surface that edits a due date — task rows, the edit modal, the batch
 // bar — so "quickly set a due date" means the same thing everywhere.
+// The dropdown renders through AnchoredMenu (a body-level portal), same
+// as SnoozeMenu, so it never hides behind rows, bars, or overflow clips.
 //
 // Sibling of SnoozeMenu, deliberately not merged with it: snooze hides a
 // task until a date without moving the deadline; this MOVES the deadline.
 
 import { useEffect, useRef, useState } from 'react'
-import { cn, todayISO, formatDateShort } from '@/lib/utils'
+import { todayISO, formatDateShort } from '@/lib/utils'
 import { DUE_PRESETS, POSTPONE_STEPS, postponeDate } from '@/lib/tasks/dates'
-import { useClickOutside } from '@/components/ui/inline-edit'
+import { AnchoredMenu } from '@/components/ui/anchored-menu'
 import { CalendarDays, ChevronsRight, X } from 'lucide-react'
 
 export function DueMenu({
@@ -35,11 +37,9 @@ export function DueMenu({
     onOpenChange?.(o)
   }
 
-  const ref = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<HTMLDivElement>(null)
   const dateRef = useRef<HTMLInputElement>(null)
   const [picking, setPicking] = useState(false)
-
-  useClickOutside(ref, () => { if (open) { setOpen(false); setPicking(false) } })
 
   useEffect(() => {
     if (picking) dateRef.current?.showPicker?.()
@@ -54,7 +54,7 @@ export function DueMenu({
   }
 
   return (
-    <div ref={ref} className="relative inline-block" onClick={e => e.stopPropagation()}>
+    <div ref={anchorRef} className="relative inline-block" onClick={e => e.stopPropagation()}>
       <button
         type="button"
         data-due-trigger
@@ -64,70 +64,69 @@ export function DueMenu({
         {trigger}
       </button>
 
-      {open && (
-        <div className={cn(
-          'absolute top-full mt-1 z-50 bg-white border border-slate-200 rounded-xl shadow-lg py-1 min-w-[180px]',
-          align === 'right' ? 'right-0' : 'left-0',
-        )}>
-          <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wide">
-            Due
-          </div>
-          {DUE_PRESETS.map(preset => {
-            const date = preset.compute(today)
-            return (
-              <button
-                key={preset.key}
-                type="button"
-                onClick={() => choose(date)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
-                <CalendarDays size={12} className="text-slate-300 flex-shrink-0" />
-                <span className="flex-1">{preset.label}</span>
-                <span className="text-xs text-slate-400">{formatDateShort(date)}</span>
-              </button>
-            )
-          })}
-          <div className="my-1 border-t border-slate-100" />
-          {POSTPONE_STEPS.map(step => {
-            const date = postponeDate(value, step.days, today)
-            return (
-              <button
-                key={step.key}
-                type="button"
-                onClick={() => choose(date)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
-                <ChevronsRight size={12} className="text-slate-300 flex-shrink-0" />
-                <span className="flex-1">{step.label}</span>
-                <span className="text-xs text-slate-400">{formatDateShort(date)}</span>
-              </button>
-            )
-          })}
-          <div className="my-1 border-t border-slate-100" />
+      <AnchoredMenu
+        anchorRef={anchorRef}
+        open={open}
+        align={align}
+        onRequestClose={() => { setOpen(false); setPicking(false) }}>
+        <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wide">
+          Due
+        </div>
+        {DUE_PRESETS.map(preset => {
+          const date = preset.compute(today)
+          return (
+            <button
+              key={preset.key}
+              type="button"
+              onClick={() => choose(date)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+              <CalendarDays size={12} className="text-slate-300 flex-shrink-0" />
+              <span className="flex-1">{preset.label}</span>
+              <span className="text-xs text-slate-400">{formatDateShort(date)}</span>
+            </button>
+          )
+        })}
+        <div className="my-1 border-t border-slate-100" />
+        {POSTPONE_STEPS.map(step => {
+          const date = postponeDate(value, step.days, today)
+          return (
+            <button
+              key={step.key}
+              type="button"
+              onClick={() => choose(date)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+              <ChevronsRight size={12} className="text-slate-300 flex-shrink-0" />
+              <span className="flex-1">{step.label}</span>
+              <span className="text-xs text-slate-400">{formatDateShort(date)}</span>
+            </button>
+          )
+        })}
+        <div className="my-1 border-t border-slate-100" />
+        <button
+          type="button"
+          onClick={() => setPicking(true)}
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+          <CalendarDays size={12} className="text-slate-300 flex-shrink-0" />
+          Pick date…
+        </button>
+        {value != null && (
           <button
             type="button"
-            onClick={() => setPicking(true)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
-            <CalendarDays size={12} className="text-slate-300 flex-shrink-0" />
-            Pick date…
+            onClick={() => choose(null)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 transition-colors text-left">
+            <X size={12} className="text-slate-300 flex-shrink-0" />
+            Clear due date
           </button>
-          {value != null && (
-            <button
-              type="button"
-              onClick={() => choose(null)}
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 transition-colors text-left">
-              <X size={12} className="text-slate-300 flex-shrink-0" />
-              Clear due date
-            </button>
-          )}
-          {picking && (
-            <input
-              ref={dateRef}
-              type="date"
-              onChange={e => { if (e.target.value) choose(e.target.value) }}
-              className="absolute opacity-0 pointer-events-none w-0 h-0"
-            />
-          )}
-        </div>
-      )}
+        )}
+        {picking && (
+          <input
+            ref={dateRef}
+            type="date"
+            onChange={e => { if (e.target.value) choose(e.target.value) }}
+            className="absolute opacity-0 pointer-events-none w-0 h-0"
+          />
+        )}
+      </AnchoredMenu>
     </div>
   )
 }
