@@ -6,7 +6,7 @@ import {
   occupancyColor, delinquencyColor, noiVarianceColor,
   TRAFFIC_LIGHT, daysUntil, propertyColor, PRIORITY_DOT, CAPEX_STATUS_LABELS,
 } from '@/lib/utils'
-import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert } from 'lucide-react'
+import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert, ClipboardList } from 'lucide-react'
 import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import BuildingTab from './building-tab'
 import EditProperty from './edit-property'
@@ -226,6 +226,9 @@ export default async function PropertyPage({
               pmc_id: p.pmc_id ?? null,
             }}
           />
+          <Link href={`/properties/${params.id}/site-visit`} className="btn-secondary text-xs py-1.5 flex-shrink-0">
+            <ClipboardList size={12} />Site visit
+          </Link>
           <Link href={`/properties/${params.id}?tab=tasks`} className="btn-primary text-xs py-1.5 flex-shrink-0">
             <Plus size={12} />Add task
           </Link>

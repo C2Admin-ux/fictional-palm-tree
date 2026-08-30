@@ -24,7 +24,8 @@ import {
   snoozeTaskOptimistic, addSubtaskOptimistic, postponeTaskOptimistic,
 } from '@/lib/tasks/mutations'
 import { TASK_CREATED_EVENT } from '@/lib/tasks/create'
-import { groupByDue, postponeDate } from '@/lib/tasks/dates'
+import { groupByDue, postponeDate, type DueGroupKey } from '@/lib/tasks/dates'
+import { addDaysToDate } from '@/lib/utils'
 import { ChevronDown } from 'lucide-react'
 
 // Rows carry the same joins the tasks page loads, so the shared TaskRow
@@ -45,12 +46,21 @@ function flatten(rows: RawRow[]): TaskWithRelations[] {
   }))
 }
 
-export default function TasksTab({ propertyId }: { propertyId: string }) {
+// focusDue (site-visit sheet): the visit cares about what's DUE — the
+// Later and No-date groups render collapsed behind a count so a 90-task
+// backlog can't bury the walk list. A task quick-added into a collapsed
+// group auto-expands it (a capture that seems to vanish reads as a bug).
+export default function TasksTab({ propertyId, focusDue = false }: {
+  propertyId: string
+  focusDue?: boolean
+}) {
   const supabase = useMemo(() => createClient(), [])
   const [tasks, setTasks] = useState<TaskWithRelations[]>([])
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [completedOpen, setCompletedOpen] = useState(false)
+  // focusDue only: which of the collapsed-by-default groups are open
+  const [expandedGroups, setExpandedGroups] = useState<Set<DueGroupKey>>(new Set())
 
   // The edit modal's option lists — loaded once, lazily, the first time
   // a modal opens (three small selects that most tab visits never need).
@@ -240,6 +250,21 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
     .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
   const groups = groupByDue(openTasks)
 
+  const isCollapsed = (key: DueGroupKey) =>
+    focusDue && (key === 'later' || key === 'nodate') && !expandedGroups.has(key)
+
+  // Quick-add insert, plus the focusDue vanish guard: a new task landing
+  // in a collapsed group pops that group open so the capture stays visible.
+  const insertCreated = useCallback((task: Task) => {
+    store.insert(task)
+    if (!focusDue) return
+    const key: DueGroupKey = !task.due_date ? 'nodate'
+      : task.due_date > addDaysToDate(todayISO(), 7) ? 'later' : 'overdue'
+    if (key === 'later' || key === 'nodate') {
+      setExpandedGroups(prev => prev.has(key) ? prev : new Set(prev).add(key))
+    }
+  }, [store, focusDue])
+
   const row = (t: TaskWithRelations) => (
     <TaskRow key={t.id} task={t} handlers={handlers}
       selected={selectedId === t.id} swipeable
@@ -262,7 +287,7 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
         <TaskQuickAdd
           userId={userId}
           presetPropertyId={propertyId}
-          onCreated={store.insert}
+          onCreated={insertCreated}
           placeholder='Quick add — try "replace filters friday !high"'
         />
 
@@ -274,20 +299,44 @@ export default function TasksTab({ propertyId }: { propertyId: string }) {
 
         {groups.map(g => {
           if (!g.tasks.length) return null
+          const collapsible = focusDue && (g.key === 'later' || g.key === 'nodate')
+          const collapsed = isCollapsed(g.key)
+          const header = (
+            <>
+              {collapsible && (
+                <ChevronDown size={13}
+                  className={cn('text-slate-400 transition-transform', collapsed && '-rotate-90')} />
+              )}
+              <span className={cn('text-xs font-semibold uppercase tracking-wide',
+                g.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                {g.label}
+              </span>
+              <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
+                g.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
+                {g.tasks.length}
+              </span>
+            </>
+          )
           return (
             <div key={g.key}>
-              <div className={cn('flex items-center gap-2 px-6 py-2 border-b',
-                g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200')}>
-                <span className={cn('text-xs font-semibold uppercase tracking-wide',
-                  g.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
-                  {g.label}
-                </span>
-                <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
-                  g.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
-                  {g.tasks.length}
-                </span>
-              </div>
-              {g.tasks.map(row)}
+              {collapsible ? (
+                <button
+                  onClick={() => setExpandedGroups(prev => {
+                    const next = new Set(prev)
+                    if (next.has(g.key)) next.delete(g.key)
+                    else next.add(g.key)
+                    return next
+                  })}
+                  className="w-full flex items-center gap-2 px-6 py-2 border-b bg-slate-50 border-slate-200 hover:bg-slate-100 transition-colors">
+                  {header}
+                </button>
+              ) : (
+                <div className={cn('flex items-center gap-2 px-6 py-2 border-b',
+                  g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200')}>
+                  {header}
+                </div>
+              )}
+              {!collapsed && g.tasks.map(row)}
             </div>
           )
         })}

@@ -22,7 +22,7 @@ import { signedPhotoUrls, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { instanceLabel } from '@/lib/inspections/sections'
 import { isOpenFinding, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
-import { Camera, ClipboardCheck, Printer } from 'lucide-react'
+import { Camera, ClipboardCheck, ClipboardList } from 'lucide-react'
 
 // Lean row the server page assembles — first photo only, minimal
 // inspection join.
@@ -45,8 +45,9 @@ export type OpenFindingRow = {
 }
 
 // One signing pass over the rows' thumbs (private bucket). Best-effort:
-// rows render with a placeholder until/unless their URL lands.
-function useSignedThumbs(rows: OpenFindingRow[]): Record<string, SignedPhotoUrl> {
+// rows render with a placeholder until/unless their URL lands. Exported
+// for the site-visit sheet, which renders its own finding rows.
+export function useSignedThumbs(rows: { thumb_path: string | null }[]): Record<string, SignedPhotoUrl> {
   const supabase = createClient()
   const [urls, setUrls] = useState<Record<string, SignedPhotoUrl>>({})
   const paths = useMemo(
@@ -123,11 +124,11 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
       <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <h3 className="text-sm font-semibold text-slate-700">Open findings ({count})</h3>
         <div className="flex items-center gap-3">
-          {/* Printable checklist of the flagged + watch subset — for
-              walking the site and checking off what's actually fixed. */}
-          <Link href={`/properties/${propertyId}/walk-sheet`}
+          {/* The site-visit working sheet — due tasks + every unsettled
+              finding + capex/PM/litigation context, printable. */}
+          <Link href={`/properties/${propertyId}/site-visit`}
             className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-            <Printer size={11} />Walk sheet
+            <ClipboardList size={11} />Site visit
           </Link>
           <Link href={`/properties/${propertyId}?tab=inspections`}
             className="text-xs text-blue-600 hover:underline">View all →</Link>
@@ -172,9 +173,9 @@ export function PropertyFindingsList({ rows, propertyId }: { rows: OpenFindingRo
         <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-3">
           Findings ({rows.length})
           {propertyId && (
-            <Link href={`/properties/${propertyId}/walk-sheet`}
+            <Link href={`/properties/${propertyId}/site-visit`}
               className="text-xs font-normal text-blue-600 hover:underline flex items-center gap-1">
-              <Printer size={11} />Walk sheet
+              <ClipboardList size={11} />Site visit
             </Link>
           )}
         </h3>
