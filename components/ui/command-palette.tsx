@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 import { useOverlayOpen } from '@/lib/ui/overlay'
 import { Overlay } from '@/components/ui/overlay'
 import { NAV_ITEMS } from '@/lib/nav'
-import { Search, CornerDownLeft, Plus, Building2 } from 'lucide-react'
+import { Search, CornerDownLeft, Plus, Building2, ClipboardList } from 'lucide-react'
 
 type PaletteProperty = { id: string; name: string }
 
@@ -134,6 +134,13 @@ export function CommandPalette({ properties, userId }: {
       ...properties.map(p => ({
         key: `prop:${p.id}`, kind: 'property' as const, label: p.name,
         href: `/properties/${p.id}`, icon: Building2,
+      })),
+      // Site-visit sheets — after the plain property rows so an empty
+      // query still shows nav + properties first; typing "visit" (or a
+      // property name) surfaces them.
+      ...properties.map(p => ({
+        key: `visit:${p.id}`, kind: 'page' as const, label: `Site visit — ${p.name}`,
+        href: `/properties/${p.id}/site-visit`, icon: ClipboardList,
       })),
       ...(fetched?.tasks ?? []),
       ...(fetched?.capex ?? []),
