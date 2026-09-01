@@ -1,4 +1,4 @@
-export type Json = string | number | boolean | null | { [key: string]: Json } | Json[]
+﻿export type Json = string | number | boolean | null | { [key: string]: Json } | Json[]
 
 // Shape of the `properties.unit_mix` jsonb column (see building-tab.tsx)
 export type UnitMix = { type: string; count: number; sf: number | null }[]
@@ -13,7 +13,7 @@ export type Database = {
         Relationships: []
       }
       properties: {
-        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; parcel_number: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; created_at: string }
+        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; parcel_number: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; auto_tasks_exempt: boolean; created_at: string }
         Insert: Partial<Database['public']['Tables']['properties']['Row']> & { name: string }
         Update: Partial<Database['public']['Tables']['properties']['Row']>
         Relationships: [{ foreignKeyName: 'properties_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]

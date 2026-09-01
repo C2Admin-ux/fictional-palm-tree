@@ -14,10 +14,12 @@ import { addDaysToDate, daysBetween } from '@/lib/utils'
 // A property with no renewal_settings row uses these, so the generator
 // produces cycles for a newly added property without any setup first.
 
-// Days before the expiration month BEGINS that offers are due. 90 is the
-// standard the PMs stated themselves ("we would like to have these
-// reviewed and approved 90 days in advance").
-export const DEFAULT_LEAD_DAYS = 90
+// Days before the expiration month BEGINS that offers are due. The PMs'
+// own stated standard was 90 ("we would like to have these reviewed and
+// approved 90 days in advance"), but in practice offers land far later —
+// Nick moved the house default to 60 (2026-09-01) so the tracker chases
+// against a date the PMs can actually hit.
+export const DEFAULT_LEAD_DAYS = 60
 
 // How far ahead cycles are generated. Six months comfortably covers a
 // 90-day lead plus the runway to see the next cycle coming.

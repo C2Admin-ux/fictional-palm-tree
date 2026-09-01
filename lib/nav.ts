@@ -5,7 +5,7 @@
 
 import type { LucideIcon } from 'lucide-react'
 import {
-  LayoutDashboard, CheckSquare, Wrench, TrendingUp,
+  LayoutDashboard, CheckSquare, Wrench,
   FileSignature, Shield, FileBarChart, ClipboardCheck, Phone, Settings,
   CalendarClock, Scale,
 } from 'lucide-react'
@@ -17,7 +17,10 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/tasks',              label: 'Tasks',          icon: CheckSquare },
   { href: '/capex',              label: 'CapEx',          icon: Wrench },
   { href: '/renewals',           label: 'Renewals',       icon: CalendarClock },
-  { href: '/performance',        label: 'PM Performance', icon: TrendingUp },
+  // PM Performance hidden for now (Nick, 2026-09-01) — the /performance
+  // page still exists and is directly routable; to restore it, re-add
+  // { href: '/performance', label: 'PM Performance', icon: TrendingUp }
+  // here (and TrendingUp to the lucide import above).
   { href: '/documents',          label: 'Contracts',      icon: FileSignature },
   { href: '/insurance/policies', label: 'Insurance',      icon: Shield },
   { href: '/litigation',         label: 'Litigation',     icon: Scale },
