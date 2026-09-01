@@ -141,8 +141,16 @@ export default async function PropertyPage({
   const propPolicies = allActivePolicies
   // Soft data-hygiene flags: shown for every property status — even a
   // watchlist/disposition property should have its coverage recorded.
-  const insuranceGapLabel = describeGaps(coverageGaps([{ id: params.id }], allActivePolicies)[params.id])
-  const missingTrash = trashContractGaps([{ id: params.id }], (trashContracts ?? []) as any[])[params.id]
+  // An in-process acquisition (auto_tasks_exempt) is the one exception:
+  // it has no policies or contracts yet by definition, so the flags are
+  // suppressed until the purchase closes.
+  const exemptFromFlags = (property as any).auto_tasks_exempt === true
+  const insuranceGapLabel = exemptFromFlags
+    ? null
+    : describeGaps(coverageGaps([{ id: params.id }], allActivePolicies)[params.id])
+  const missingTrash = exemptFromFlags
+    ? false
+    : trashContractGaps([{ id: params.id }], (trashContracts ?? []) as any[])[params.id]
   const gapLinks = [
     ...(insuranceGapLabel ? [{ label: insuranceGapLabel, href: `/insurance/policies?property=${params.id}`, cta: 'Go to Insurance' }] : []),
     ...(missingTrash ? [{ label: TRASH_GAP_LABEL, href: `/documents?property=${params.id}`, cta: 'Go to Contracts' }] : []),
@@ -224,6 +232,7 @@ export default async function PropertyPage({
               units_total: p.units_total ?? null,
               pms_platform: p.pms_platform ?? null,
               pmc_id: p.pmc_id ?? null,
+              auto_tasks_exempt: p.auto_tasks_exempt === true,
             }}
           />
           <Link href={`/properties/${params.id}/site-visit`} className="btn-secondary text-xs py-1.5 flex-shrink-0">

@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
 
     // ── Load (bounded — see FETCH_FLOOR_MONTHS) ────────────────
     const [propertiesRes, settingsRes, cyclesRes, tasksRes] = await Promise.all([
-      supabase.from('properties').select('id, name, status').eq('status', 'active'),
+      supabase.from('properties').select('id, name, status, auto_tasks_exempt').eq('status', 'active'),
       supabase.from('renewal_settings').select('*'),
       supabase.from('renewal_cycles').select('*').gte('expiration_month', floor),
       supabase.from('tasks').select('*')
@@ -107,7 +107,11 @@ export async function GET(req: NextRequest) {
     if (cyclesRes.error) throw cyclesRes.error
     if (tasksRes.error) throw tasksRes.error
 
-    const properties = propertiesRes.data ?? []
+    // In-process acquisitions (auto_tasks_exempt) are out entirely, same
+    // as cadence.enabled=false — belt and suspenders with their
+    // renewal_settings row, so a future acquisition is safe even before
+    // anyone remembers to add settings for it.
+    const properties = (propertiesRes.data ?? []).filter(p => !p.auto_tasks_exempt)
     const settingsByProperty = new Map(
       ((settingsRes.data ?? []) as RenewalSetting[]).map(s => [s.property_id, s]))
     const cycles = (cyclesRes.data ?? []) as RenewalCycle[]
