@@ -7,11 +7,11 @@ import { createClient } from '@/lib/supabase/client'
 import type { Json, Task, TaskView, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
   cn, formatDateShort, daysUntil,
-  todayISO,
+  todayISO, addDaysToDate,
   STATUS_STYLES, STATUS_LABELS,
   propertyColor,
 } from '@/lib/utils'
-import { groupByDue, postponeDate } from '@/lib/tasks/dates'
+import { groupByDue, groupForWork, FOLDED_BUCKETS, type WorkBucketKey, postponeDate } from '@/lib/tasks/dates'
 import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
@@ -128,7 +128,7 @@ function sameViewConfig(a: ViewConfig, b: ViewConfig): boolean {
 }
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
-  { key: 'agenda', label: 'Agenda' },
+  { key: 'agenda', label: 'My Work' },
   { key: 'all',    label: 'All tasks' },
   { key: 'review', label: 'Review' },
 ]
@@ -985,6 +985,14 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
+  // Later / Backlog drawers start folded — the page opens on the
+  // two-week focus horizon only.
+  const [openFolds, setOpenFolds] = useState<Set<WorkBucketKey>>(new Set())
+  const toggleFold = (k: WorkBucketKey) => setOpenFolds(prev => {
+    const next = new Set(prev)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    return next
+  })
 
   const today = todayISO()
 
@@ -1009,9 +1017,9 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
       isUnblocked(t, taskById) && !inboxIds.has(t.id)
     )
 
-    // Shared bucketing (same as the property Tasks tab) — 'Later' is
-    // unbounded, so a capture dated months out still shows up.
-    const groups = groupByDue(actionable, today, { nodate: 'No due date' })
+    // My Work horizon (lib/tasks/dates.ts): the next two weeks open,
+    // Later and Backlog folded into counted drawers.
+    const groups = groupForWork(actionable, today)
     const hasDated = groups.some(g => g.tasks.length > 0)
 
     const snoozed = tops.filter(t =>
@@ -1051,23 +1059,37 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
         </div>
       )}
 
-      {/* Date groups */}
+      {/* Date groups — focus horizon open, Later/Backlog folded */}
       {groups.map(g => {
         if (!g.tasks.length) return null
+        const foldable = FOLDED_BUCKETS.includes(g.key)
+        const open = !foldable || openFolds.has(g.key)
         return (
-          <div key={g.key}>
-            <div className={cn('flex items-center gap-2 px-6 py-2 border-b',
-              g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200')}>
+          <div key={g.key} className={cn(g.key === 'later' && 'mt-4')}>
+            <div
+              {...(foldable ? { role: 'button', tabIndex: 0, onClick: () => toggleFold(g.key),
+                onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFold(g.key) } } } : {})}
+              className={cn('flex items-center gap-2 px-6 py-2 border-b',
+                g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200',
+                foldable && 'cursor-pointer hover:bg-slate-100 transition-colors')}>
+              {foldable && (
+                <ChevronDown size={13} className={cn('text-slate-400 transition-transform', !open && '-rotate-90')} />
+              )}
               <span className={cn('text-xs font-semibold uppercase tracking-wide',
-                g.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                g.tone === 'red' ? 'text-red-700' : foldable ? 'text-slate-500' : 'text-slate-600')}>
                 {g.label}
               </span>
               <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
                 g.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
                 {g.tasks.length}
               </span>
+              {foldable && !open && (
+                <span className="text-xs text-slate-400">
+                  {g.key === 'later' ? 'due in 2+ weeks' : 'undated — date it, delegate it, or close it in Review'}
+                </span>
+              )}
             </div>
-            {g.tasks.map(t => (
+            {open && g.tasks.map(t => (
               <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
                 exitPhase={handlers.exitPhaseOf(t.id)}
                 subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
@@ -1147,6 +1169,20 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
   const tops = topLevel(tasks)
   const myInbox = tops.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
 
+  // Needs a decision: work that has gone stale — overdue by more than a
+  // week, or undated and untouched for 30+ days. Each one gets a real
+  // date, a delegate, the backlog on purpose, or closed. This is what
+  // keeps the My Work Backlog drawer from silently refilling.
+  const today = todayISO()
+  const staleCutoff = addDaysToDate(today, -30)
+  const overdueCutoff = addDaysToDate(today, -7)
+  const stale = tops
+    .filter(t => t.status !== 'done' && t.status !== 'inbox' && isAwake(t, today) && (
+      (t.due_date != null && t.due_date < overdueCutoff) ||
+      (t.due_date == null && t.updated_at.slice(0, 10) < staleCutoff)
+    ))
+    .sort((a, b) => (a.due_date ?? a.updated_at).localeCompare(b.due_date ?? b.updated_at))
+
   const waiting = [...tops]
     .filter(t => t.status === 'waiting')
     .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
@@ -1182,6 +1218,24 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
         {myInbox.length
           ? myInbox.map(t => <TaskRow key={t.id} {...rowProps(t)} />)
           : <SectionEmpty label="Inbox zero. Nothing to process." />}
+      </ReviewSection>
+
+      {/* (a2) Needs a decision */}
+      <ReviewSection
+        title="Needs a decision"
+        count={stale.length}
+        hint="Overdue 7+ days, or undated and untouched for 30+ days. Date it, delegate it, or close it.">
+        {stale.length
+          ? stale.map(t => (
+              <TaskRow key={t.id} {...rowProps(t)}
+                meta={
+                  <span className="text-xs text-amber-600">
+                    {t.due_date ? `${-(daysUntil(t.due_date) ?? 0)}d overdue` : `untouched ${-(daysUntil(t.updated_at) ?? 0)}d`}
+                  </span>
+                }
+              />
+            ))
+          : <SectionEmpty label="Nothing stale. Nice." />}
       </ReviewSection>
 
       {/* (b) Waiting on */}

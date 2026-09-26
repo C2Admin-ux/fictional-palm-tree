@@ -358,13 +358,13 @@ export function TaskFormModal({ task, properties, contacts, capexProjects, allTa
             </div>
           </div>
 
-          {/* Snooze */}
+          {/* Start date (stored as snoozed_until) */}
           <div>
-            <label className="label">Snooze until</label>
+            <label className="label">Start date</label>
             <input type="date" value={form.snoozed_until}
               onChange={e => setForm(f => ({ ...f, snoozed_until: e.target.value }))}
               className="input" />
-            <p className="text-xs text-slate-400 mt-1">Hides from the agenda until this date, then wakes up automatically</p>
+            <p className="text-xs text-slate-400 mt-1">Hidden from My Work until this date, then appears automatically. Recurring tasks set this for you.</p>
           </div>
 
           {/* Tags */}

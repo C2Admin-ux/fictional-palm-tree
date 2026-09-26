@@ -9,6 +9,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Task } from '@/lib/supabase/types'
 import { nextOccurrenceBasePayload } from '@/lib/tasks/payload'
 import { todayISO } from '@/lib/utils'
+import { recurrenceStartDate } from '@/lib/tasks/dates'
 
 type Client = SupabaseClient<Database>
 
@@ -152,6 +153,10 @@ export async function createNextOccurrence(
       ...nextOccurrenceBasePayload(task),
       status:          'next_action',
       due_date:        next.due_date,
+      // Start date: hidden until a cadence-scaled lead time before the
+      // due date (lib/tasks/dates.ts) — a monthly review surfaces a
+      // week out instead of the day the last one closed.
+      snoozed_until:   recurrenceStartDate(next.due_date, task.recur_freq, todayISO(), task.recur_interval, task.recur_unit),
       parent_task_id:  nextParentTaskId(task, parentStatus),
       recur_parent_id: parentId,
       recur_count:     (task.recur_count ?? 0) + 1,
