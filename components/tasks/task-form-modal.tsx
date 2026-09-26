@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Task, Contact, Property, CapexProject } from '@/lib/supabase/types'
+import type { Task, Contact, Property, CapexProject, Project, UserProfile } from '@/lib/supabase/types'
 import { cn, formatDate } from '@/lib/utils'
 import { RefreshCw } from 'lucide-react'
 import { ContactActionMenu } from '@/components/tasks/contact-popover'
@@ -12,8 +12,10 @@ import type { TaskWithRelations } from '@/components/tasks/task-row'
 
 // ── Task Form Modal ──────────────────────────────────────────
 
-export function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onComplete, onClose, onSave }: {
+export function TaskFormModal({ task, properties, contacts, capexProjects, allTasks, onComplete, onClose, onSave, defaults }: {
   task: TaskWithRelations | null
+  // Prefills for a NEW task (e.g. the project page presets project_id).
+  defaults?: Partial<Pick<Task, 'project_id' | 'property_id' | 'assigned_to'>>
   properties: Property[]
   contacts: Contact[]
   capexProjects: CapexProject[]
@@ -26,6 +28,18 @@ export function TaskFormModal({ task, properties, contacts, capexProjects, allTa
 }) {
   const supabase = createClient()
 
+  // Projects + people for the Project / Assignee selects. Fetched here
+  // (two tiny selects) rather than threaded through every caller.
+  const [projectOptions, setProjectOptions] = useState<Project[]>([])
+  const [people, setPeople] = useState<UserProfile[]>([])
+  useEffect(() => {
+    void supabase.from('projects').select('*').neq('status', 'done').order('title')
+      .then(({ data }) => setProjectOptions((data ?? []) as Project[]))
+    void supabase.from('user_profiles').select('*').order('full_name')
+      .then(({ data }) => setPeople((data ?? []) as UserProfile[]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   type FormState = {
     title: string; description: string; property_id: string
     capex_project_id: string; status: string; priority: string
@@ -34,12 +48,16 @@ export function TaskFormModal({ task, properties, contacts, capexProjects, allTa
     tags: string; recur_freq: string; recur_interval: string
     recur_unit: string; recur_end_type: string; recur_end_date: string
     recur_end_count: string
+    project_id: string; assigned_to: string; follow_up_on: string
   }
 
   const [form, setForm] = useState<FormState>({
     title:              task?.title ?? '',
     description:        task?.description ?? '',
-    property_id:        task?.property_id ?? '',
+    property_id:        task?.property_id ?? defaults?.property_id ?? '',
+    project_id:         task?.project_id ?? defaults?.project_id ?? '',
+    assigned_to:        task ? (task.assigned_to ?? '') : (defaults?.assigned_to ?? ''),
+    follow_up_on:       task?.follow_up_on ?? '',
     capex_project_id:   task?.capex_project_id ?? '',
     status:             task?.status ?? 'inbox',
     priority:           task?.priority ?? 'medium',
@@ -84,6 +102,10 @@ export function TaskFormModal({ task, properties, contacts, capexProjects, allTa
       due_date:           form.due_date || null,
       snoozed_until:      form.snoozed_until || null,
       blocked_by_task_id: form.blocked_by_task_id || null,
+      project_id:         form.project_id || null,
+      assigned_to:        form.assigned_to || null,
+      // A follow-up date only means something while waiting on someone.
+      follow_up_on:       form.status === 'waiting' ? (form.follow_up_on || null) : null,
       // A task with children can never gain a parent (hasChildren hides
       // the control), and auto-generated deadline tasks stay top-level
       // (isAutoSource hides it too) — both preserve whatever the task
@@ -276,6 +298,45 @@ export function TaskFormModal({ task, properties, contacts, capexProjects, allTa
               {filteredCapex.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
+
+          {/* Row: project + assignee */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Project</label>
+              <select value={form.project_id}
+                onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}
+                className="input">
+                <option value="">None</option>
+                {projectOptions.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                {/* Keep a done project's link visible on its old tasks */}
+                {form.project_id && !projectOptions.some(p => p.id === form.project_id) && (
+                  <option value={form.project_id}>(closed project)</option>
+                )}
+              </select>
+            </div>
+            <div>
+              <label className="label">Assignee</label>
+              <select value={form.assigned_to}
+                onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))}
+                className="input">
+                <option value="">Unassigned (me)</option>
+                {people.map(p => <option key={p.id} value={p.id}>{p.full_name ?? 'Unnamed user'}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Waiting on someone → when to chase them */}
+          {form.status === 'waiting' && (
+            <div>
+              <label className="label">Follow up on</label>
+              <input type="date" value={form.follow_up_on}
+                onChange={e => setForm(f => ({ ...f, follow_up_on: e.target.value }))}
+                className="input" />
+              <p className="text-xs text-slate-400 mt-1">
+                Tag who you&rsquo;re waiting on under People. Until this date the task stays out of My Work; then it comes back under Follow up.
+              </p>
+            </div>
+          )}
 
           {/* Parent task — makes this a subtask (single level) */}
           {hasChildren || isAutoSource ? (

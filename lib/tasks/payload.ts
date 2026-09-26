@@ -19,7 +19,7 @@ function omit<T extends object>(obj: T, keys: readonly string[]): Partial<T> {
 // to a row (never real columns) — none of these belong in an insert.
 const NON_INSERT_KEYS = [
   'created_at', 'updated_at',
-  'properties', 'capex_projects', 'contacts', 'task_contacts',
+  'properties', 'capex_projects', 'projects', 'assignee_name', 'contacts', 'task_contacts',
 ] as const
 
 // Everything on a Task row except generated/managed columns — used to

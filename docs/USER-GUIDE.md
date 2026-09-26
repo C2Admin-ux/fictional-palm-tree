@@ -31,31 +31,53 @@ The core of the app. Three views, switched by the tab toggle at the top:
 
 | View | What it's for |
 |---|---|
-| **Agenda** (default) | The daily driver. Quick-add bar, then *your* inbox to process, then everything actionable now grouped by due date, snoozed items parked at the bottom. |
+| **My Work** (default) | The daily driver. Quick-add bar, *your* inbox to process, follow-ups that are due, then the next two weeks of work. Later and undated work fold into counted drawers. |
 | **All tasks** | The full list with status pills, filters, search, and group-by. Use it to slice by property, CapEx project, person, or priority. |
 | **Review** | A guided weekly sweep (see below). |
 
-### Agenda
+### My Work
 
-Shows only what you can act on: tasks assigned to you (or unassigned), not snoozed, not blocked by an open task, not done. Sections: **Inbox** (things you captured that still need processing — date them, promote them, or delete them), then **Overdue / Today / This week / Later / No due date**, then a collapsed **Snoozed** section listing wake dates. "Later" is unbounded, so something dated months out never disappears.
+Shows only what you can act on: tasks assigned to you (or unassigned), past their start date, not blocked by an open task, not done. Sections:
+
+- **Inbox**: things you captured that still need processing. Date them, promote them, or delete them.
+- **Follow up**: tasks you're *waiting* on someone for whose follow-up date has arrived. Chase them.
+- **Overdue / Today / This week / Next week**: the two-week focus horizon, always open.
+- **Later** (due in 2+ weeks) and **Backlog** (no due date): folded drawers with counts. Click to open.
+- **Parked**: tasks with a future start date, and waiting tasks before their follow-up date, with the date each comes back.
+
+**Start dates.** A task's start date (the "Start date" field in the editor) hides it from My Work until that day. Recurring tasks set their own: the next occurrence appears a lead time before it's due (weekly 2 days, monthly 7, quarterly 21, annually 30) instead of the moment the last one closes.
 
 ### All tasks
 
 - **Status pills** — Inbox, Next action, Waiting, Blocked, Done (with counts). Done starts toggled off; click pills to include/exclude.
 - **Filters** — property, CapEx project, person (contact on the task), priority, plus free-text search over title and description.
-- **Group by** — Status (default), Property, Priority, or Due. In Due grouping, done and snoozed tasks move to trailing *Completed* / *Snoozed* sections instead of polluting the date buckets.
+- **Group by** — Status (default), Property, Priority, Due, Project, or Assignee. In Due grouping, done and snoozed tasks move to trailing *Completed* / *Snoozed* sections instead of polluting the date buckets.
 - Sections collapse independently per grouping; the Done section starts collapsed.
 - Deep links work: `/tasks?property=<id>` or `/tasks?capex=<id>` opens the All view pre-filtered (CapEx detail pages link here).
 
 ### Review — the weekly sweep
 
-Five fixed sections, in order:
+Sections, in order:
 
 1. **Inbox to zero** — every unprocessed capture of yours.
-2. **Waiting on** — all `waiting` tasks, oldest-touched first, each showing "waiting *N*d" and the attached people. Chase or close.
-3. **Obligations horizon** — auto-generated deadline tasks (renewals, expirations) due within 90 days, grouped by property. See section 7.
-4. **Rocks** — open tasks tagged `rock` (the big things this quarter). Toggle a task's rock status with the mountain icon on its row, or type `#rock` in quick-add.
-5. **Shipped last 7 days** — what got completed, newest first. Momentum check.
+2. **Needs a decision** — work that's gone stale: overdue by 7+ days, or undated and untouched for 30+ days. Give each a real date, delegate it, or close it. This keeps the Backlog drawer from quietly refilling.
+3. **Waiting on** — all `waiting` tasks, oldest-touched first, each showing "waiting *N*d", the attached people, and the follow-up date. Chase or close.
+4. **Delegated** (shown when there is any) — open tasks assigned to a teammate.
+5. **Obligations horizon** — auto-generated deadline tasks (renewals, expirations) due within 90 days, grouped by property. See section 7.
+6. **Rocks** — open tasks tagged `rock` (the big things this quarter). Toggle a task's rock status with the mountain icon on its row, or type `#rock` in quick-add.
+7. **Shipped last 7 days** — what got completed, newest first. Momentum check.
+
+### Projects and delegation
+
+**Projects** (sidebar → Projects) group related tasks, such as due diligence on an acquisition, insurance renewal season, or quarterly reserve draws. Each project has an owner, an optional property, start and target dates, and a status (Active / On hold / Done). Open one to see its tasks three ways:
+
+- **List**: the full task toolkit (quick-add files new tasks into the project as next actions).
+- **Board**: columns for Inbox / Next action / Waiting / Blocked / Done (last 30 days). Drag a card to change its status; dragging to Done completes it for real (recurrence and undo included). "Add task" at the bottom of a column creates one straight into that status.
+- **Timeline**: one bar per dated task, from its start to its due date, with Today and the project's target marked. Undated tasks list below as Unscheduled.
+
+Any task can join a project from the **Project** field in its editor. Deleting a project never deletes its tasks; they just lose the link.
+
+**Delegation.** The task editor's **Assignee** field hands a task to a teammate; it leaves your My Work and shows on theirs, with a "→ Name" chip on the row and in your weekly Review under *Delegated*. For work that's on someone *outside* the team (a PM, a lender), set the status to **Waiting**, tag them under People, and set **Follow up on**. The task stays parked until that date, then comes back in My Work under *Follow up*.
 
 ### Quick-add natural language
 
@@ -100,7 +122,7 @@ The shortcut legend sits in a footer strip on large screens. On any *other* page
 
 ### Snooze and swipe
 
-**Snooze** hides a task from the Agenda until a wake date. Presets: **Tomorrow**, **Next week (Mon)**, **Next month**, or **Pick date…** — from the moon icon on any row, the `s` shortcut, the edit modal's "Snooze until" field, or a swipe.
+**Snooze** hides a task from the Agenda until a wake date. Presets: **Tomorrow**, **Next week (Mon)**, **Next month**, or **Pick date…** — from the moon icon on any row, the `s` shortcut, the edit modal's "Start date" field, or a swipe.
 
 **Swipe gestures (touch):** swipe a row **right to complete** (green check reveal), **left to open the snooze menu** (amber moon). The action arms at about half a swipe; vertical scrolling is unaffected.
 

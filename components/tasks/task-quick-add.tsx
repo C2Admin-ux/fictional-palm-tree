@@ -15,9 +15,12 @@ import { cn, formatDateShort, propertyColor, PRIORITY_DOT } from '@/lib/utils'
 import { Plus, Inbox as InboxIcon, CalendarDays, Sparkles } from 'lucide-react'
 
 export function TaskQuickAdd({
-  userId, properties = [], presetPropertyId = null, onCreated, placeholder, autoFocus = false,
+  userId, properties = [], presetPropertyId = null, presetFields, onCreated, placeholder, autoFocus = false,
   disabled = false,
 }: {
+  // Extra fields stamped on every capture (the project page presets
+  // project_id and files undated captures as next actions, not inbox).
+  presetFields?: Partial<Pick<Task, 'project_id' | 'status'>>
   userId: string | null
   // Property names for NL matching — pass [] to disable (preset context)
   properties?: QuickAddProperty[]
@@ -45,7 +48,7 @@ export function TaskQuickAdd({
     setAdding(true)
     // Capture rules (dated → next_action, undated → inbox, ownership
     // stamps) live in the shared creation path — lib/tasks/create.ts.
-    const created = await insertTask(supabase, quickAddInsertPayload(parsed, userId, presetPropertyId))
+    const created = await insertTask(supabase, { ...quickAddInsertPayload(parsed, userId, presetPropertyId), ...presetFields })
     setAdding(false)
     if (!created) {
       setValue(snapshot)
