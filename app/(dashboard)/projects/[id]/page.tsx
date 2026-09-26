@@ -133,7 +133,7 @@ function ProjectInner() {
         ))}
       </div>
 
-      {view === 'list' && <ScopedTaskList projectId={project.id} />}
+      {view === 'list' && <ScopedTaskList projectId={project.id} projectPropertyId={project.property_id} />}
       {view === 'board' && <ProjectBoard project={project} />}
       {view === 'timeline' && <ProjectTimeline project={project} />}
 

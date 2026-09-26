@@ -52,9 +52,11 @@ function flatten(rows: RawRow[]): TaskWithRelations[] {
 // Later and No-date groups render collapsed behind a count so a 90-task
 // backlog can't bury the walk list. A task quick-added into a collapsed
 // group auto-expands it (a capture that seems to vanish reads as a bug).
-export default function TasksTab({ propertyId, projectId, focusDue = false }: {
+export default function TasksTab({ propertyId, projectId, projectPropertyId, focusDue = false }: {
   propertyId?: string
   projectId?: string
+  // Project scope: the project's own property, stamped on captures.
+  projectPropertyId?: string | null
   focusDue?: boolean
 }) {
   // Exactly one scope: a project (project page) or a property.
@@ -292,7 +294,7 @@ export default function TasksTab({ propertyId, projectId, focusDue = false }: {
       <div className="card overflow-hidden [&>div:last-child]:-mb-px">
         <TaskQuickAdd
           userId={userId}
-          presetPropertyId={propertyId ?? null}
+          presetPropertyId={propertyId ?? projectPropertyId ?? null}
           presetFields={projectId ? { project_id: projectId, status: 'next_action' } : undefined}
           onCreated={insertCreated}
           placeholder='Quick add — try "replace filters friday !high"'
@@ -371,7 +373,7 @@ export default function TasksTab({ propertyId, projectId, focusDue = false }: {
           contacts={modalData.contacts}
           capexProjects={modalData.capexProjects}
           allTasks={tasks}
-          defaults={projectId ? { project_id: projectId } : propertyId ? { property_id: propertyId } : undefined}
+          defaults={projectId ? { project_id: projectId, property_id: projectPropertyId ?? null } : propertyId ? { property_id: propertyId } : undefined}
           onComplete={completeTask}
           onClose={() => { setShowForm(false); setEditTask(null) }}
           onSave={() => { setShowForm(false); setEditTask(null); fetchTasks() }}

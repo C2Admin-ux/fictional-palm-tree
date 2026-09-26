@@ -39,6 +39,7 @@ export function taskInsertPayload(task: Task): TaskInsert {
 const PER_INSTANCE_KEYS = [
   'id', 'status', 'due_date', 'completed_at', 'snoozed_until',
   'recur_parent_id', 'recur_count', 'auto_source', 'source_record_id',
+  'follow_up_on',
 ] as const
 
 // What carries forward into the next occurrence of a recurring task

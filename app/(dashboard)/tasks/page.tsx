@@ -464,6 +464,12 @@ function TasksInner() {
         ...task,
         properties: partial.properties ?? (propName ? { name: propName } : null),
         capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
+        // Recurrence spawns keep their series' project/assignee — carry
+        // the chips from the row they spawned from (same series).
+        projects: partial.projects ?? (task.project_id
+          ? tasksRef.current.find(t => t.project_id === task.project_id)?.projects ?? null : null),
+        assignee_name: partial.assignee_name ?? (task.assigned_to
+          ? tasksRef.current.find(t => t.assigned_to === task.assigned_to)?.assignee_name ?? null : null),
         contacts: partial.contacts ?? [],
       }
     }

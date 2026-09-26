@@ -33,7 +33,7 @@ const ROW_SELECT = '*, properties(name), capex_projects(title), projects(title),
 
 // ── Shared data hook ─────────────────────────────────────────
 
-function useProjectTasks(projectId: string) {
+function useProjectTasks(projectId: string, propertyId: string | null, propertyName: string | null) {
   const supabase = useMemo(() => createClient(), [])
   const [tasks, setTasks] = useState<TaskWithRelations[]>([])
   const [loading, setLoading] = useState(true)
@@ -68,17 +68,31 @@ function useProjectTasks(projectId: string) {
     update: (id, fields) => setTasks(prev => prev.map(t => t.id === id ? { ...t, ...fields } : t)),
     // Recurrence spawns land here too — keep them only if they belong.
     insert: task => setTasks(prev => prev.some(t => t.id === task.id) || task.project_id !== projectId ? prev
-      : [...prev, { ...task, properties: null, capex_projects: null, projects: null, contacts: [] } as TaskWithRelations]),
+      : [...prev, { ...task, properties: propertyName && task.property_id === propertyId ? { name: propertyName } : null,
+          capex_projects: null, projects: null, contacts: [] } as TaskWithRelations]),
     remove: id => setTasks(prev => prev.filter(t => t.id !== id)),
-  }), [projectId])
+  }), [projectId, propertyId, propertyName])
 
   const tasksRef = useRef(tasks); tasksRef.current = tasks
 
   const setStatus = useCallback((task: TaskWithRelations, status: Task['status']) => {
     if (task.status === status) return
-    if (status === 'done' || task.status === 'done') {
-      // Crossing done is not a plain field write — shared completion path.
+    if (status === 'done') {
+      // Crossing into done is not a plain field write — shared completion
+      // path (recurrence spawn, completed_at, undo toast).
       void toggleDoneOptimistic(supabase, store, task, { openSubtasks: openSubtasksOf(tasksRef.current, task.id) })
+      return
+    }
+    if (task.status === 'done') {
+      // Un-completing always reopens as next_action; land it in the
+      // column it was actually dropped on.
+      void toggleDoneOptimistic(supabase, store, task).then(() => {
+        if (status === 'next_action') return
+        const reopened = tasksRef.current.find(t => t.id === task.id)
+        if (reopened && reopened.status === 'next_action') {
+          void patchTaskOptimistic(supabase, store, reopened, { status })
+        }
+      })
       return
     }
     void patchTaskOptimistic(supabase, store, task, { status })
@@ -112,7 +126,7 @@ function useProjectTasks(projectId: string) {
       contacts={modalData.contacts}
       capexProjects={modalData.capexProjects}
       allTasks={tasks}
-      defaults={{ project_id: projectId }}
+      defaults={{ project_id: projectId, property_id: propertyId }}
       onComplete={t => setStatus(t, 'done')}
       onClose={() => setModal(null)}
       onSave={() => { setModal(null); fetchTasks() }}
@@ -132,8 +146,10 @@ const COLUMNS: { status: Task['status']; hint: string }[] = [
   { status: 'done',        hint: 'Last 30 days' },
 ]
 
-export function ProjectBoard({ project }: { project: Project }) {
-  const { supabase, tasks, loading, userId, store, setStatus, openModal, modalEl } = useProjectTasks(project.id)
+type ProjectWithProp = Project & { properties?: { name: string } | null }
+
+export function ProjectBoard({ project }: { project: ProjectWithProp }) {
+  const { supabase, tasks, loading, userId, store, setStatus, openModal, modalEl } = useProjectTasks(project.id, project.property_id, project.properties?.name ?? null)
   const [activeId, setActiveId] = useState<string | null>(null)
   const suppressClick = useRef(false)
 
@@ -282,8 +298,8 @@ function Card({ task: t, className }: { task: TaskWithRelations; className?: str
 // the project. Ink-light by design — outlines and hairlines, no fills
 // beyond a pale tint. Undated tasks list below as unscheduled.
 
-export function ProjectTimeline({ project }: { project: Project }) {
-  const { tasks, loading, openModal, modalEl } = useProjectTasks(project.id)
+export function ProjectTimeline({ project }: { project: ProjectWithProp }) {
+  const { tasks, loading, openModal, modalEl } = useProjectTasks(project.id, project.property_id, project.properties?.name ?? null)
   const today = todayISO()
   const tops = useMemo(() => topLevel(tasks), [tasks])
   const dated = tops.filter(t => t.due_date).sort((a, b) => a.due_date!.localeCompare(b.due_date!))
