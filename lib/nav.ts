@@ -7,7 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   LayoutDashboard, CheckSquare, Wrench,
   FileSignature, Shield, FileBarChart, ClipboardCheck, Phone, Settings,
-  CalendarClock, Scale,
+  CalendarClock, Scale, FolderKanban,
 } from 'lucide-react'
 
 export type NavItem = { href: string; label: string; icon: LucideIcon }
@@ -15,6 +15,7 @@ export type NavItem = { href: string; label: string; icon: LucideIcon }
 export const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard',          label: 'Dashboard',      icon: LayoutDashboard },
   { href: '/tasks',              label: 'Tasks',          icon: CheckSquare },
+  { href: '/projects',           label: 'Projects',       icon: FolderKanban },
   { href: '/capex',              label: 'CapEx',          icon: Wrench },
   { href: '/renewals',           label: 'Renewals',       icon: CalendarClock },
   // PM Performance hidden for now (Nick, 2026-09-01) — the /performance

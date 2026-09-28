@@ -7,11 +7,11 @@ import { createClient } from '@/lib/supabase/client'
 import type { Json, Task, TaskView, Contact, Property, CapexProject } from '@/lib/supabase/types'
 import {
   cn, formatDateShort, daysUntil,
-  todayISO,
+  todayISO, addDaysToDate,
   STATUS_STYLES, STATUS_LABELS,
   propertyColor,
 } from '@/lib/utils'
-import { groupByDue, postponeDate } from '@/lib/tasks/dates'
+import { groupByDue, groupForWork, FOLDED_BUCKETS, type WorkBucketKey, postponeDate } from '@/lib/tasks/dates'
 import { isMine, isAwake, isUnblocked } from '@/lib/tasks/agenda'
 import { topLevel, childrenByParent, openSubtasksOf } from '@/lib/tasks/subtasks'
 import {
@@ -43,12 +43,13 @@ import { toast } from '@/components/ui/toast'
 type RawTaskRow = Task & {
   properties: { name: string } | null
   capex_projects: { title: string } | null
+  projects: { title: string } | null
   task_contacts: { contact_id: string; contacts: Contact | null }[] | null
 }
 
 type StatusFilter = 'inbox' | 'next_action' | 'waiting' | 'blocked' | 'done'
 type ViewMode = 'agenda' | 'all' | 'review'
-type GroupByMode = 'status' | 'property' | 'priority' | 'due'
+type GroupByMode = 'status' | 'property' | 'priority' | 'due' | 'project' | 'assignee'
 
 const STATUS_ORDER: StatusFilter[] = ['inbox', 'next_action', 'waiting', 'blocked', 'done']
 const SECTION_LABELS: Record<StatusFilter, string> = {
@@ -66,6 +67,8 @@ const GROUP_BY_OPTIONS: { value: GroupByMode; label: string }[] = [
   { value: 'property', label: 'Group: Property' },
   { value: 'priority', label: 'Group: Priority' },
   { value: 'due',      label: 'Group: Due' },
+  { value: 'project',  label: 'Group: Project' },
+  { value: 'assignee', label: 'Group: Assignee' },
 ]
 
 // ── Saved views (task_views.config) ──────────────────────────
@@ -109,8 +112,8 @@ function parseViewConfig(raw: Json): ViewConfig {
         contact:  str(cfg.contact),
         priority: str(cfg.priority),
         search:   str(cfg.search),
-        groupBy:  cfg.groupBy === 'property' || cfg.groupBy === 'priority' || cfg.groupBy === 'due'
-          ? cfg.groupBy : 'status',
+        groupBy:  (['property', 'priority', 'due', 'project', 'assignee'] as unknown[]).includes(cfg.groupBy)
+          ? cfg.groupBy as GroupByMode : 'status',
       }
     }
   }
@@ -128,7 +131,7 @@ function sameViewConfig(a: ViewConfig, b: ViewConfig): boolean {
 }
 
 const VIEW_TABS: { key: ViewMode; label: string }[] = [
-  { key: 'agenda', label: 'Agenda' },
+  { key: 'agenda', label: 'My Work' },
   { key: 'all',    label: 'All tasks' },
   { key: 'review', label: 'Review' },
 ]
@@ -170,6 +173,25 @@ function groupByPropertySections<T extends Task & { properties?: { name: string 
     .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }))
     .sort((a, b) =>
       a.key === 'none' ? 1 : b.key === 'none' ? -1 : a.label.localeCompare(b.label))
+}
+
+// Generic label grouping (project / assignee): named sections by name,
+// the catch-all section last — or first when `noneFirst`.
+function groupByLabel<T extends TaskWithRelations>(
+  tasks: T[], keyOf: (t: T) => string | null, labelOf: (t: T) => string,
+  noneLabel: string, noneFirst = false,
+): { key: string; label: string; tasks: T[] }[] {
+  const map = new Map<string, { label: string; tasks: T[] }>()
+  for (const t of tasks) {
+    const k = keyOf(t) ?? 'none'
+    const entry = map.get(k)
+    if (entry) entry.tasks.push(t)
+    else map.set(k, { label: k === 'none' ? noneLabel : labelOf(t), tasks: [t] })
+  }
+  return Array.from(map.entries())
+    .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }))
+    .sort((a, b) =>
+      a.key === 'none' ? (noneFirst ? -1 : 1) : b.key === 'none' ? (noneFirst ? 1 : -1) : a.label.localeCompare(b.label))
 }
 
 // Keep inserts in the same order the fetch would return them
@@ -274,21 +296,30 @@ function TasksInner() {
   const [savedViews, setSavedViews] = useState<TaskView[]>([])
 
   const fetchTasks = useCallback(async () => {
-    const { data } = await supabase
-      .from('tasks')
-      .select(`
-        *,
-        properties(name),
-        capex_projects(title),
-        task_contacts(contact_id, contacts(*))
-      `)
-      .order('due_date', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: false })
+    const [{ data }, { data: profiles }, { data: auth }] = await Promise.all([
+      supabase
+        .from('tasks')
+        .select(`
+          *,
+          properties(name),
+          capex_projects(title),
+          projects(title),
+          task_contacts(contact_id, contacts(*))
+        `)
+        .order('due_date', { ascending: true, nullsFirst: false })
+        .order('created_at', { ascending: false }),
+      supabase.from('user_profiles').select('id, full_name'),
+      supabase.auth.getUser(),
+    ])
+    const me = auth.user?.id ?? null
+    const nameById = new Map((profiles ?? []).map(p => [p.id, p.full_name ?? 'Teammate']))
 
-    // Flatten contacts from the junction table
+    // Flatten contacts from the junction table; name the assignee only
+    // when it's someone other than me (the row shows a "→ Cory" chip).
     const raw = (data ?? []) as unknown as RawTaskRow[]
     const withContacts: TaskWithRelations[] = raw.map(({ task_contacts, ...t }) => ({
       ...t,
+      assignee_name: t.assigned_to && t.assigned_to !== me ? (nameById.get(t.assigned_to) ?? 'Teammate') : null,
       contacts: (task_contacts ?? []).map(tc => tc.contacts).filter((c): c is Contact => Boolean(c)),
     }))
 
@@ -366,6 +397,8 @@ function TasksInner() {
   // bucketing (Overdue keeps its red tone).
   const sections: { key: string; label: string; tone?: 'red'; tasks: TaskWithRelations[] }[] = useMemo(() =>
     groupBy === 'property' ? groupByPropertySections(visibleTasks)
+    : groupBy === 'project' ? groupByLabel(visibleTasks, t => t.project_id, t => t.projects?.title ?? 'Project', 'No project')
+    : groupBy === 'assignee' ? groupByLabel(visibleTasks, t => t.assignee_name ? t.assigned_to : null, t => t.assignee_name ?? '', 'Me / unassigned', true)
     : groupBy === 'priority' ? PRIORITY_ORDER.map(p => ({
         key: p, label: p, tasks: visibleTasks.filter(t => t.priority === p),
       }))
@@ -431,6 +464,12 @@ function TasksInner() {
         ...task,
         properties: partial.properties ?? (propName ? { name: propName } : null),
         capex_projects: partial.capex_projects ?? (capexTitle ? { title: capexTitle } : null),
+        // Recurrence spawns keep their series' project/assignee — carry
+        // the chips from the row they spawned from (same series).
+        projects: partial.projects ?? (task.project_id
+          ? tasksRef.current.find(t => t.project_id === task.project_id)?.projects ?? null : null),
+        assignee_name: partial.assignee_name ?? (task.assigned_to
+          ? tasksRef.current.find(t => t.assigned_to === task.assigned_to)?.assignee_name ?? null : null),
         contacts: partial.contacts ?? [],
       }
     }
@@ -985,10 +1024,18 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
 }) {
   const [inboxOpen, setInboxOpen] = useState(true)
   const [snoozedOpen, setSnoozedOpen] = useState(false)
+  // Later / Backlog drawers start folded — the page opens on the
+  // two-week focus horizon only.
+  const [openFolds, setOpenFolds] = useState<Set<WorkBucketKey>>(new Set())
+  const toggleFold = (k: WorkBucketKey) => setOpenFolds(prev => {
+    const next = new Set(prev)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    return next
+  })
 
   const today = todayISO()
 
-  const { myInbox, groups, hasDated, snoozed } = useMemo(() => {
+  const { myInbox, groups, hasDated, snoozed, followUps } = useMemo(() => {
     const taskById = new Map(tasks.map(t => [t.id, t]))
 
     // Actionable-now semantics — the shared MINE / AWAKE / UNBLOCKED
@@ -1009,16 +1056,33 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
       isUnblocked(t, taskById) && !inboxIds.has(t.id)
     )
 
-    // Shared bucketing (same as the property Tasks tab) — 'Later' is
-    // unbounded, so a capture dated months out still shows up.
-    const groups = groupByDue(actionable, today, { nodate: 'No due date' })
-    const hasDated = groups.some(g => g.tasks.length > 0)
+    // Delegated work waiting on someone else: parked until its
+    // follow-up date, then surfaced in its own Follow up section (it
+    // needs a chase, not a date bucket). No follow-up date = behaves
+    // like any other task.
+    const followUps = actionable.filter(t =>
+      t.status === 'waiting' && t.follow_up_on != null && t.follow_up_on <= today)
+    const parkedWaiting = new Set(actionable
+      .filter(t => t.status === 'waiting' && t.follow_up_on != null)
+      .map(t => t.id))
+    const bucketable = actionable.filter(t => !parkedWaiting.has(t.id))
 
+    // My Work horizon (lib/tasks/dates.ts): the next two weeks open,
+    // Later and Backlog folded into counted drawers.
+    const groups = groupForWork(bucketable, today)
+    const hasDated = groups.some(g => g.tasks.length > 0) || followUps.length > 0
+
+    // Parked: hidden until a start date, or waiting on someone until
+    // the follow-up date. One folded drawer so nothing parked is lost.
+    const wakeOf = (t: Task) =>
+      (t.snoozed_until != null && t.snoozed_until > today ? t.snoozed_until : null) ??
+      (t.status === 'waiting' && t.follow_up_on != null && t.follow_up_on > today ? t.follow_up_on : null)
     const snoozed = tops.filter(t =>
-      t.status !== 'done' && isMine(t, userId) && t.snoozed_until != null && t.snoozed_until > today
-    ).sort((a, b) => (a.snoozed_until ?? '').localeCompare(b.snoozed_until ?? ''))
+      t.status !== 'done' && isMine(t, userId) && wakeOf(t) != null
+    ).sort((a, b) => (wakeOf(a) ?? '').localeCompare(wakeOf(b) ?? ''))
+      .map(t => ({ task: t, wakes: wakeOf(t)!, waiting: !(t.snoozed_until != null && t.snoozed_until > today) }))
 
-    return { myInbox, groups, hasDated, snoozed }
+    return { myInbox, groups, hasDated, snoozed, followUps }
   }, [tasks, userId, today])
 
   return (
@@ -1051,23 +1115,57 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
         </div>
       )}
 
-      {/* Date groups */}
+      {/* Follow up — delegated work whose chase date has arrived */}
+      {followUps.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 px-6 py-2 border-b bg-purple-50 border-purple-100">
+            <span className="text-xs font-semibold uppercase tracking-wide text-purple-700">Follow up</span>
+            <span className="text-xs px-1.5 py-0.5 rounded-full text-purple-600 bg-purple-100">{followUps.length}</span>
+            <span className="text-xs text-purple-400">waiting on someone — time to chase</span>
+          </div>
+          {followUps.map(t => (
+            <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
+              exitPhase={handlers.exitPhaseOf(t.id)}
+              subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
+              subtaskSelectedId={subtaskSelection(subtaskUi, selectedId, t.id)}
+              meta={<span className="text-xs text-purple-600">
+                {(t.contacts ?? []).map(c => c.full_name.split(' ')[0]).join(', ') || 'waiting'} · since {formatDateShort(t.updated_at)}
+              </span>} />
+          ))}
+        </div>
+      )}
+
+      {/* Date groups — focus horizon open, Later/Backlog folded */}
       {groups.map(g => {
         if (!g.tasks.length) return null
+        const foldable = FOLDED_BUCKETS.includes(g.key)
+        const open = !foldable || openFolds.has(g.key)
         return (
-          <div key={g.key}>
-            <div className={cn('flex items-center gap-2 px-6 py-2 border-b',
-              g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200')}>
+          <div key={g.key} className={cn(g.key === 'later' && 'mt-4')}>
+            <div
+              {...(foldable ? { role: 'button', tabIndex: 0, onClick: () => toggleFold(g.key),
+                onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFold(g.key) } } } : {})}
+              className={cn('flex items-center gap-2 px-6 py-2 border-b',
+                g.tone === 'red' ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-200',
+                foldable && 'cursor-pointer hover:bg-slate-100 transition-colors')}>
+              {foldable && (
+                <ChevronDown size={13} className={cn('text-slate-400 transition-transform', !open && '-rotate-90')} />
+              )}
               <span className={cn('text-xs font-semibold uppercase tracking-wide',
-                g.tone === 'red' ? 'text-red-700' : 'text-slate-600')}>
+                g.tone === 'red' ? 'text-red-700' : foldable ? 'text-slate-500' : 'text-slate-600')}>
                 {g.label}
               </span>
               <span className={cn('text-xs px-1.5 py-0.5 rounded-full',
                 g.tone === 'red' ? 'text-red-600 bg-red-100' : 'text-slate-400 bg-slate-200')}>
                 {g.tasks.length}
               </span>
+              {foldable && !open && (
+                <span className="text-xs text-slate-400">
+                  {g.key === 'later' ? 'due in 2+ weeks' : 'undated — date it, delegate it, or close it in Review'}
+                </span>
+              )}
             </div>
-            {g.tasks.map(t => (
+            {open && g.tasks.map(t => (
               <TaskRow key={t.id} task={t} handlers={handlers} selected={selectedId === t.id} swipeable checked={checkedIds.has(t.id)}
                 exitPhase={handlers.exitPhaseOf(t.id)}
                 subtasks={subtaskUi.subtasksOf(t.id)} expanded={subtaskUi.expandedIds.has(t.id)}
@@ -1094,10 +1192,10 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
             <ChevronDown size={13} className={cn('text-slate-400 transition-transform', !snoozedOpen && '-rotate-90')} />
             <Moon size={12} className="text-slate-400" />
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-              Snoozed ({snoozed.length})
+              Parked ({snoozed.length})
             </span>
           </button>
-          {snoozedOpen && snoozed.map(t => (
+          {snoozedOpen && snoozed.map(({ task: t, wakes, waiting }) => (
             <div key={t.id} className="flex items-center gap-3 px-6 py-1.5 border-b border-slate-200/70 hover:bg-slate-50 transition-colors">
               <Moon size={12} className="text-slate-300 flex-shrink-0" />
               <button onClick={() => handlers.onEdit(t)}
@@ -1111,7 +1209,7 @@ function AgendaView({ tasks, userId, handlers, selectedId, properties, onQuickAd
                 </span>
               )}
               <span className="text-xs text-slate-400 flex-shrink-0">
-                wakes {formatDateShort(t.snoozed_until)}
+                {waiting ? 'follow up' : 'starts'} {formatDateShort(wakes)}
               </span>
             </div>
           ))}
@@ -1146,6 +1244,26 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
   // (shared topLevel helper, lib/tasks/subtasks.ts).
   const tops = topLevel(tasks)
   const myInbox = tops.filter(t => t.status === 'inbox' && t.created_by != null && t.created_by === userId)
+
+  // Needs a decision: work that has gone stale — overdue by more than a
+  // week, or undated and untouched for 30+ days. Each one gets a real
+  // date, a delegate, the backlog on purpose, or closed. This is what
+  // keeps the My Work Backlog drawer from silently refilling.
+  const today = todayISO()
+  const staleCutoff = addDaysToDate(today, -30)
+  const overdueCutoff = addDaysToDate(today, -7)
+  const stale = tops
+    .filter(t => t.status !== 'done' && t.status !== 'inbox' && isAwake(t, today) && (
+      (t.due_date != null && t.due_date < overdueCutoff) ||
+      (t.due_date == null && t.updated_at.slice(0, 10) < staleCutoff)
+    ))
+    .sort((a, b) => (a.due_date ?? a.updated_at).localeCompare(b.due_date ?? b.updated_at))
+
+  // Delegated: open work assigned to someone else on the team — it
+  // leaves My Work, so the review is where the owner keeps an eye on it.
+  const delegated = tops
+    .filter(t => t.status !== 'done' && t.assigned_to != null && t.assigned_to !== userId)
+    .sort((a, b) => (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999'))
 
   const waiting = [...tops]
     .filter(t => t.status === 'waiting')
@@ -1184,6 +1302,24 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
           : <SectionEmpty label="Inbox zero. Nothing to process." />}
       </ReviewSection>
 
+      {/* (a2) Needs a decision */}
+      <ReviewSection
+        title="Needs a decision"
+        count={stale.length}
+        hint="Overdue 7+ days, or undated and untouched for 30+ days. Date it, delegate it, or close it.">
+        {stale.length
+          ? stale.map(t => (
+              <TaskRow key={t.id} {...rowProps(t)}
+                meta={
+                  <span className="text-xs text-amber-600">
+                    {t.due_date ? `${-(daysUntil(t.due_date) ?? 0)}d overdue` : `untouched ${-(daysUntil(t.updated_at) ?? 0)}d`}
+                  </span>
+                }
+              />
+            ))
+          : <SectionEmpty label="Nothing stale. Nice." />}
+      </ReviewSection>
+
       {/* (b) Waiting on */}
       <ReviewSection
         title="Waiting on"
@@ -1197,7 +1333,7 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
                 <TaskRow key={t.id} {...rowProps(t)}
                   meta={
                     <span className="text-xs text-purple-600">
-                      waiting {waitDays}d{names ? ` · ${names}` : ''}
+                      waiting {waitDays}d{names ? ` · ${names}` : ''}{t.follow_up_on ? ` · follow up ${formatDateShort(t.follow_up_on)}` : ''}
                     </span>
                   }
                 />
@@ -1205,6 +1341,16 @@ function ReviewView({ tasks, userId, handlers, selectedId, subtaskUi, checkedIds
             })
           : <SectionEmpty label="Not waiting on anyone." />}
       </ReviewSection>
+
+      {/* (b2) Delegated to teammates */}
+      {delegated.length > 0 && (
+        <ReviewSection
+          title="Delegated"
+          count={delegated.length}
+          hint="Assigned to someone else — is it moving?">
+          {delegated.map(t => <TaskRow key={t.id} {...rowProps(t)} />)}
+        </ReviewSection>
+      )}
 
       {/* (c) Obligations horizon */}
       <ReviewSection

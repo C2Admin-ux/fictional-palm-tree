@@ -19,7 +19,7 @@ function omit<T extends object>(obj: T, keys: readonly string[]): Partial<T> {
 // to a row (never real columns) — none of these belong in an insert.
 const NON_INSERT_KEYS = [
   'created_at', 'updated_at',
-  'properties', 'capex_projects', 'contacts', 'task_contacts',
+  'properties', 'capex_projects', 'projects', 'assignee_name', 'contacts', 'task_contacts',
 ] as const
 
 // Everything on a Task row except generated/managed columns — used to
@@ -39,6 +39,7 @@ export function taskInsertPayload(task: Task): TaskInsert {
 const PER_INSTANCE_KEYS = [
   'id', 'status', 'due_date', 'completed_at', 'snoozed_until',
   'recur_parent_id', 'recur_count', 'auto_source', 'source_record_id',
+  'follow_up_on',
 ] as const
 
 // What carries forward into the next occurrence of a recurring task

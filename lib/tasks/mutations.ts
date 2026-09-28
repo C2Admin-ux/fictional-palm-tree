@@ -474,6 +474,7 @@ export async function addSubtaskOptimistic(
       title,
       parent_task_id: parent.id,
       property_id:    parent.property_id,
+      project_id:     parent.project_id,
       status:         'next_action',
       priority:       'medium',
       created_by:     userId,

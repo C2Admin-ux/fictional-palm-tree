@@ -46,10 +46,23 @@ export type Database = {
           recur_count: number; recur_parent_id: string | null
           parent_task_id: string | null
           auto_source: string | null; source_record_id: string | null
+          project_id: string | null; follow_up_on: string | null
           created_at: string; updated_at: string
         }
         Insert: Partial<Database['public']['Tables']['tasks']['Row']> & { title: string }
         Update: Partial<Database['public']['Tables']['tasks']['Row']>
+        Relationships: []
+      }
+      projects: {
+        Row: {
+          id: string; title: string; description: string | null
+          property_id: string | null; owner_id: string | null
+          status: 'active' | 'on_hold' | 'done'
+          start_date: string | null; due_date: string | null
+          created_by: string | null; created_at: string; updated_at: string
+        }
+        Insert: Partial<Database['public']['Tables']['projects']['Row']> & { title: string }
+        Update: Partial<Database['public']['Tables']['projects']['Row']>
         Relationships: []
       }
       task_comments: {
@@ -258,6 +271,7 @@ export type Contact = Database['public']['Tables']['contacts']['Row']
 export type Task = Database['public']['Tables']['tasks']['Row']
 export type TaskComment = Database['public']['Tables']['task_comments']['Row']
 export type TaskView = Database['public']['Tables']['task_views']['Row']
+export type Project = Database['public']['Tables']['projects']['Row']
 export type CapexProject = Database['public']['Tables']['capex_projects']['Row']
 export type CapexLineItem = Database['public']['Tables']['capex_line_items']['Row']
 export type CapexBid = Database['public']['Tables']['capex_bids']['Row']

@@ -18,6 +18,10 @@ import { InlineText, InlineSelect, STATUS_OPTIONS } from '@/components/ui/inline
 export type TaskWithRelations = Task & {
   properties?: { name: string } | null
   capex_projects?: { title: string } | null
+  projects?: { title: string } | null
+  // Assignee display name, joined by pages that load user_profiles —
+  // shown only when the task is assigned to someone else.
+  assignee_name?: string | null
   contacts?: Contact[]
 }
 
@@ -182,6 +186,18 @@ export const TaskRow = memo(function TaskRow({
           <span className="flex-shrink min-w-0 max-w-[11rem] text-xs text-orange-600 inline-flex items-center gap-1">
             <LinkIcon size={9} className="flex-shrink-0" />
             <span className="truncate">{task.capex_projects.title}</span>
+          </span>
+        )}
+        {task.projects?.title && (
+          <span className="hidden sm:inline-flex flex-shrink min-w-0 max-w-[11rem] text-xs text-indigo-600 items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-sm bg-indigo-400 flex-shrink-0" />
+            <span className="truncate">{task.projects.title}</span>
+          </span>
+        )}
+        {task.assignee_name && (
+          <span className="flex-shrink-0 text-xs text-slate-500 border border-slate-200 rounded-full px-1.5 py-0.5 whitespace-nowrap"
+            title={`Assigned to ${task.assignee_name}`}>
+            → {task.assignee_name.split(' ')[0]}
           </span>
         )}
         {isBlocked && (
