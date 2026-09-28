@@ -26,6 +26,7 @@ type Initial = {
   units_total: number | null
   pms_platform: string | null
   pmc_id: string | null
+  auto_tasks_exempt: boolean
 }
 
 const STATUSES: Property['status'][] = ['active', 'watchlist', 'disposition']
@@ -69,6 +70,7 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
     pms_platform: initial.pms_platform ?? '',
     pmc_id: initial.pmc_id ?? '',
   })
+  const [autoTasksExempt, setAutoTasksExempt] = useState(initial.auto_tasks_exempt)
   const [newPmc, setNewPmc] = useState({ name: '', contact_name: '', contact_email: '', contact_phone: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -121,6 +123,7 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
       units_total: units !== '' && Number.isFinite(Number(units)) ? Number(units) : null,
       pms_platform: form.pms_platform || null,
       pmc_id: pmcId,
+      auto_tasks_exempt: autoTasksExempt,
     }).eq('id', propertyId)
 
     setSaving(false)
@@ -235,6 +238,22 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
             </div>
           )}
         </div>
+
+        <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoTasksExempt}
+            onChange={e => setAutoTasksExempt(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="text-sm text-slate-700">
+            <span className="font-medium">Ongoing acquisition</span>
+            <span className="block text-xs text-slate-400 mt-0.5">
+              No auto-generated tasks (renewals, insurance, contracts, seasonal bids) and no
+              coverage-gap flags until the purchase closes. Uncheck at closing.
+            </span>
+          </span>
+        </label>
 
         <p className="text-xs text-slate-400">
           Building facts (year built, SF, parking, unit mix) live on the{' '}

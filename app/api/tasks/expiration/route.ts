@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
         .select('*')
         .in('auto_source', OBLIGATION_SOURCES),
       supabase.from('properties')
-        .select('id, name, status')
+        .select('id, name, status, auto_tasks_exempt')
         .eq('status', 'active'),
     ])
     if (policiesRes.error) throw policiesRes.error
@@ -105,13 +105,20 @@ export async function GET(req: NextRequest) {
     if (tasksRes.error) throw tasksRes.error
     if (propertiesRes.error) throw propertiesRes.error
 
+    // An in-process acquisition (auto_tasks_exempt) gets NO auto tasks
+    // from any engine — its records are still being assembled, so every
+    // "deadline" would be noise. Exempt-property tasks that already exist
+    // fall out of `desired` and auto-resolve in the generic loop below.
+    const engineProperties = (propertiesRes.data ?? []).filter(p => !p.auto_tasks_exempt)
+    const exemptIds = new Set((propertiesRes.data ?? []).filter(p => p.auto_tasks_exempt).map(p => p.id))
+
     // ── 2. Compute the desired state ───────────────────────────
     const desired: DesiredTask[] = [
       ...(policiesRes.data ?? []).map(p => desiredInsuranceTask(p, today)),
       ...(contractsRes.data ?? [])
         .map(c => desiredContractTask(c, today, leadDays))
         .filter((d): d is DesiredTask => d !== null),
-    ]
+    ].filter(d => d.property_id == null || !exemptIds.has(d.property_id))
     const desiredByKey = new Map(desired.map(d => [taskKey(d), d]))
 
     // Existing auto-tasks grouped by (auto_source, source_record_id).
@@ -215,7 +222,7 @@ export async function GET(req: NextRequest) {
     for (const spec of SEASONS) {
       const globalValue = globalSetting(spec.setting_key)
 
-      for (const prop of propertiesRes.data ?? []) {
+      for (const prop of engineProperties) {
         const cfg = resolveSeasonConfig(spec, globalValue, propertySetting(spec.setting_key, prop.id))
         if (!cfg.enabled) continue
         const dueDate = seasonDueDate(cfg, today) // null outside the creation window

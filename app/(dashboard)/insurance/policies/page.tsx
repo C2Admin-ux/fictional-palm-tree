@@ -162,7 +162,9 @@ function PoliciesPageInner() {
 
   // Coverage-gap flag: active properties only (watchlist/disposition are
   // excluded here; their own property page still shows the gap card).
-  const activeProperties = properties.filter(p => p.status === 'active')
+  // In-process acquisitions (auto_tasks_exempt) are excluded too — no
+  // policies exist yet by definition, so the flag is noise.
+  const activeProperties = properties.filter(p => p.status === 'active' && !p.auto_tasks_exempt)
   const activePropertyIds = activeProperties.map(p => p.id)
   const gaps = coverageGaps(activeProperties, coveragePolicies)
   const gapProperties = activeProperties.filter(p => hasGap(gaps[p.id]))
