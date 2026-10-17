@@ -3,8 +3,9 @@
 //   • POST /api/calls/inbound — Resend `email.received` webhook
 //   • POST /api/calls/ingest  — direct JSON post (Gmail Apps Script)
 // Both clean the subject into a title, trim Gemini boilerplate from the
-// transcript, dedupe on external_id, insert a DRAFT call (pmc
-// unassigned — Nick assigns during review), and run extraction inline
+// transcript, dedupe on external_id, insert a DRAFT call (PMC auto-
+// assigned when the title matches a recurring call series — see
+// call_series; otherwise Nick assigns during review), and run extraction inline
 // as best-effort. Keeping the pipeline here means the transports can't
 // drift; only how the email arrives differs.
 
@@ -61,6 +62,26 @@ export function trimTranscriptBoilerplate(body: string): string {
   return (cut === -1 ? body : lines.slice(0, cut).join('\n')).trim()
 }
 
+/** Match a call title to a recurring series (call_series.key is the
+ *  lowercased meeting title; a series matches when its key is a prefix
+ *  of the title — longest key wins). Best-effort: any failure just means
+ *  the call lands unassigned, exactly as before. */
+export async function matchCallSeries(
+  supabase: Client,
+  title: string
+): Promise<{ id: string; pmc_id: string | null } | null> {
+  try {
+    const { data } = await supabase.from('call_series')
+      .select('id, key, pmc_id').eq('active', true)
+    const lower = title.toLowerCase()
+    const hits = (data ?? []).filter(s => lower.startsWith(s.key))
+    hits.sort((a, b) => b.key.length - a.key.length)
+    return hits[0] ? { id: hits[0].id, pmc_id: hits[0].pmc_id } : null
+  } catch {
+    return null
+  }
+}
+
 export type IngestOutcome =
   | { ok: true; duplicate: false; callId: string; extracted: boolean }
   | { ok: true; duplicate: true; callId: string | null }
@@ -81,6 +102,7 @@ export async function ingestCallEmail(
   supabase: Client,
   args: { title: string; callDate: string; externalId: string | null; transcript: string }
 ): Promise<IngestOutcome> {
+  const series = await matchCallSeries(supabase, args.title)
   const { data: call, error: insertError } = await supabase.from('calls')
     .insert({
       title: args.title,
@@ -89,7 +111,10 @@ export async function ingestCallEmail(
       external_id: args.externalId,
       transcript: args.transcript,
       status: 'draft',
-      pmc_id: null, // Nick assigns the PMC during review
+      // Recurring calls are assigned automatically; anything else is
+      // left for Nick to assign during review.
+      pmc_id: series?.pmc_id ?? null,
+      series_id: series?.id ?? null,
     })
     .select('*')
     .single()

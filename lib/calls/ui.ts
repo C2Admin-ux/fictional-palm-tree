@@ -17,6 +17,7 @@ export const CALL_STATUS_LABELS: Record<string, string> = {
 export const CALL_SOURCE_LABELS: Record<string, string> = {
   paste: 'Pasted',
   email: 'Email',
+  gemini: 'Gemini',
 }
 
 // Kind chips: action blue, update slate, issue amber, decision violet.

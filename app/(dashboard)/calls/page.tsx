@@ -18,6 +18,8 @@ import { ActionError, ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Phone, Plus, Trash2, ChevronRight, X, CalendarClock } from 'lucide-react'
+import { CallSearch } from '@/components/calls/call-search'
+import { SeriesGlance } from '@/components/calls/series-glance'
 
 type PmcOption = { id: string; name: string }
 
@@ -109,6 +111,10 @@ export default function CallsPage() {
           </button>
         </div>
       </div>
+
+      {/* Search every call + running summary per recurring call */}
+      <CallSearch />
+      <SeriesGlance />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
