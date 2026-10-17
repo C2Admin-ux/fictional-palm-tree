@@ -3,9 +3,10 @@
 // Call detail — the review/confirm surface of the calls flywheel.
 // Extraction proposes items (grounded in properties + open tasks); Nick
 // curates them here (kind, property, owner, task links), then "Confirm &
-// process" turns checked actions into tasks and promotes matched items
-// onto their existing tasks. Items stay editable after processing —
-// only the Confirm button retires.
+// process" turns the actions Nick CHECKED into tasks (opt-in — nothing
+// becomes a task unless he selects it) and promotes matched items onto
+// their existing tasks. Items stay editable after processing — only the
+// Confirm button retires.
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
@@ -54,8 +55,11 @@ export default function CallDetailPage() {
   const [processing, setProcessing] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   // Per-item review choices (uncommitted until Confirm & process):
-  // unchecking removes an action from task creation / a match from linking.
-  // Default ON for both — the common case confirms everything.
+  // checking an action opts it in to task creation; unchecking a match
+  // skips linking. Task creation is OPT-IN (Nick, 2026-10-17): the
+  // transcript is the record, and only the follow-ups he selects become
+  // tasks — so every action starts unchecked (see fetchItems). Match
+  // linking stays default-on; it only annotates tasks that already exist.
   const [uncheckedCreate, setUncheckedCreate] = useState<Set<string>>(new Set())
   const [uncheckedLink, setUncheckedLink] = useState<Set<string>>(new Set())
   // Items whose created task exists but could not be linked AND could not
@@ -86,7 +90,10 @@ export default function CallDetailPage() {
     const { data, error } = await supabase.from('call_items')
       .select('*').eq('call_id', callId).order('sort_order').order('created_at')
     if (error) { setActionError(`Could not load items: ${error.message}`); return }
-    setItems((data as CallItem[]) ?? [])
+    const rows = (data as CallItem[]) ?? []
+    setItems(rows)
+    // Opt-in task creation: start with every unlinked action unchecked.
+    setUncheckedCreate(new Set(rows.filter(i => i.kind === 'action' && !i.task_id).map(i => i.id)))
   }, [callId])
 
   useEffect(() => { fetchCall(); fetchItems() }, [fetchCall, fetchItems])
