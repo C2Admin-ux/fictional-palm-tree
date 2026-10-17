@@ -225,16 +225,40 @@ export type Database = {
         Relationships: []
       }
       calls: {
-        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string }
+        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email' | 'gemini'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string; series_id: string | null; meeting_at: string | null; attendees: Json; notes_url: string | null; recap_status: 'none' | 'drafted' | 'sent' | 'skipped'; recap_draft_id: string | null; recap_draft_url: string | null; search_tsv: string | null }
         Insert: Partial<Database['public']['Tables']['calls']['Row']>
         Update: Partial<Database['public']['Tables']['calls']['Row']>
-        Relationships: [{ foreignKeyName: 'calls_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
+        Relationships: [
+          { foreignKeyName: 'calls_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] },
+          { foreignKeyName: 'calls_series_id_fkey'; columns: ['series_id']; isOneToOne: false; referencedRelation: 'call_series'; referencedColumns: ['id'] },
+        ]
       }
       call_items: {
         Row: { id: string; call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; property_id: string | null; description: string; owner: string | null; task_id: string | null; matched_task_id: string | null; due_hint: string | null; resolved: boolean; sort_order: number; created_at: string }
         Insert: Partial<Database['public']['Tables']['call_items']['Row']> & { call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; description: string }
         Update: Partial<Database['public']['Tables']['call_items']['Row']>
         Relationships: [{ foreignKeyName: 'call_items_call_id_fkey'; columns: ['call_id']; isOneToOne: false; referencedRelation: 'calls'; referencedColumns: ['id'] }]
+      }
+      call_series: {
+        // Recurring meeting definition (0021): matched by lowercased title
+        // prefix; carries the PMC + covered properties for auto-assignment.
+        Row: { id: string; key: string; display_name: string; pmc_id: string | null; property_ids: string[]; default_recipients: string[]; always_cc: string[]; cadence_days: number; active: boolean; created_at: string }
+        Insert: Partial<Database['public']['Tables']['call_series']['Row']> & { key: string; display_name: string }
+        Update: Partial<Database['public']['Tables']['call_series']['Row']>
+        Relationships: [{ foreignKeyName: 'call_series_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
+      }
+      call_rollups: {
+        // Running summary per series (0021): upserted after each call.
+        Row: { series_id: string; summary: string; open_items: Json; recent_decisions: Json; call_ids: string[]; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['call_rollups']['Row']> & { series_id: string }
+        Update: Partial<Database['public']['Tables']['call_rollups']['Row']>
+        Relationships: [{ foreignKeyName: 'call_rollups_series_id_fkey'; columns: ['series_id']; isOneToOne: true; referencedRelation: 'call_series'; referencedColumns: ['id'] }]
+      }
+      call_agendas: {
+        Row: { id: string; series_id: string; for_date: string | null; body: string; based_on_call_id: string | null; status: 'draft' | 'final'; created_at: string }
+        Insert: Partial<Database['public']['Tables']['call_agendas']['Row']> & { series_id: string; body: string }
+        Update: Partial<Database['public']['Tables']['call_agendas']['Row']>
+        Relationships: [{ foreignKeyName: 'call_agendas_series_id_fkey'; columns: ['series_id']; isOneToOne: false; referencedRelation: 'call_series'; referencedColumns: ['id'] }]
       }
       alert_settings: {
         // Obligations-engine overrides (0007): property_id NULL = global
@@ -258,6 +282,7 @@ export type Database = {
     Functions: {
       current_user_role: { Args: Record<never, never>; Returns: string }
       create_expiration_tasks: { Args: Record<never, never>; Returns: Json }
+      search_calls: { Args: { q: string; p_series?: string | null; lim?: number }; Returns: { call_id: string; series_id: string | null; title: string; call_date: string; rank: number; snippet: string }[] }
     }
     Enums: Record<never, never>
   }
@@ -292,5 +317,8 @@ export type PropertyPcaItem = Database['public']['Tables']['property_pca_items']
 export type PropertyPermit = Database['public']['Tables']['property_permits']['Row']
 export type Call = Database['public']['Tables']['calls']['Row']
 export type CallItem = Database['public']['Tables']['call_items']['Row']
+export type CallSeries = Database['public']['Tables']['call_series']['Row']
+export type CallRollup = Database['public']['Tables']['call_rollups']['Row']
+export type CallAgenda = Database['public']['Tables']['call_agendas']['Row']
 export type AlertSetting = Database['public']['Tables']['alert_settings']['Row']
 export type SiteVisitNote = Database['public']['Tables']['site_visit_notes']['Row']
