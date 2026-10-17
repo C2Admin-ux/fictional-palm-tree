@@ -225,7 +225,7 @@ export type Database = {
         Relationships: []
       }
       calls: {
-        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email' | 'gemini'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string; series_id: string | null; meeting_at: string | null; attendees: Json; notes_url: string | null; recap_status: 'none' | 'drafted' | 'sent' | 'skipped'; recap_draft_id: string | null; recap_draft_url: string | null; search_tsv: string | null }
+        Row: { id: string; pmc_id: string | null; title: string; call_date: string; source: 'paste' | 'email' | 'gemini'; external_id: string | null; transcript: string | null; summary: string | null; status: 'draft' | 'processed'; created_by: string | null; created_at: string; updated_at: string; series_id: string | null; meeting_at: string | null; attendees: Json; notes_url: string | null; recap_status: 'none' | 'drafted' | 'sent' | 'skipped'; recap_draft_id: string | null; recap_draft_url: string | null; search_tsv: string | null; notes_md: string | null; source_doc_id: string | null; transcript_kind: 'gemini_notes' | 'transcript' | 'paste' }
         Insert: Partial<Database['public']['Tables']['calls']['Row']>
         Update: Partial<Database['public']['Tables']['calls']['Row']>
         Relationships: [

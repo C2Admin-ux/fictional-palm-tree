@@ -444,6 +444,14 @@ export default function CallDetailPage() {
         <AddItemRow properties={properties} onAdd={addItem} />
       </div>
 
+      {/* Claude-written notes from the transcript (notes_md, 0022) */}
+      {call.notes_md && (
+        <div className="card p-4">
+          <h2 className="section-title mb-2">Notes</h2>
+          <div className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{call.notes_md}</div>
+        </div>
+      )}
+
       {/* Transcript */}
       {call.transcript && (
         <div className="card overflow-hidden">
@@ -451,7 +459,7 @@ export default function CallDetailPage() {
             onClick={() => setShowTranscript(s => !s)}
             className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
             {showTranscript ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            Transcript
+            {call.transcript_kind === 'transcript' ? 'Transcript' : 'Source notes'}
             <span className="text-xs font-normal text-slate-400">
               {call.transcript.length.toLocaleString()} chars
             </span>
