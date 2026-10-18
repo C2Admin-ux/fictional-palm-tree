@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import {
   DISPOSITION_CHIP_STYLES, daysSince, normalizeDisposition,
 } from '@/lib/inspections/dispositions'
-import { Eye, Flag, CheckSquare, HardHat, Check, CircleSlash } from 'lucide-react'
+import { Eye, Flag, CheckSquare, HardHat, Check, CircleSlash, MapPinCheck } from 'lucide-react'
 
 // Minimal field set — satisfied by InspectionItem and the lighter rollup
 // selects.
@@ -74,6 +74,9 @@ export function DispositionChip({ item, capexName, className }: {
     }
     case 'watch':
       return <span className={base} title={note}><Eye size={9} className="mr-1" />Watch</span>
+    case 'confirm':
+      // PM says fixed; waiting on Nick's own eyes at the next site visit.
+      return <span className={base} title={note}><MapPinCheck size={9} className="mr-1" />Confirm on site</span>
     case 'accepted':
       // Quiet, struck-through tone — a settled decision, with the why on
       // hover.

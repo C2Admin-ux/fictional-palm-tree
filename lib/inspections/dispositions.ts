@@ -13,8 +13,11 @@
 //   capex    — rolled into a capital project (capex_project_id)
 //   accepted — known condition, living with it (note required in the UI)
 //   resolved — fixed / verified gone (never "closed" in UI copy)
+//   confirm  — PM says it's fixed; taken as done (linked task completed,
+//              off the open list) but queued on the site-visit sheet
+//              under "Verify in person" until Nick sees it himself
 
-export const DISPOSITIONS = ['open', 'watch', 'flagged', 'task', 'capex', 'accepted', 'resolved'] as const
+export const DISPOSITIONS = ['open', 'watch', 'flagged', 'task', 'capex', 'accepted', 'resolved', 'confirm'] as const
 export type Disposition = (typeof DISPOSITIONS)[number]
 
 export const DISPOSITION_LABELS: Record<Disposition, string> = {
@@ -25,6 +28,7 @@ export const DISPOSITION_LABELS: Record<Disposition, string> = {
   capex: 'CapEx',
   accepted: 'Accepted',
   resolved: 'Resolved',
+  confirm: 'Confirm on site',
 }
 
 // Chip tones per the owner's spec: watch amber-outline, flagged
@@ -38,6 +42,7 @@ export const DISPOSITION_CHIP_STYLES: Record<Disposition, string> = {
   capex: 'text-orange-700 bg-orange-50 border-orange-200',
   accepted: 'text-slate-500 bg-slate-50 border-slate-200',
   resolved: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+  confirm: 'text-teal-700 bg-white border-teal-400',
 }
 
 // Rows written before 0011 (or by defensive fallbacks) read as untriaged.
@@ -49,7 +54,14 @@ export function normalizeDisposition(value: string | null | undefined): Disposit
 // deliberate decision to live with it (accepted) or verified gone
 // (resolved). Settled findings stay reviewable forever; they just stop
 // counting as open.
-export const SETTLED_DISPOSITIONS = ['accepted', 'resolved'] as const
+export const SETTLED_DISPOSITIONS = ['accepted', 'resolved', 'confirm'] as const
+
+// Findings awaiting in-person verification — settled for every rollup,
+// but the site-visit sheet lists them so Nick can confirm or reopen.
+export const VERIFY_DISPOSITIONS = ['confirm'] as const
+export function needsVerification(value: string | null | undefined): boolean {
+  return normalizeDisposition(value) === 'confirm'
+}
 
 export function isSettled(value: string | null | undefined): boolean {
   return (SETTLED_DISPOSITIONS as readonly string[]).includes(normalizeDisposition(value))

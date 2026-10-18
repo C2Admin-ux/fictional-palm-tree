@@ -242,6 +242,7 @@ const DISPOSITION_TAG_HEX: Record<string, string> = {
   capex: '#c2410c',   // orange-700
   accepted: SLATE_400,
   resolved: '#059669', // emerald-600
+  confirm: '#0f766e',  // teal-700 — reported fixed, verify on site
 }
 
 function DispositionTag({ disposition }: { disposition: string | null }) {
