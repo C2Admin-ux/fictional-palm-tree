@@ -4,9 +4,9 @@ import Link from 'next/link'
 import {
   formatCurrency, formatPct, formatDate,
   occupancyColor, delinquencyColor, noiVarianceColor,
-  TRAFFIC_LIGHT, daysUntil, propertyColor, PRIORITY_DOT, CAPEX_STATUS_LABELS,
+  TRAFFIC_LIGHT, daysUntil, propertyColor, CAPEX_STATUS_LABELS,
 } from '@/lib/utils'
-import { CheckSquare, HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert, ClipboardList } from 'lucide-react'
+import { HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert, ClipboardList } from 'lucide-react'
 import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import BuildingTab from './building-tab'
 import EditProperty from './edit-property'
@@ -84,10 +84,9 @@ export default async function PropertyPage({
       // count and preview track top-level tasks only.
       ? supabase.from('tasks').select('id', { count: 'exact', head: true }).eq('property_id', params.id).neq('status', 'done').is('parent_task_id', null)
       : Promise.resolve({ count: null }),
-    // Overview shows a 5-task preview; skip the fetch on other tabs.
-    tab === 'overview'
-      ? supabase.from('tasks').select('id, title, status, priority, due_date').eq('property_id', params.id).neq('status', 'done').is('parent_task_id', null).order('due_date', { ascending: true, nullsFirst: false }).limit(5)
-      : Promise.resolve({ data: null }),
+    // The Overview renders the live TasksTab (client-fetched), so no
+    // server-side preview rows are needed any more.
+    Promise.resolve({ data: null }),
     supabase.from('capex_projects').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
     supabase.from('pm_metrics').select('*').eq('property_id', params.id).order('period_month', { ascending: false }).limit(12),
     supabase.from('documents').select('*').eq('property_id', params.id).order('created_at', { ascending: false }),
@@ -132,7 +131,6 @@ export default async function PropertyPage({
       : Promise.resolve({ data: null }),
   ])
 
-  const propTasks = (tasks ?? []) as any[]
   const openTaskCount = taskCountRes.count ?? 0
   const propCapex = (capexProjects ?? []) as any[]
   const propMetrics = (metrics ?? []) as any[]
@@ -278,24 +276,16 @@ export default async function PropertyPage({
             )}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
-              {/* Tasks */}
-              <div className="card p-4">
-                <div className="flex items-center justify-between mb-3">
+              {/* Tasks — the live list, not a preview: quick-add, status,
+                  due/snooze, subtasks and the edit modal all work here
+                  (Nick, 2026-10-18: the property page is a portal). Later
+                  and no-date groups collapse so the card stays short. */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-slate-700">Open Tasks ({openTaskCount})</h3>
-                  <Link href={`/properties/${params.id}?tab=tasks`} className="text-xs text-blue-600 hover:underline">View all →</Link>
+                  <Link href={`/properties/${params.id}?tab=tasks`} className="text-xs text-blue-600 hover:underline">Full list →</Link>
                 </div>
-                {propTasks.length === 0
-                  ? <p className="text-xs text-slate-400 italic">No open tasks</p>
-                  : propTasks.slice(0, 5).map((t: any) => (
-                    <div key={t.id} className="flex items-center gap-2 py-1.5 border-b border-slate-200/70 last:border-0">
-                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                        style={{ background: PRIORITY_DOT[t.priority as string] ?? '#94a3b8' }} />
-                      <span className="text-sm text-slate-700 flex-1 truncate">{t.title}</span>
-                      <StatusBadge value={t.status} className="text-xs" />
-                      {t.due_date && <span className="text-xs text-slate-400 flex-shrink-0">{formatDate(t.due_date)}</span>}
-                    </div>
-                  ))
-                }
+                <TasksTab propertyId={params.id} focusDue />
               </div>
 
               {/* Recent calls — running summary from the last four calls */}
