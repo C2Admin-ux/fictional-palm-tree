@@ -20,7 +20,10 @@ import { createClient } from '@/lib/supabase/client'
 import { cn, formatDate, PRIORITY_DOT } from '@/lib/utils'
 import { signedPhotoUrls, type SignedPhotoUrl } from '@/lib/inspections/photos'
 import { instanceLabel } from '@/lib/inspections/sections'
-import { isOpenFinding, isSettled, normalizeDisposition } from '@/lib/inspections/dispositions'
+import { DISPOSITIONS, DISPOSITION_LABELS, isOpenFinding, isSettled, needsVerification, normalizeDisposition, type Disposition } from '@/lib/inspections/dispositions'
+import { confirmFinding, undoConfirm } from '@/lib/inspections/confirm'
+import { invalidateInspectionReports } from '@/lib/inspections/invalidate'
+import { toast } from '@/components/ui/toast'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { Camera, ClipboardCheck, ClipboardList } from 'lucide-react'
 
@@ -66,7 +69,49 @@ export function useSignedThumbs(rows: { thumb_path: string | null }[]): Record<s
   return urls
 }
 
-function FindingRow({ row, thumbUrl }: { row: OpenFindingRow; thumbUrl: string | undefined }) {
+// Status control on the property page: a plain select over the triage
+// verbs. 'confirm' runs the shared confirm path (completes the linked
+// task); everything else is a direct disposition write. Undo via toast.
+function StatusSelect({ row, onChange }: { row: OpenFindingRow; onChange: (fields: Partial<OpenFindingRow>) => void }) {
+  const supabase = createClient()
+  const value = normalizeDisposition(row.disposition)
+  async function set(next: Disposition) {
+    if (next === value) return
+    const prior = { disposition: value, disposition_note: row.disposition_note, disposition_at: row.disposition_at }
+    if (next === 'confirm') {
+      const res = await confirmFinding(supabase, row)
+      if ('error' in res) { toast(`Couldn't update — ${res.error}`, { tone: 'error' }); return }
+      onChange({ disposition: 'confirm', disposition_at: new Date().toISOString() })
+      void invalidateInspectionReports(supabase, [row.inspection_id])
+      toast(res.prior.task ? 'Confirm on site — linked task completed' : 'Confirm on site — will show on the next site visit', {
+        action: { label: 'Undo', onClick: async () => {
+          const err = await undoConfirm(supabase, row.id, res.prior)
+          if (err) toast(`Couldn't undo — ${err}`, { tone: 'error' }); else onChange(prior)
+        } },
+      })
+      return
+    }
+    const patch = { disposition: next, disposition_at: new Date().toISOString(), ...(next === 'flagged' ? { communicated_at: null } : {}) }
+    const { error } = await supabase.from('inspection_items').update(patch).eq('id', row.id)
+    if (error) { toast(`Couldn't update — ${error.message}`, { tone: 'error' }); return }
+    onChange(patch)
+    void invalidateInspectionReports(supabase, [row.inspection_id])
+    toast(`Marked ${DISPOSITION_LABELS[next].toLowerCase()}`, {
+      action: { label: 'Undo', onClick: async () => {
+        const { error: e } = await supabase.from('inspection_items').update(prior).eq('id', row.id)
+        if (e) toast(`Couldn't undo — ${e.message}`, { tone: 'error' }); else onChange(prior)
+      } },
+    })
+  }
+  return (
+    <select value={value} onChange={e => set(e.target.value as Disposition)} aria-label="Finding status"
+      className="text-xs border border-slate-200 rounded-md px-1.5 py-1 bg-white text-slate-600">
+      {DISPOSITIONS.map(d => <option key={d} value={d}>{DISPOSITION_LABELS[d]}</option>)}
+    </select>
+  )
+}
+
+function FindingRow({ row, thumbUrl, onChange }: { row: OpenFindingRow; thumbUrl: string | undefined; onChange: (fields: Partial<OpenFindingRow>) => void }) {
   return (
     <div className="flex items-center gap-3 py-2 border-b border-slate-200/70 last:border-0">
       {row.thumb_path && thumbUrl ? (
@@ -100,6 +145,7 @@ function FindingRow({ row, thumbUrl }: { row: OpenFindingRow; thumbUrl: string |
             {row.watch_count}× carried
           </span>
         )}
+        <StatusSelect row={row} onChange={onChange} />
         <Link href={`/inspections/${row.inspection_id}`}
           title="Open the source inspection"
           className="text-xs text-slate-400 hover:text-blue-600 whitespace-nowrap flex items-center gap-1">
@@ -118,11 +164,18 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
   count: number
   rows: OpenFindingRow[]
 }) {
-  const thumbs = useSignedThumbs(rows)
+  // Local copy so a status change (e.g. Confirm on site) updates in place;
+  // a row that is no longer open drops off the card on the next render.
+  const [list, setList] = useState(rows)
+  useEffect(() => { setList(rows) }, [rows])
+  const shown = list.filter(isOpenFinding)
+  const thumbs = useSignedThumbs(shown)
+  const patch = (id: string, fields: Partial<OpenFindingRow>) =>
+    setList(prev => prev.map(r => r.id === id ? { ...r, ...fields } : r))
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
-        <h3 className="text-sm font-semibold text-slate-700">Open findings ({count})</h3>
+        <h3 className="text-sm font-semibold text-slate-700">Open findings ({Math.max(0, count - (rows.length - shown.length))})</h3>
         <div className="flex items-center gap-3">
           {/* The site-visit working sheet — due tasks + every unsettled
               finding + capex/PM/litigation context, printable. */}
@@ -134,10 +187,10 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
             className="text-xs text-blue-600 hover:underline">View all →</Link>
         </div>
       </div>
-      {rows.length === 0
+      {shown.length === 0
         ? <p className="text-xs text-slate-400 italic">No open findings</p>
-        : rows.map(row => (
-          <FindingRow key={row.id} row={row}
+        : shown.map(row => (
+          <FindingRow key={row.id} row={row} onChange={f => patch(row.id, f)}
             thumbUrl={row.thumb_path ? thumbs[row.thumb_path]?.url : undefined} />
         ))}
     </div>
@@ -146,7 +199,7 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
 
 // ── Full list (Inspections tab) ──────────────────────────────
 
-type FilterId = 'all' | 'open' | 'watch' | 'flagged' | 'settled'
+type FilterId = 'all' | 'open' | 'watch' | 'flagged' | 'verify' | 'settled'
 const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => boolean }[] = [
   { id: 'all', label: 'All', match: () => true },
   // "Open" = the canonical open-finding rule, minus the verbs that get
@@ -155,12 +208,17 @@ const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => bool
   { id: 'open', label: 'Open', match: r => isOpenFinding(r) && ['open', 'task', 'capex'].includes(normalizeDisposition(r.disposition)) },
   { id: 'watch', label: 'Watch', match: r => normalizeDisposition(r.disposition) === 'watch' },
   { id: 'flagged', label: 'Flagged', match: r => normalizeDisposition(r.disposition) === 'flagged' },
-  { id: 'settled', label: 'Settled', match: r => isSettled(r.disposition) },
+  { id: 'verify', label: 'To verify', match: r => needsVerification(r.disposition) },
+  { id: 'settled', label: 'Settled', match: r => isSettled(r.disposition) && !needsVerification(r.disposition) },
 ]
 
-export function PropertyFindingsList({ rows, propertyId }: { rows: OpenFindingRow[]; propertyId?: string }) {
+export function PropertyFindingsList({ rows: initialRows, propertyId }: { rows: OpenFindingRow[]; propertyId?: string }) {
   const [filter, setFilter] = useState<FilterId>('all')
+  const [rows, setRows] = useState(initialRows)
+  useEffect(() => { setRows(initialRows) }, [initialRows])
   const thumbs = useSignedThumbs(rows)
+  const patch = (id: string, fields: Partial<OpenFindingRow>) =>
+    setRows(prev => prev.map(r => r.id === id ? { ...r, ...fields } : r))
 
   const active = FILTERS.find(f => f.id === filter) ?? FILTERS[0]
   const visible = rows.filter(active.match)
@@ -198,7 +256,7 @@ export function PropertyFindingsList({ rows, propertyId }: { rows: OpenFindingRo
       {visible.length === 0
         ? <p className="text-xs text-slate-400 italic">Nothing under this filter</p>
         : visible.map(row => (
-          <FindingRow key={row.id} row={row}
+          <FindingRow key={row.id} row={row} onChange={f => patch(row.id, f)}
             thumbUrl={row.thumb_path ? thumbs[row.thumb_path]?.url : undefined} />
         ))}
     </div>

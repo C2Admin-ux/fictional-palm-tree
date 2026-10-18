@@ -31,9 +31,10 @@ import {
 } from '@/lib/utils'
 import { instanceLabel } from '@/lib/inspections/sections'
 import {
-  DISPOSITION_LABELS, UNSETTLED_DISPOSITIONS, isSettled, normalizeDisposition,
+  DISPOSITION_LABELS, UNSETTLED_DISPOSITIONS, VERIFY_DISPOSITIONS, isSettled, needsVerification, normalizeDisposition,
   type Disposition,
 } from '@/lib/inspections/dispositions'
+import { verifyFinding } from '@/lib/inspections/confirm'
 import { invalidateInspectionReports } from '@/lib/inspections/invalidate'
 import { DispositionChip } from '@/components/inspections/disposition-chip'
 import { BidChip } from '@/components/capex/bid-chip'
@@ -50,7 +51,7 @@ import {
 import { STATUS_META, TYPE_LABEL, daysUntilDate } from '@/app/(dashboard)/litigation/shared'
 import type { LitigationCase, RenewalSetting } from '@/lib/supabase/types'
 import {
-  ArrowLeft, Printer, Camera, Check, ChevronDown, ClipboardCheck, Eye, Flag,
+  ArrowLeft, Printer, Camera, Check, ChevronDown, ClipboardCheck, Eye, Flag, MapPinCheck,
   HardHat, Phone, Scale, StickyNote,
 } from 'lucide-react'
 
@@ -178,7 +179,7 @@ export default function SiteVisitPage() {
         supabase.from('inspection_items')
           .select('id, inspection_id, item_label, section_name, unit_number, requires_action, action_priority, disposition, disposition_note, disposition_at, communicated_at, watch_count, capex_project_id, photo_paths, inspections!inner(property_id, inspection_date)')
           .eq('inspections.property_id', params.id)
-          .in('disposition', [...UNSETTLED_DISPOSITIONS]),
+          .in('disposition', [...UNSETTLED_DISPOSITIONS, ...VERIFY_DISPOSITIONS]),
         supabase.from('capex_projects')
           .select('id, title, status, category, priority, budget, vendor_name, bids_target, target_completion, capex_bids(vendor_name, status, amount)')
           .eq('property_id', params.id)
@@ -303,7 +304,25 @@ export default function SiteVisitPage() {
   }, [params.id])
 
   const thumbs = useSignedThumbs(findings)
-  const groups = useMemo(() => groupFindings(findings), [findings])
+  // "Confirm on site" findings get their own section; the walk groups
+  // hold only the still-open ones.
+  const toVerify = useMemo(() => findings.filter(f => needsVerification(f.disposition)), [findings])
+  const groups = useMemo(() => groupFindings(findings.filter(f => !needsVerification(f.disposition))), [findings])
+
+  // Onsite verification of a PM-reported fix: Verified -> resolved (drops
+  // off the sheet); Not fixed -> flagged and the linked task reopened.
+  const verify = useCallback((f: VisitFinding, outcome: 'verified' | 'not_fixed') => {
+    void (async () => {
+      const res = await verifyFinding(supabase, f, outcome)
+      if ('error' in res) { toast(`Couldn't update the finding — ${res.error}`, { tone: 'error' }); return }
+      setFindings(prev => outcome === 'verified'
+        ? prev.filter(x => x.id !== f.id)
+        : prev.map(x => x.id === f.id ? { ...x, disposition: 'flagged', disposition_at: new Date().toISOString(), communicated_at: null, disposition_note: 'Reported fixed, found not fixed on site visit' } : x))
+      void invalidateInspectionReports(supabase, [f.inspection_id])
+      toast(outcome === 'verified' ? 'Verified — marked resolved' : 'Not fixed — flagged again and task reopened')
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Finding triage (live writes, same rules as the triage UI) ──
   // The verb patch deliberately does NOT touch disposition_note — a note
@@ -481,17 +500,60 @@ export default function SiteVisitPage() {
         </div>
       </section>
 
+      {/* ── Verify in person — PM-reported fixes awaiting Nick's eyes ── */}
+      {toVerify.length > 0 && (
+        <section className="mb-8">
+          <h2 className="section-title mb-2 flex items-center gap-1.5">
+            <MapPinCheck size={14} />Verify in person
+            <span className="ml-1 font-normal text-slate-400">{toVerify.length}</span>
+          </h2>
+          <p className="text-xs text-slate-500 mb-2">Reported fixed by the PM and taken as done. Check each one while on site.</p>
+          {toVerify.map(f => {
+            const thumbUrl = f.thumb_path ? thumbs[f.thumb_path]?.url : undefined
+            return (
+              <div key={f.id} className="flex gap-3 py-2.5 border-b border-slate-200/70 break-inside-avoid">
+                <div className="hidden print:block w-4 h-4 border-2 border-slate-700 rounded-sm flex-shrink-0 mt-0.5" />
+                {thumbUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={thumbUrl} alt="" className="w-9 h-9 rounded object-cover border border-slate-200 flex-shrink-0 print:hidden" />
+                ) : (
+                  <div className="w-9 h-9 rounded bg-slate-100 flex items-center justify-center flex-shrink-0 print:hidden">
+                    <Camera size={12} className="text-slate-300" />
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-slate-700 leading-snug">{f.item_label || 'No description'}</p>
+                  <p className="text-xs text-slate-400">
+                    {instanceLabel({ name: f.section_name, unit: f.unit_number })} · noted {formatDate(f.inspection_date)}
+                    {f.disposition_at && <> · reported fixed {formatDate(f.disposition_at)}</>}
+                  </p>
+                  {itemNoteBox(`finding:${f.id}`, 'Onsite note for this finding…')}
+                </div>
+                <div className="flex items-start gap-1 flex-shrink-0 print:hidden">
+                  <button onClick={() => verify(f, 'verified')} title="Verified fixed" className="btn-ghost text-emerald-700 flex items-center gap-1 text-xs">
+                    <Check size={13} />Verified
+                  </button>
+                  <button onClick={() => verify(f, 'not_fixed')} title="Not fixed — flag it again" className="btn-ghost text-red-600 flex items-center gap-1 text-xs">
+                    <Flag size={13} />Not fixed
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </section>
+      )}
+
       {/* ── Findings ──────────────────────────────────────────── */}
       <section className="mb-8">
         <h2 className="section-title mb-2">
           Open findings
-          <span className="ml-2 font-normal text-slate-400">{findings.length}</span>
+          <span className="ml-2 font-normal text-slate-400">{findings.length - toVerify.length}</span>
         </h2>
         {noteBox('section:findings', 'Findings notes…', 'mb-3')}
         {sectionErrors.findings && (
           <p className="text-sm text-red-600">Couldn&apos;t load findings — {sectionErrors.findings}</p>
         )}
-        {!sectionErrors.findings && findings.length === 0 && (
+        {!sectionErrors.findings && groups.length === 0 && (
           <p className="text-sm text-slate-400 italic">
             No unsettled findings for this property — nothing to walk.
           </p>
