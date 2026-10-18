@@ -19,7 +19,6 @@ import { toast } from '@/components/ui/toast'
 import { useSort, Th } from '@/lib/utils/sort'
 import { Phone, Plus, Trash2, ChevronRight, X, CalendarClock } from 'lucide-react'
 import { CallSearch } from '@/components/calls/call-search'
-import { SeriesGlance } from '@/components/calls/series-glance'
 
 type PmcOption = { id: string; name: string }
 
@@ -100,7 +99,7 @@ export default function CallsPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="page-title">Calls</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Weekly PM check-ins — notes in, agendas and tasks out</p>
+          <p className="text-sm text-slate-500 mt-0.5">Every call on record — search what was said, open a call to pick follow-ups</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowAgenda(true)} className="btn-secondary">
@@ -112,9 +111,8 @@ export default function CallsPage() {
         </div>
       </div>
 
-      {/* Search every call + running summary per recurring call */}
+      {/* Search every call's transcript, notes and summary */}
       <CallSearch />
-      <SeriesGlance />
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">

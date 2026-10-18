@@ -14,6 +14,7 @@ import InspectionsTab, { type InspectionTabRow } from './inspections-tab'
 import { OpenFindingsCard, type OpenFindingRow } from './open-findings'
 import { UNSETTLED_DISPOSITIONS } from '@/lib/inspections/dispositions'
 import TasksTab from './tasks-tab'
+import { CallsOverviewCard, CallsTab, loadPropertyCalls } from './calls-section'
 import { StatusBadge } from '@/components/ui/badge'
 
 export const dynamic = 'force-dynamic'
@@ -59,6 +60,7 @@ export default async function PropertyPage({
 
   if (!property) notFound()
   const prop = property as any
+  const propertyCalls = await loadPropertyCalls(params.id)
 
   const [
     taskCountRes,
@@ -174,6 +176,7 @@ export default async function PropertyPage({
     { id: 'capex',     label: `CapEx (${propCapex.length})` },
     { id: 'metrics',   label: 'Metrics' },
     { id: 'inspections', label: `Inspections (${inspectionCount})` },
+    { id: 'calls',     label: `Calls (${propertyCalls.calls.length})` },
     { id: 'building',  label: 'Building' },
     { id: 'permits',   label: `Permits (${propPermits.length})` },
     { id: 'documents', label: `Documents (${propDocs.length})` },
@@ -294,6 +297,9 @@ export default async function PropertyPage({
                   ))
                 }
               </div>
+
+              {/* Recent calls — running summary from the last four calls */}
+              <CallsOverviewCard data={propertyCalls} propertyId={params.id} />
 
               {/* Open findings — unresolved across all inspections */}
               <OpenFindingsCard
@@ -510,6 +516,7 @@ export default async function PropertyPage({
           </div>
         )}
 
+        {tab === 'calls' && <CallsTab data={propertyCalls} />}
         {tab === 'inspections' && <InspectionsTab inspections={propInspections} findings={tabFindings} propertyId={params.id} />}
 
         {tab === 'building' && (
