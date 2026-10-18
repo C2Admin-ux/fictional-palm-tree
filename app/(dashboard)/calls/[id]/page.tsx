@@ -3,9 +3,10 @@
 // Call detail — the review/confirm surface of the calls flywheel.
 // Extraction proposes items (grounded in properties + open tasks); Nick
 // curates them here (kind, property, owner, task links), then "Confirm &
-// process" turns checked actions into tasks and promotes matched items
-// onto their existing tasks. Items stay editable after processing —
-// only the Confirm button retires.
+// process" turns the actions Nick CHECKED into tasks (opt-in — nothing
+// becomes a task unless he selects it) and promotes matched items onto
+// their existing tasks. Items stay editable after processing — only the
+// Confirm button retires.
 
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
@@ -21,10 +22,12 @@ import { InlineText, InlineDate, InlineSelect } from '@/components/ui/inline-edi
 import { ActionError, ErrorState } from '@/components/ui/error-state'
 import { toast } from '@/components/ui/toast'
 import { insertTask } from '@/lib/tasks/create'
+import { buildRecap, mailtoHref } from '@/lib/calls/recap'
+import { CarriedOver, type CarriedTask } from '@/components/calls/carried-over'
 import { CALL_AUTO_SOURCE } from '@/lib/tasks/vocab'
 import {
   ArrowLeft, Sparkles, Plus, Phone,
-  CheckCircle2, Circle, X, Link2, ExternalLink, ChevronDown, ChevronRight,
+  CheckCircle2, Circle, X, Link2, ExternalLink, ChevronDown, ChevronRight, Mail,
 } from 'lucide-react'
 
 type PmcOption = { id: string; name: string }
@@ -54,10 +57,19 @@ export default function CallDetailPage() {
   const [processing, setProcessing] = useState(false)
   const [showTranscript, setShowTranscript] = useState(false)
   // Per-item review choices (uncommitted until Confirm & process):
-  // unchecking removes an action from task creation / a match from linking.
-  // Default ON for both — the common case confirms everything.
+  // checking an action opts it in to task creation; unchecking a match
+  // skips linking. Task creation is OPT-IN (Nick, 2026-10-17): the
+  // transcript is the record, and only the follow-ups he selects become
+  // tasks — so every action starts unchecked (see fetchItems). Match
+  // linking stays default-on; it only annotates tasks that already exist.
   const [uncheckedCreate, setUncheckedCreate] = useState<Set<string>>(new Set())
   const [uncheckedLink, setUncheckedLink] = useState<Set<string>>(new Set())
+  // Email selections are separate from task selections: some follow-ups
+  // are shared with the team by email, some are internal-only tasks.
+  const [emailItems, setEmailItems] = useState<Set<string>>(new Set())
+  const [emailCarried, setEmailCarried] = useState<Set<string>>(new Set())
+  const [carried, setCarried] = useState<CarriedTask[]>([])
+  const [seriesInfo, setSeriesInfo] = useState<{ display_name: string; cadence_days: number } | null>(null)
   // Items whose created task exists but could not be linked AND could not
   // be compensation-deleted — re-confirming would duplicate the task, so
   // they sit out for the rest of the session (see confirmProcess).
@@ -78,6 +90,11 @@ export default function CallDetailPage() {
       return
     }
     setFetchError(null)
+    const sid = (data as Call | null)?.series_id
+    if (sid) {
+      supabase.from('call_series').select('display_name, cadence_days').eq('id', sid).single()
+        .then(({ data: sr }) => setSeriesInfo(sr ?? null))
+    }
     setCall(data as Call)
     setLoading(false)
   }, [callId])
@@ -86,7 +103,10 @@ export default function CallDetailPage() {
     const { data, error } = await supabase.from('call_items')
       .select('*').eq('call_id', callId).order('sort_order').order('created_at')
     if (error) { setActionError(`Could not load items: ${error.message}`); return }
-    setItems((data as CallItem[]) ?? [])
+    const rows = (data as CallItem[]) ?? []
+    setItems(rows)
+    // Opt-in task creation: start with every unlinked action unchecked.
+    setUncheckedCreate(new Set(rows.filter(i => i.kind === 'action' && !i.task_id).map(i => i.id)))
   }, [callId])
 
   useEffect(() => { fetchCall(); fetchItems() }, [fetchCall, fetchItems])
@@ -189,6 +209,30 @@ export default function CallDetailPage() {
       setActionError(`Extraction failed: ${err.message}`)
     }
     setExtracting(false)
+  }
+
+  // ── Email selected ─────────────────────────────────────────
+  // Builds the recap from the follow-ups ticked for email plus any
+  // carried-over reminders, opens the mail client with it prefilled
+  // (recipients blank — Nick adds them), and copies the text as well.
+  function emailSelected() {
+    if (!call) return
+    const picked = items.filter(i => emailItems.has(i.id))
+    const reminders = carried.filter(t => emailCarried.has(t.id))
+    if (picked.length === 0 && reminders.length === 0) { toast('Tick the follow-ups to include first'); return }
+    const cadence = seriesInfo?.cadence_days ?? 7
+    const next = new Date(call.call_date + 'T00:00:00'); next.setDate(next.getDate() + cadence)
+    const { subject, body } = buildRecap({
+      seriesName: seriesInfo?.display_name ?? call.title,
+      callDate: call.call_date,
+      nextCallDate: next.toISOString().slice(0, 10),
+      summary: call.summary,
+      items: picked.map(i => ({ text: i.description, owner: i.owner, due: i.due_hint })),
+      carried: reminders.map(t => ({ text: t.title, owner: t.owner, due: t.follow_up_on ?? t.due_date })),
+    })
+    navigator.clipboard?.writeText(`${subject}\n\n${body}`).catch(() => {})
+    window.location.href = mailtoHref(subject, body)
+    toast('Opened in your mail client (also copied)')
   }
 
   // ── Confirm & process ──────────────────────────────────────
@@ -371,6 +415,9 @@ export default function CallDetailPage() {
                 <Sparkles size={14} />{extracting ? 'Extracting…' : 'Re-run extraction'}
               </button>
             )}
+            <button onClick={emailSelected} className="btn-secondary" title="Draft the recap email from the follow-ups ticked for email">
+              <Mail size={14} />Email selected
+            </button>
             {isDraft && (
               <button onClick={confirmProcess} disabled={processing || extracting} className="btn-primary">
                 {processing ? 'Processing…' : 'Confirm & process'}
@@ -423,6 +470,12 @@ export default function CallDetailPage() {
                   taskRefs={taskRefs}
                   createChecked={!uncheckedCreate.has(item.id)}
                   linkChecked={!uncheckedLink.has(item.id)}
+                  emailChecked={emailItems.has(item.id)}
+                  onToggleEmail={() => setEmailItems(prev => {
+                    const next = new Set(prev)
+                    if (next.has(item.id)) next.delete(item.id); else next.add(item.id)
+                    return next
+                  })}
                   onToggleCreate={() => setUncheckedCreate(prev => {
                     const next = new Set(prev)
                     if (next.has(item.id)) next.delete(item.id); else next.add(item.id)
@@ -442,6 +495,18 @@ export default function CallDetailPage() {
         ))}
 
         <AddItemRow properties={properties} onAdd={addItem} />
+
+        <CarriedOver
+          seriesId={call.series_id}
+          beforeDate={call.call_date}
+          selected={emailCarried}
+          onLoaded={setCarried}
+          onToggle={id => setEmailCarried(prev => {
+            const next = new Set(prev)
+            if (next.has(id)) next.delete(id); else next.add(id)
+            return next
+          })}
+        />
       </div>
 
       {/* Claude-written notes from the transcript (notes_md, 0022) */}
@@ -505,7 +570,7 @@ type Option = { value: string; label: string; className?: string }
 
 function ItemRow({
   item, isDraft, kindOptions, propertyOptions, ownerOptions, taskRefs,
-  createChecked, linkChecked, onToggleCreate, onToggleLink, onPatch, onDelete,
+  createChecked, linkChecked, emailChecked, onToggleCreate, onToggleLink, onToggleEmail, onPatch, onDelete,
 }: {
   item: CallItem
   isDraft: boolean
@@ -515,8 +580,10 @@ function ItemRow({
   taskRefs: Record<string, TaskRef>
   createChecked: boolean
   linkChecked: boolean
+  emailChecked: boolean
   onToggleCreate: () => void
   onToggleLink: () => void
+  onToggleEmail: () => void
   onPatch: (fields: Partial<CallItem>) => void
   onDelete: () => void
 }) {
@@ -630,7 +697,14 @@ function ItemRow({
           <label className="inline-flex items-center gap-1 cursor-pointer select-none text-blue-600">
             <input type="checkbox" checked={createChecked} onChange={onToggleCreate}
               className="rounded border-slate-300" />
-            Create task
+            Task
+          </label>
+        )}
+        {item.kind === 'action' && (
+          <label className="inline-flex items-center gap-1 cursor-pointer select-none text-emerald-700">
+            <input type="checkbox" checked={emailChecked} onChange={onToggleEmail}
+              className="rounded border-slate-300" />
+            Email
           </label>
         )}
       </div>

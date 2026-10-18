@@ -9,9 +9,11 @@ export const CALL_STATUS_STYLES: Record<string, string> = {
   processed: 'text-emerald-700 bg-emerald-50 border-emerald-200',
 }
 
+// draft = ingested, follow-ups not yet reviewed by Nick; processed =
+// he has picked which follow-ups become tasks (possibly none).
 export const CALL_STATUS_LABELS: Record<string, string> = {
-  draft:     'Draft',
-  processed: 'Processed',
+  draft:     'To review',
+  processed: 'Reviewed',
 }
 
 export const CALL_SOURCE_LABELS: Record<string, string> = {
