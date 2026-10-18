@@ -75,9 +75,12 @@ export function CallsTab({ data }: { data: Loaded }) {
         return (
           <div key={s.id} className="card p-4 space-y-4">
             <div>
-              <div className="flex items-baseline justify-between">
+              <div className="flex items-baseline justify-between gap-3 flex-wrap">
                 <h2 className="text-sm font-semibold text-slate-700">{s.display_name} — where things stand</h2>
-                {r && <span className="text-xs text-slate-400">updated {formatDate(r.updated_at)} · last 4 calls</span>}
+                <span className="text-xs text-slate-400 flex items-center gap-3">
+                  {r && <>updated {formatDate(r.updated_at)} · last 4 calls</>}
+                  <Link href={`/calls/brief/${s.id}`} className="text-blue-600 hover:underline">Pre-call brief →</Link>
+                </span>
               </div>
               <p className="text-sm text-slate-700 mt-2 whitespace-pre-line">{r?.summary || 'No summary yet.'}</p>
             </div>
