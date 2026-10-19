@@ -242,7 +242,7 @@ export type Database = {
       call_series: {
         // Recurring meeting definition (0021): matched by lowercased title
         // prefix; carries the PMC + covered properties for auto-assignment.
-        Row: { id: string; key: string; display_name: string; pmc_id: string | null; property_ids: string[]; default_recipients: string[]; always_cc: string[]; cadence_days: number; active: boolean; created_at: string }
+        Row: { id: string; key: string; display_name: string; pmc_id: string | null; property_ids: string[]; default_recipients: string[]; always_cc: string[]; cadence_days: number; active: boolean; created_at: string; default_property_id: string | null }
         Insert: Partial<Database['public']['Tables']['call_series']['Row']> & { key: string; display_name: string }
         Update: Partial<Database['public']['Tables']['call_series']['Row']>
         Relationships: [{ foreignKeyName: 'call_series_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
@@ -253,6 +253,13 @@ export type Database = {
         Insert: Partial<Database['public']['Tables']['call_rollups']['Row']> & { series_id: string }
         Update: Partial<Database['public']['Tables']['call_rollups']['Row']>
         Relationships: [{ foreignKeyName: 'call_rollups_series_id_fkey'; columns: ['series_id']; isOneToOne: true; referencedRelation: 'call_series'; referencedColumns: ['id'] }]
+      }
+      call_property_rollups: {
+        // Per-property running summary for multi-property series (0025).
+        Row: { series_id: string; property_id: string; summary: string; open_items: Json; updated_at: string }
+        Insert: Partial<Database['public']['Tables']['call_property_rollups']['Row']> & { series_id: string; property_id: string }
+        Update: Partial<Database['public']['Tables']['call_property_rollups']['Row']>
+        Relationships: []
       }
       call_agendas: {
         Row: { id: string; series_id: string; for_date: string | null; body: string; based_on_call_id: string | null; status: 'draft' | 'final'; created_at: string }

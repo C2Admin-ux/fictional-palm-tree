@@ -19,12 +19,21 @@ export async function loadPropertyCalls(propertyId: string) {
     .select('id, display_name, cadence_days').contains('property_ids', [propertyId]).eq('active', true)
   const ids = (series ?? []).map(s => s.id)
   if (!ids.length) return { series: [], rollups: [], calls: [] }
-  const [{ data: rollups }, { data: calls }] = await Promise.all([
+
+  const [{ data: rollups }, { data: propRollups }, { data: calls }] = await Promise.all([
     supabase.from('call_rollups').select('*').in('series_id', ids),
+    // Multi-property series keep a summary per property; prefer it.
+    supabase.from('call_property_rollups').select('*').in('series_id', ids).eq('property_id', propertyId),
     supabase.from('calls').select('id, series_id, title, call_date, summary, status, transcript_kind')
       .in('series_id', ids).order('call_date', { ascending: false }).limit(60),
   ])
-  return { series: series ?? [], rollups: rollups ?? [], calls: calls ?? [] }
+  // Where a per-property summary exists, it replaces the series-wide one
+  // for this page (same shape, so the renderers don't care which).
+  const merged = (rollups ?? []).map(r => {
+    const pr = (propRollups ?? []).find(x => x.series_id === r.series_id)
+    return pr ? { ...r, summary: pr.summary, open_items: pr.open_items, updated_at: pr.updated_at } : r
+  })
+  return { series: series ?? [], rollups: merged, calls: calls ?? [] }
 }
 
 type Loaded = Awaited<ReturnType<typeof loadPropertyCalls>>
