@@ -120,3 +120,64 @@ for r in fp.runs:
 doc.save(out_docx)
 open(out_md, "w", encoding="utf-8").write("\n".join(md).rstrip() + "\n")
 print(out_docx, out_md)
+
+
+# ---------------------------------------------------------------- slim the .docx
+# python-docx's default template carries ~30KB of unused styles, a thumbnail and
+# custom XML. The package is emailed as base64 typed out by a model, so every KB
+# counts: drop unused parts and prune styles.xml to the styles actually used.
+import re as _re, zipfile as _zf, os as _os
+
+def _slim(path):
+    zin = _zf.ZipFile(path)
+    parts = {n: zin.read(n) for n in zin.namelist()}
+    zin.close()
+    drop = {"word/stylesWithEffects.xml", "docProps/thumbnail.jpeg", "word/webSettings.xml",
+            "customXml/item1.xml", "customXml/_rels/item1.xml.rels", "customXml/itemProps1.xml"}
+    for n in drop:
+        parts.pop(n, None)
+    ct = parts["[Content_Types].xml"].decode()
+    for n in drop:
+        ct = _re.sub(r'<Override PartName="/%s"[^>]*/>' % _re.escape(n), "", ct)
+    ct = _re.sub(r'<Default Extension="jpeg"[^>]*/>', "", ct)
+    parts["[Content_Types].xml"] = ct.encode()
+    rels = parts["_rels/.rels"].decode()
+    rels = _re.sub(r'<Relationship [^>]*Target="docProps/thumbnail.jpeg"[^>]*/>', "", rels)
+    parts["_rels/.rels"] = rels.encode()
+    dr = parts["word/_rels/document.xml.rels"].decode()
+    dr = _re.sub(r'<Relationship [^>]*Target="(?:stylesWithEffects.xml|webSettings.xml|\.\./customXml/item1.xml)"[^>]*/>', "", dr)
+    parts["word/_rels/document.xml.rels"] = dr.encode()
+    # prune styles
+    st = parts["word/styles.xml"].decode()
+    used = set()
+    for n in ("word/document.xml", "word/footer1.xml", "word/numbering.xml"):
+        if n in parts:
+            used |= set(_re.findall(r'w:(?:pStyle|rStyle|tblStyle) w:val="([^"]+)"', parts[n].decode()))
+    blocks = _re.findall(r'<w:style\b.*?</w:style>', st, _re.S)
+    byid = {}
+    for b in blocks:
+        m = _re.search(r'w:styleId="([^"]+)"', b)
+        if m:
+            byid[m.group(1)] = b
+    keep = set(used) | {i for i, b in byid.items() if 'w:default="1"' in b}
+    changed = True
+    while changed:
+        changed = False
+        for i in list(keep):
+            b = byid.get(i, "")
+            for ref in _re.findall(r'<w:(?:basedOn|link|next) w:val="([^"]+)"', b):
+                if ref not in keep:
+                    keep.add(ref); changed = True
+    for i, b in byid.items():
+        if i not in keep:
+            st = st.replace(b, "")
+    st = _re.sub(r'<w:latentStyles\b.*?</w:latentStyles>', "", st, flags=_re.S)
+    parts["word/styles.xml"] = st.encode()
+    tmp = path + ".tmp"
+    with _zf.ZipFile(tmp, "w", _zf.ZIP_DEFLATED, compresslevel=9) as z:
+        for n in ["[Content_Types].xml"] + [n for n in parts if n != "[Content_Types].xml"]:
+            z.writestr(n, parts[n])
+    _os.replace(tmp, path)
+
+_slim(out_docx)
+print("docx bytes:", _os.path.getsize(out_docx))
