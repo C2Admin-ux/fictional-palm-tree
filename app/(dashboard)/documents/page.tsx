@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { Property } from '@/lib/supabase/types'
 import { cn, formatDate, formatCurrency, daysUntil } from '@/lib/utils'
 import { trashContractGaps, isUnassigned } from '@/lib/coverage'
@@ -224,7 +225,7 @@ function ContractsPageInner() {
 
   useEffect(() => { fetchContracts() }, [fetchContracts])
   useEffect(() => {
-    supabase.from('properties').select('*').order('name')
+    propertiesQuery(supabase)
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 

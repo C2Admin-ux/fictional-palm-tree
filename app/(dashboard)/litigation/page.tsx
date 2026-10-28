@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { InsurancePolicy, LitigationUpdate, Property } from '@/lib/supabase/types'
 import { cn, formatDate, propertyColor } from '@/lib/utils'
 import { FilterSelect } from '@/components/ui/select'
@@ -42,7 +43,7 @@ export default function LitigationPage() {
         .order('created_at', { ascending: false }),
       // Newest update per case drives the "Last update" column.
       supabase.from('litigation_updates').select('case_id, created_at').order('created_at', { ascending: false }),
-      supabase.from('properties').select('*').order('name'),
+      propertiesQuery(supabase),
       supabase.from('insurance_policies').select('*').eq('status', 'active').order('policy_type'),
     ])
     if (casesRes.error) {

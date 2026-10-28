@@ -13,7 +13,7 @@ export type Database = {
         Relationships: []
       }
       properties: {
-        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist'; notes: string | null; parcel_number: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; auto_tasks_exempt: boolean; created_at: string }
+        Row: { id: string; name: string; address: string | null; city: string | null; state: string | null; zip: string | null; units_total: number | null; pmc_id: string | null; pms_platform: string | null; acquisition_date: string | null; status: 'active' | 'disposition' | 'watchlist' | 'archived'; archived_at: string | null; archive_reason: string | null; notes: string | null; parcel_number: string | null; year_built: number | null; year_renovated: number | null; gross_sf: number | null; net_rentable_sf: number | null; land_acres: number | null; num_buildings: number | null; num_stories: number | null; parking_total: number | null; parking_covered: number | null; parking_uncovered: number | null; construction_type: string | null; roof_type: string | null; unit_mix: UnitMix | null; pca_report_date: string | null; pca_assessor: string | null; pca_file_path: string | null; pca_file_name: string | null; auto_tasks_exempt: boolean; created_at: string }
         Insert: Partial<Database['public']['Tables']['properties']['Row']> & { name: string }
         Update: Partial<Database['public']['Tables']['properties']['Row']>
         Relationships: [{ foreignKeyName: 'properties_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]
@@ -289,6 +289,8 @@ export type Database = {
     Functions: {
       current_user_role: { Args: Record<never, never>; Returns: string }
       create_expiration_tasks: { Args: Record<never, never>; Returns: Json }
+      archive_property: { Args: { p_property_id: string; p_reason?: string | null }; Returns: Record<string, unknown> }
+      unarchive_property: { Args: { p_property_id: string; p_status?: string }; Returns: Record<string, unknown> }
       search_calls: { Args: { q: string; p_series?: string | null; lim?: number }; Returns: { call_id: string; series_id: string | null; title: string; call_date: string; rank: number; snippet: string }[] }
     }
     Enums: Record<never, never>

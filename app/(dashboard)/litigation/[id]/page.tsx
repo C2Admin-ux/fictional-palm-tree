@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { InsurancePolicy, LitigationUpdate, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, propertyColor } from '@/lib/utils'
 import { toast } from '@/components/ui/toast'
@@ -38,7 +39,7 @@ export default function LitigationCasePage() {
         .eq('id', params.id).single(),
       supabase.from('litigation_updates').select('*')
         .eq('case_id', params.id).order('created_at', { ascending: false }),
-      supabase.from('properties').select('*').order('name'),
+      propertiesQuery(supabase),
       supabase.from('insurance_policies').select('*').eq('status', 'active').order('policy_type'),
     ])
     if (caseRes.error) { setError(caseRes.error.message); setLoading(false); return }

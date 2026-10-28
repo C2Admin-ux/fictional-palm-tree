@@ -4,7 +4,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { AlertSetting, Json, Property, Pmc, Contact } from '@/lib/supabase/types'
 import { cn } from '@/lib/utils'
-import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail, Bell } from 'lucide-react'
+import { Plus, X, Save, Building2, Users, UserCircle, ChevronDown, Check, Mail, Bell, Archive, ArchiveRestore } from 'lucide-react'
+import { SETTABLE_STATUSES, archiveProperty, unarchiveProperty, formatArchivedLine, withoutArchived } from '@/lib/properties'
 import { Modal } from '@/components/ui/modal'
 import { SchemaGapNotice } from '@/components/ui/schema-gap-notice'
 import { isSchemaGapError } from '@/lib/supabase/schema-errors'
@@ -14,7 +15,8 @@ import {
 } from '@/lib/tasks/seasonal'
 
 const PMS_PLATFORMS = ['Entrata', 'Yardi', 'ResMan', 'AIM', 'Other']
-const PROPERTY_STATUSES = ['active', 'disposition', 'watchlist']
+// Archive is an action on the row, not a dropdown value.
+const PROPERTY_STATUSES = SETTABLE_STATUSES
 
 type Tab = 'properties' | 'pmcs' | 'contacts' | 'alerts' | 'digest'
 
@@ -80,6 +82,9 @@ function PropertiesTab() {
   const [addForm, setAddForm] = useState({ name: '', address: '', city: '', state: 'CO', zip: '', units_total: '', pmc_id: '', pms_platform: '', status: 'active' })
   const [addSaving, setAddSaving] = useState(false)
   const [saved, setSaved] = useState<string | null>(null)
+  const [archiveFor, setArchiveFor] = useState<string | null>(null)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
 
   const fetch = useCallback(async () => {
     const [{ data: props }, { data: p }] = await Promise.all([
@@ -121,6 +126,25 @@ function PropertiesTab() {
     setEditing(null)
     setSaved(id)
     setTimeout(() => setSaved(null), 2000)
+    fetch()
+  }
+
+  async function doArchive(id: string) {
+    setSaving(id)
+    const { error } = await archiveProperty(supabase, id, archiveReason)
+    setSaving(null)
+    if (error) { alert(`Archive failed — ${error.message}`); return }
+    setArchiveFor(null)
+    setArchiveReason('')
+    setEditing(null)
+    fetch()
+  }
+
+  async function doUnarchive(id: string) {
+    setSaving(id)
+    const { error } = await unarchiveProperty(supabase, id)
+    setSaving(null)
+    if (error) { alert(`Restore failed — ${error.message}`); return }
     fetch()
   }
 
@@ -190,7 +214,7 @@ function PropertiesTab() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70">
-            {properties.map(prop => {
+            {withoutArchived(properties).map(prop => {
               const isEditing = editing === prop.id
               const draft = drafts[prop.id] ?? prop
               const isSaving = saving === prop.id
@@ -257,12 +281,31 @@ function PropertiesTab() {
                           </button>
                         </>
                       ) : (
-                        <button onClick={() => startEdit(prop)}
-                          className="opacity-0 group-hover:opacity-100 text-xs text-blue-600 hover:text-blue-700 transition-opacity px-2 py-1 rounded hover:bg-blue-50">
-                          {justSaved ? <span className="flex items-center gap-1 text-emerald-600"><Check size={11} />Saved</span> : 'Edit'}
-                        </button>
+                        <>
+                          <button onClick={() => { setArchiveFor(archiveFor === prop.id ? null : prop.id); setArchiveReason('') }}
+                            title="Archive property"
+                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-700 transition-opacity p-1 rounded hover:bg-slate-100">
+                            <Archive size={13} />
+                          </button>
+                          <button onClick={() => startEdit(prop)}
+                            className="opacity-0 group-hover:opacity-100 text-xs text-blue-600 hover:text-blue-700 transition-opacity px-2 py-1 rounded hover:bg-blue-50">
+                            {justSaved ? <span className="flex items-center gap-1 text-emerald-600"><Check size={11} />Saved</span> : 'Edit'}
+                          </button>
+                        </>
                       )}
                     </div>
+                    {archiveFor === prop.id && !isEditing && (
+                      <div className="mt-2 flex items-center gap-2 justify-end">
+                        <input value={archiveReason} autoFocus
+                          onChange={e => setArchiveReason(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') doArchive(prop.id); if (e.key === 'Escape') setArchiveFor(null) }}
+                          className="input-sm w-56" placeholder="Reason (deal dropped, sold, …)" />
+                        <button onClick={() => setArchiveFor(null)} className="btn-ghost text-xs py-1 px-2">Cancel</button>
+                        <button onClick={() => doArchive(prop.id)} disabled={isSaving} className="btn-primary text-xs py-1 px-2">
+                          <Archive size={11} />{isSaving ? '…' : 'Archive'}
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )
@@ -270,6 +313,42 @@ function PropertiesTab() {
           </tbody>
         </table>
       </div>
+
+      {/* Archived properties: out of the working list, never deleted.
+          Collapsed by default so the portfolio table stays the focus. */}
+      {properties.some(p => p.status === 'archived') && (
+        <div className="card overflow-hidden">
+          <button onClick={() => setShowArchived(o => !o)}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-medium text-slate-500 hover:bg-slate-50">
+            <ChevronDown size={13} className={cn('transition-transform', !showArchived && '-rotate-90')} />
+            Archived ({properties.filter(p => p.status === 'archived').length})
+            <span className="font-normal text-slate-400 ml-1">— hidden from the sidebar, pickers, dashboard and auto-tasks; records kept</span>
+          </button>
+          {showArchived && (
+            <table className="w-full text-sm border-t border-slate-200/70">
+              <tbody className="divide-y divide-slate-200/70">
+                {properties.filter(p => p.status === 'archived').map(prop => (
+                  <tr key={prop.id} className="group hover:bg-slate-50">
+                    <td className="px-4 py-2.5">
+                      <a href={`/properties/${prop.id}`} className="font-medium text-slate-700 hover:text-blue-600 hover:underline">{prop.name}</a>
+                      <div className="text-xs text-slate-400 mt-0.5">{formatArchivedLine(prop)}</div>
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-slate-500">{prop.city}{prop.state ? `, ${prop.state}` : ''}{prop.units_total ? ` · ${prop.units_total} units` : ''}</td>
+                    <td className="px-3 py-2.5 w-28">
+                      <div className="flex justify-end">
+                        <button onClick={() => doUnarchive(prop.id)} disabled={saving === prop.id}
+                          className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50 flex items-center gap-1">
+                          <ArchiveRestore size={12} />{saving === prop.id ? '…' : 'Restore'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   )
 }

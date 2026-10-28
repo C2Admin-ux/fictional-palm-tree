@@ -12,7 +12,8 @@ import { GlobalQuickAdd } from '@/components/tasks/global-quick-add'
 import { CommandPalette } from '@/components/ui/command-palette'
 import { BottomTabBar } from '@/components/ui/bottom-tab-bar'
 import { NAV_ITEMS } from '@/lib/nav'
-import { Building2, LogOut, ChevronRight, Menu, X, Plus } from 'lucide-react'
+import { Building2, LogOut, ChevronRight, ChevronDown, Menu, X, Plus, Archive } from 'lucide-react'
+import { withoutArchived } from '@/lib/properties'
 
 const NAV_SOON = [
   { href: '/underwriting', label: 'Underwriting' },
@@ -29,17 +30,23 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   const [userId, setUserId] = useState<string | null>(null)
+  const [archivedOpen, setArchivedOpen] = useState(false)
 
   useEffect(() => {
+    // Full list on purpose: archived properties render in their own
+    // collapsed group at the bottom so they stay reachable.
     supabase.from('properties').select('id, name, status').order('name')
       .then(({ data }) => setProperties(data ?? []))
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
   }, [])
 
-  // The sidebar navigates EVERY property, but capture (sheet + palette
-  // matching pool) only offers active ones — mirroring the /tasks
-  // quick-add, so the same text can't land a task on a disposition or
-  // watchlist property here and an active one there.
+  // The sidebar lists every LIVE property (archived ones sit in a
+  // collapsed group below), but capture (sheet + palette matching pool)
+  // only offers active ones — mirroring the /tasks quick-add, so the
+  // same text can't land a task on a disposition or watchlist property
+  // here and an active one there.
+  const liveProperties = useMemo(() => withoutArchived(properties), [properties])
+  const archivedProperties = useMemo(() => properties.filter(p => p.status === 'archived'), [properties])
   const captureProperties = useMemo(
     () => properties.filter(p => p.status === 'active'),
     [properties]
@@ -144,7 +151,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="px-2 pt-4 pb-1">
             <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Properties</span>
           </div>
-          {properties.map(prop => {
+          {liveProperties.map(prop => {
             const active = pathname === `/properties/${prop.id}`
             return (
               <Link key={prop.id} href={`/properties/${prop.id}`}
@@ -157,6 +164,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </Link>
             )
           })}
+
+          {/* Archived: collapsed, muted, still navigable */}
+          {archivedProperties.length > 0 && (
+            <>
+              <button onClick={() => setArchivedOpen(o => !o)}
+                className="w-full flex items-center gap-1.5 px-2 pt-3 pb-1 text-xs font-medium text-slate-600 uppercase tracking-wider hover:text-slate-400">
+                {archivedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                Archived
+                <span className="normal-case tracking-normal font-normal">({archivedProperties.length})</span>
+              </button>
+              {archivedOpen && archivedProperties.map(prop => {
+                const active = pathname === `/properties/${prop.id}`
+                return (
+                  <Link key={prop.id} href={`/properties/${prop.id}`}
+                    className={cn('sidebar-item opacity-60', active && 'sidebar-item-active opacity-100')}>
+                    <span className="w-5 h-5 rounded flex-shrink-0 flex items-center justify-center text-slate-400 border border-slate-600">
+                      <Archive size={11} />
+                    </span>
+                    <span className="truncate text-xs">{prop.name}</span>
+                  </Link>
+                )
+              })}
+            </>
+          )}
 
           {/* Coming soon */}
           <div className="px-2 pt-4 pb-1">

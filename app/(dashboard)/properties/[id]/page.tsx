@@ -6,7 +6,8 @@ import {
   occupancyColor, delinquencyColor, noiVarianceColor,
   TRAFFIC_LIGHT, daysUntil, propertyColor, CAPEX_STATUS_LABELS,
 } from '@/lib/utils'
-import { HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert, ClipboardList } from 'lucide-react'
+import { HardHat, BarChart2, Plus, ArrowLeft, ShieldAlert, ClipboardList, Archive } from 'lucide-react'
+import { isArchived, formatArchivedLine } from '@/lib/properties'
 import { coverageGaps, describeGaps, trashContractGaps, TRASH_GAP_LABEL } from '@/lib/coverage'
 import BuildingTab from './building-tab'
 import EditProperty from './edit-property'
@@ -189,6 +190,14 @@ export default async function PropertyPage({
           <ArrowLeft size={12} />Back to dashboard
         </Link>
 
+        {isArchived(p) && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-slate-300 border-dashed bg-white px-3 py-2 text-xs text-slate-600">
+            <Archive size={13} className="text-slate-400 flex-shrink-0" />
+            <span className="font-medium text-slate-700">Archived property.</span>
+            <span className="truncate">{formatArchivedLine(p)}</span>
+            <span className="ml-auto text-slate-400 flex-shrink-0">Hidden from the sidebar and pickers · restore via Edit property</span>
+          </div>
+        )}
         <div className="flex items-start gap-3 mb-4">
           <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-bold flex-shrink-0"
             style={{ background: pc }}>
@@ -234,6 +243,8 @@ export default async function PropertyPage({
               pms_platform: p.pms_platform ?? null,
               pmc_id: p.pmc_id ?? null,
               auto_tasks_exempt: p.auto_tasks_exempt === true,
+              archived_at: p.archived_at ?? null,
+              archive_reason: p.archive_reason ?? null,
             }}
           />
           <Link href={`/properties/${params.id}/site-visit`} className="btn-secondary text-xs py-1.5 flex-shrink-0">

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import { cn, formatDate, propertyColor, todayISO, INSPECTION_STATUS_STYLES } from '@/lib/utils'
 import { INSPECTION_TYPE_LABELS, INSPECTION_STATUS_LABELS, type InspectionType } from '@/lib/inspections/templates'
 import { removeInspectionPhotos } from '@/lib/inspections/photos'
@@ -93,7 +94,7 @@ export default function InspectionsPage() {
 
   useEffect(() => { fetchInspections() }, [fetchInspections])
   useEffect(() => {
-    supabase.from('properties').select('id, name').order('name')
+    propertiesQuery(supabase)
       .then(({ data }) => setProperties(data ?? []))
   }, [])
 

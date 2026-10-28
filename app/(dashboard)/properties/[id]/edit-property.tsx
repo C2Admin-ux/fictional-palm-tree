@@ -7,7 +7,8 @@ import { createClient } from '@/lib/supabase/client'
 import type { Pmc, Property } from '@/lib/supabase/types'
 import { Modal } from '@/components/ui/modal'
 import { toast } from '@/components/ui/toast'
-import { Pencil, Check } from 'lucide-react'
+import { Pencil, Check, Archive, ArchiveRestore } from 'lucide-react'
+import { SETTABLE_STATUSES, archiveProperty, unarchiveProperty, formatArchivedLine } from '@/lib/properties'
 
 // ── Edit property (identity fields) ──────────────────────────
 // Header pencil → modal for the PROPERTY-level fields: name, status,
@@ -27,9 +28,12 @@ type Initial = {
   pms_platform: string | null
   pmc_id: string | null
   auto_tasks_exempt: boolean
+  archived_at: string | null
+  archive_reason: string | null
 }
 
-const STATUSES: Property['status'][] = ['active', 'watchlist', 'disposition']
+// Archive is an action (bottom of the modal), never a dropdown value.
+const STATUSES = SETTABLE_STATUSES
 // Mirrors the settings page platform list
 const PMS_PLATFORMS = ['Entrata', 'Yardi', 'ResMan', 'AIM', 'Other']
 const NEW_PMC = '__new__'
@@ -59,9 +63,11 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
   const supabase = createClient()
   const router = useRouter()
   const [pmcs, setPmcs] = useState<Pmc[]>([])
+  const archived = initial.status === 'archived'
   const [form, setForm] = useState({
     name: initial.name,
-    status: initial.status,
+    // An archived property's dropdown shows what it will come back as.
+    status: archived ? 'active' as const : initial.status,
     address: initial.address ?? '',
     city: initial.city ?? '',
     state: initial.state ?? '',
@@ -74,6 +80,9 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
   const [newPmc, setNewPmc] = useState({ name: '', contact_name: '', contact_email: '', contact_phone: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [archiving, setArchiving] = useState(false)
 
   useEffect(() => {
     supabase.from('pmcs').select('*').order('name').then(({ data }) => setPmcs(data ?? []))
@@ -115,7 +124,9 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
     const units = form.units_total.trim()
     const { error: updateError } = await supabase.from('properties').update({
       name: form.name.trim(),
-      status: form.status,
+      // Status is owned by archive/unarchive while archived — saving the
+      // other fields must not silently resurrect the property.
+      ...(archived ? {} : { status: form.status }),
       address: form.address.trim() || null,
       city: form.city.trim() || null,
       state: form.state.trim() || null,
@@ -131,6 +142,30 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
     toast('Property updated')
     onClose()
     // Re-render the server page (header, overview, PMC card) in place.
+    router.refresh()
+  }
+
+  async function doArchive() {
+    if (archiving) return
+    setArchiving(true)
+    setError(null)
+    const { error: e } = await archiveProperty(supabase, propertyId, archiveReason)
+    setArchiving(false)
+    if (e) { setError(e.message); return }
+    toast('Property archived')
+    onClose()
+    router.refresh()
+  }
+
+  async function doUnarchive() {
+    if (archiving) return
+    setArchiving(true)
+    setError(null)
+    const { error: e } = await unarchiveProperty(supabase, propertyId, form.status === 'archived' ? 'active' : form.status)
+    setArchiving(false)
+    if (e) { setError(e.message); return }
+    toast('Property restored')
+    onClose()
     router.refresh()
   }
 
@@ -154,7 +189,7 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
             <input value={form.name} onChange={e => setF('name', e.target.value)} className="input" />
           </div>
           <div>
-            <label className="label">Status</label>
+            <label className="label">{archived ? 'Status on restore' : 'Status'}</label>
             <select value={form.status} onChange={e => setF('status', e.target.value)} className="input">
               {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
@@ -260,6 +295,50 @@ function EditPropertyModal({ propertyId, initial, onClose }: {
           <Link href={`/properties/${propertyId}?tab=building`} onClick={onClose}
             className="text-blue-600 hover:underline">Building tab →</Link>
         </p>
+
+        {/* Archive / restore — an action, not a status value. Archived
+            properties leave the sidebar, pickers, dashboard and engines
+            but keep every record and can be brought back. */}
+        <div className="rounded-lg border border-slate-200 px-3 py-2.5 space-y-2">
+          {archived ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-700">This property is archived</div>
+                <div className="text-xs text-slate-400 mt-0.5 truncate">
+                  {formatArchivedLine({ archived_at: initial.archived_at, archive_reason: initial.archive_reason })}
+                </div>
+              </div>
+              <button onClick={doUnarchive} disabled={archiving} className="btn-secondary text-xs py-1.5 flex-shrink-0">
+                <ArchiveRestore size={12} />{archiving ? 'Restoring…' : `Restore as ${form.status}`}
+              </button>
+            </div>
+          ) : !archiveOpen ? (
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-slate-700">Archive property</div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  Deal dropped or asset sold. Hides it everywhere; keeps its records; reversible.
+                </div>
+              </div>
+              <button onClick={() => setArchiveOpen(true)} className="btn-secondary text-xs py-1.5 flex-shrink-0">
+                <Archive size={12} />Archive…
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <label className="label">Reason</label>
+              <input value={archiveReason} autoFocus
+                onChange={e => setArchiveReason(e.target.value)}
+                className="input" placeholder="e.g. Acquisition no longer being pursued" />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setArchiveOpen(false)} className="btn-ghost text-xs py-1.5">Cancel</button>
+                <button onClick={doArchive} disabled={archiving} className="btn-primary text-xs py-1.5">
+                  <Archive size={12} />{archiving ? 'Archiving…' : 'Archive property'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3 px-6 py-4 border-t border-slate-100 sticky bottom-0 bg-white">

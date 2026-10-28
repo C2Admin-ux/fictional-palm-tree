@@ -118,7 +118,8 @@ async function loadContext(supabase: Client, call: Call): Promise<CallExtraction
 
   // The call's property pool: the PMC's properties, or every active
   // property when the call isn't assigned to a PMC yet (inbound email).
-  let propQuery = supabase.from('properties').select('id, name').order('name')
+  // Archived properties are never a match target for extracted items.
+  let propQuery = supabase.from('properties').select('id, name').neq('status', 'archived').order('name')
   propQuery = call.pmc_id
     ? propQuery.eq('pmc_id', call.pmc_id)
     : propQuery.eq('status', 'active')

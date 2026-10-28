@@ -10,6 +10,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { CapexProject, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, propertyColor, capexStatusPatch } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
@@ -116,7 +117,7 @@ export default function CapexPage() {
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
   useEffect(() => {
-    supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? []))
+    propertiesQuery(supabase).then(({ data }) => setProperties(data ?? []))
   }, [])
 
   // Board set: shared filters only (every status — the columns carry it).

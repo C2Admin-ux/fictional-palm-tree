@@ -90,7 +90,7 @@ function AgendaContent() {
 
         const [{ data: pmc, error: pmcError }, { data: props, error: propError }] = await Promise.all([
           supabase.from('pmcs').select('name').eq('id', pmcId).single(),
-          supabase.from('properties').select('id, name').eq('pmc_id', pmcId).order('name'),
+          supabase.from('properties').select('id, name').eq('pmc_id', pmcId).neq('status', 'archived').order('name'),
         ])
         if (pmcError) throw pmcError
         if (propError) throw propError

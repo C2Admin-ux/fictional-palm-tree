@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { InsuranceClaim, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, CLAIM_STATUS_STYLES } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
@@ -42,7 +43,7 @@ export default function InsuranceClaimsPage() {
   }, [filterStatus, filterProp, filterType])
 
   useEffect(() => { fetchClaims() }, [fetchClaims])
-  useEffect(() => { supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? [])) }, [])
+  useEffect(() => { propertiesQuery(supabase).then(({ data }) => setProperties(data ?? [])) }, [])
 
   const displayed = [...claims]
     .filter(c => { if (!search) return true; const s = search.toLowerCase(); return (c.description ?? '').toLowerCase().includes(s) || (c.claim_id ?? '').toLowerCase().includes(s) || (c.properties?.name ?? '').toLowerCase().includes(s) })

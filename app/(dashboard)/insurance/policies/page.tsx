@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { InsurancePolicy, Property } from '@/lib/supabase/types'
 import { cn, formatCurrency, formatDate, daysUntil } from '@/lib/utils'
 import { useSort, Th } from '@/lib/utils/sort'
@@ -151,7 +152,7 @@ function PoliciesPageInner() {
   }, [filterProp, filterType, filterStatus])
 
   useEffect(() => { fetchPolicies() }, [fetchPolicies])
-  useEffect(() => { supabase.from('properties').select('*').order('name').then(({ data }) => setProperties(data ?? [])) }, [])
+  useEffect(() => { propertiesQuery(supabase).then(({ data }) => setProperties(data ?? [])) }, [])
 
   const displayed = [...policies]
     .filter(p => { if (!search) return true; const s = search.toLowerCase(); return p.carrier.toLowerCase().includes(s) || (p.properties?.name ?? '').toLowerCase().includes(s) || p.policy_number?.toLowerCase().includes(s) })

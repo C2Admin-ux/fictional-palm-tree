@@ -12,6 +12,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { propertiesQuery } from '@/lib/properties'
 import type { Call, CallItem, Task } from '@/lib/supabase/types'
 import { cn, formatDate, formatDateShort } from '@/lib/utils'
 import {
@@ -113,7 +114,7 @@ export default function CallDetailPage() {
   useEffect(() => {
     supabase.from('pmcs').select('id, name').order('name')
       .then(({ data }) => setPmcs(data ?? []))
-    supabase.from('properties').select('id, name').order('name')
+    propertiesQuery(supabase)
       .then(({ data }) => setProperties(data ?? []))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
