@@ -6,11 +6,12 @@
 //     rule (lib/inspections/dispositions.isOpenFinding), newest first,
 //     capped at 8 with a count header and a "View all" into the
 //     Inspections tab.
-//   PropertyFindingsList — the Inspections tab's full list: every finding
-//     regardless of disposition, with opt-in filter chips (All | Open |
-//     Watch | Flagged | Settled) defaulting to All. Filtering is the
-//     viewer's choice — nothing is hidden by default; findings stay
-//     reviewable forever.
+//   PropertyFindingsList — the Inspections tab's full list, with filter
+//     chips (Active | Open | Watch | Flagged | To verify | Settled | All)
+//     defaulting to Active: everything not yet settled. Resolved and
+//     accepted findings are one chip away (Settled / All) — never gone,
+//     just out of the working view so the list doesn't fill with things
+//     that are already fixed (Nick, 2026-10-27).
 // Rows are lean server-fetched shapes (first photo path only); thumbnails
 // sign client-side through the shared photo helper.
 
@@ -199,9 +200,11 @@ export function OpenFindingsCard({ propertyId, count, rows }: {
 
 // ── Full list (Inspections tab) ──────────────────────────────
 
-type FilterId = 'all' | 'open' | 'watch' | 'flagged' | 'verify' | 'settled'
+type FilterId = 'active' | 'open' | 'watch' | 'flagged' | 'verify' | 'settled' | 'all'
 const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => boolean }[] = [
-  { id: 'all', label: 'All', match: () => true },
+  // Default: anything still outstanding — unsettled verbs plus "confirm"
+  // (PM says fixed, not yet seen in person). Resolved/accepted drop out.
+  { id: 'active', label: 'Active', match: r => !isSettled(r.disposition) || needsVerification(r.disposition) },
   // "Open" = the canonical open-finding rule, minus the verbs that get
   // their own chip (watch/flagged) so the chips partition cleanly. An
   // untriaged pure observation lands only under All.
@@ -210,10 +213,11 @@ const FILTERS: { id: FilterId; label: string; match: (r: OpenFindingRow) => bool
   { id: 'flagged', label: 'Flagged', match: r => normalizeDisposition(r.disposition) === 'flagged' },
   { id: 'verify', label: 'To verify', match: r => needsVerification(r.disposition) },
   { id: 'settled', label: 'Settled', match: r => isSettled(r.disposition) && !needsVerification(r.disposition) },
+  { id: 'all', label: 'All', match: () => true },
 ]
 
 export function PropertyFindingsList({ rows: initialRows, propertyId }: { rows: OpenFindingRow[]; propertyId?: string }) {
-  const [filter, setFilter] = useState<FilterId>('all')
+  const [filter, setFilter] = useState<FilterId>('active')
   const [rows, setRows] = useState(initialRows)
   useEffect(() => { setRows(initialRows) }, [initialRows])
   const thumbs = useSignedThumbs(rows)
@@ -229,7 +233,7 @@ export function PropertyFindingsList({ rows: initialRows, propertyId }: { rows: 
     <div className="card p-4">
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-3">
-          Findings ({rows.length})
+          Findings ({filter === 'all' ? rows.length : `${visible.length} of ${rows.length}`})
           {propertyId && (
             <Link href={`/properties/${propertyId}/site-visit`}
               className="text-xs font-normal text-blue-600 hover:underline flex items-center gap-1">
@@ -237,8 +241,7 @@ export function PropertyFindingsList({ rows: initialRows, propertyId }: { rows: 
             </Link>
           )}
         </h3>
-        {/* Opt-in narrowing — All is the default; nothing is ever hidden
-            without the viewer asking. */}
+        {/* Active is the default; Settled / All bring the rest back. */}
         <div className="flex items-center gap-1 flex-wrap">
           {FILTERS.map(f => (
             <button key={f.id} onClick={() => setFilter(f.id)}
@@ -254,7 +257,9 @@ export function PropertyFindingsList({ rows: initialRows, propertyId }: { rows: 
         </div>
       </div>
       {visible.length === 0
-        ? <p className="text-xs text-slate-400 italic">Nothing under this filter</p>
+        ? <p className="text-xs text-slate-400 italic">
+            {filter === 'active' ? 'Nothing outstanding — all findings are settled.' : 'Nothing under this filter'}
+          </p>
         : visible.map(row => (
           <FindingRow key={row.id} row={row} onChange={f => patch(row.id, f)}
             thumbUrl={row.thumb_path ? thumbs[row.thumb_path]?.url : undefined} />
