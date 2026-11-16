@@ -9,8 +9,14 @@ No Resend inbox, receiving address, or mail forwarding involved.
 - Processed messages get the Gmail label **`c2-ingested`** (created
   automatically) so they are never sent twice. The app also dedupes
   server-side on the Gmail message id, so re-runs are harmless.
-- The script sends nothing by email and uses no MailApp quota — it only
-  reads Gmail, applies a label, and makes one HTTPS call per new message.
+- The script never sends email. Besides reading and labeling, it creates a
+  **Gmail draft** of the recap (no recipients) when the app returns one for
+  a call in a series with `recap_auto` on, then reports the draft back to
+  `POST /api/calls/<id>/recap-draft` so the call page links to it.
+  Recap format lives in `lib/calls/recap.ts`.
+- Authorization needs the Gmail **compose** scope (for drafts). After
+  pasting the updated script, run `main` once in the editor and accept the
+  new permission prompt.
 
 ## Setup (one time, ~5 minutes)
 
@@ -122,12 +128,35 @@ function postMessage_(endpoint, token, msg) {
 
   var code = res.getResponseCode();
   if (code >= 200 && code < 300) {
-    console.log('Ingested ' + msg.getId() + ' (' + msg.getSubject() + '): ' + res.getContentText());
+    console.log('Ingested ' + msg.getId() + ' (' + msg.getSubject() + ')');
+    try {
+      var data = JSON.parse(res.getContentText());
+      if (data.recap && data.call_id) createRecapDraft_(endpoint, token, data.call_id, data.recap);
+    } catch (err) {
+      // Never fail the ingest over the draft — the app's "Email selected"
+      // button is the fallback.
+      console.error('Recap draft failed for ' + msg.getId() + ': ' + err);
+    }
     return true;
   }
   console.error('Ingest failed (HTTP ' + code + ') for ' + msg.getId() + ': ' +
     res.getContentText().slice(0, 300));
   return false;
+}
+
+// Creates the recap as a Gmail draft with NO recipients (Nick adds them,
+// edits, and sends by hand), then tells the app where the draft is.
+function createRecapDraft_(endpoint, token, callId, recap) {
+  var draft = GmailApp.createDraft('', recap.subject, recap.body, { htmlBody: recap.html });
+  console.log('Recap draft created: ' + recap.subject);
+  var callbackUrl = endpoint.replace(/\/api\/calls\/ingest\/?$/, '/api/calls/' + callId + '/recap-draft');
+  UrlFetchApp.fetch(callbackUrl, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({ token: token, draft_id: draft.getId(), message_id: draft.getMessage().getId() }),
+    muteHttpExceptions: true,
+  });
 }
 ```
 
@@ -143,7 +172,8 @@ function postMessage_(endpoint, token, msg) {
 | `body`        | yes      | Plain-text email body — becomes the transcript.                |
 | `received_at` | no       | ISO date string; sets the call date (defaults to today).       |
 
-Responses: `{ success: true, call_id, extracted }` on create,
+Responses: `{ success: true, call_id, extracted, recap }` on create
+(`recap` = `{ subject, body, html }` or `null`),
 `{ success: true, duplicate: true, call_id }` when that email was already
 ingested (also counts as success for labeling), `401` on a bad/missing token,
 `413` above 100KB.

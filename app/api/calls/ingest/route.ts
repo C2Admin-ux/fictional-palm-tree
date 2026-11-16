@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isValidCronToken, unauthorized } from '@/lib/api-auth'
+import { buildAutoRecap } from '@/lib/calls/recap-server'
 import { cleanCallTitle, ingestCallEmail, serviceRoleClient, trimTranscriptBoilerplate } from '@/lib/calls/ingest'
 
 // Direct-post ingest for call-notes emails — the Gmail Apps Script
@@ -10,7 +11,10 @@ import { cleanCallTitle, ingestCallEmail, serviceRoleClient, trimTranscriptBoile
 // — only the transport differs.
 //
 // Contract: POST { token, external_id, subject, body, received_at? }
-//   → { success: true, call_id, extracted }
+//   → { success: true, call_id, extracted, recap? }
+//     recap = { subject, body, html } when the call's series has
+//     recap_auto on — the Apps Script turns it into a Gmail draft and
+//     reports back via POST /api/calls/[id]/recap-draft.
 //   → { success: true, duplicate: true, call_id }  (already ingested)
 //
 // Auth (fail closed, mirroring the cron philosophy in lib/api-auth.ts):
@@ -79,7 +83,15 @@ export async function POST(req: NextRequest) {
       // ingested on any 2xx, including redeliveries.
       return NextResponse.json({ success: true, duplicate: true, call_id: result.callId })
     }
-    return NextResponse.json({ success: true, call_id: result.callId, extracted: result.extracted })
+    // Recap draft content (best-effort: a failure here never fails the
+    // ingest — the call page's "Email selected" button still works).
+    let recap = null
+    if (result.extracted) {
+      try { recap = await buildAutoRecap(serviceRoleClient(), result.callId) } catch (err) {
+        console.error('Recap build failed:', err)
+      }
+    }
+    return NextResponse.json({ success: true, call_id: result.callId, extracted: result.extracted, recap })
   } catch (err: any) {
     console.error('Call ingest route error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })

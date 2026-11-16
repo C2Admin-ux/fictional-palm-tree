@@ -1,63 +1,90 @@
-// Recap email built from what Nick SELECTED on a call page — not from
-// everything the transcript proposed. Two sources feed it: this call's
-// follow-ups he ticked for email, and still-open items carried over from
-// earlier calls in the same series that he ticked as reminders. Plain
-// text, first person, simple dashes — same voice as the scheduled draft.
+// Recap email for a PM call. Format (Nick, 2026-11-15):
+//
+//   Hi all,
+//   <blank line — Nick writes his own sentence here in Gmail>
+//
+//   Victoria
+//   - Re-engage unlocked leads with 1-month-free offer
+//   - Pull lease trade-out report
+//
+//   Cory
+//   - Follow up with Rob on wood chipping timeline
+//
+// No summary, no due dates, no closing (his Gmail signature handles it).
+// Bullets are grouped under the responsible person's first name; when no
+// person was identified the PMC name (PM items) or "Nick" (owner items)
+// stands in. An optional "Still open from previous calls" section is
+// appended only for series with recap_carryover on (pilot: Cottages on
+// Vance). Built both as plain text and as simple HTML so the Gmail draft
+// shows real bullets.
 
 import { formatDate } from '@/lib/utils'
 
-export type RecapLine = { text: string; owner: string | null; due: string | null }
+export type RecapLine = {
+  text: string
+  name: string | null          // owner_name — first name of the responsible person
+  owner: string | null         // 'pm' | 'owner' | null — fallback grouping only
+}
 export type RecapInput = {
   seriesName: string
   callDate: string
-  nextCallDate: string | null
-  summary: string | null
-  items: RecapLine[]          // follow-ups from this call, selected for email
-  carried: RecapLine[]        // open items from earlier calls, selected as reminders
+  pmcName: string | null
+  items: RecapLine[]           // this call's action items
+  carried: RecapLine[]         // open items from earlier calls (empty unless enabled)
+}
+export type Recap = { subject: string; body: string; html: string }
+
+function label(l: RecapLine, pmcName: string | null): string {
+  if (l.name?.trim()) return l.name.trim()
+  if (l.owner === 'owner' || l.owner === 'c2') return 'Nick'
+  if (l.owner === 'pm') return pmcName ?? 'Property management'
+  return 'Unassigned'
 }
 
-const OWNER_LABEL: Record<string, string> = { pm: 'Property management', c2: 'C2', owner: 'C2' }
-
-function groupByOwner(lines: RecapLine[]): [string, RecapLine[]][] {
-  const map = new Map<string, RecapLine[]>()
+/** Group by person, in order of first appearance; "Unassigned" last. */
+function group(lines: RecapLine[], pmcName: string | null): [string, string[]][] {
+  const map = new Map<string, string[]>()
   for (const l of lines) {
-    const key = OWNER_LABEL[l.owner ?? ''] ?? (l.owner || 'Unassigned')
-    map.set(key, [...(map.get(key) ?? []), l])
+    const key = label(l, pmcName)
+    map.set(key, [...(map.get(key) ?? []), l.text.trim()])
   }
-  return Array.from(map.entries())
+  const out = Array.from(map.entries())
+  return [...out.filter(([k]) => k !== 'Unassigned'), ...out.filter(([k]) => k === 'Unassigned')]
 }
 
-export function buildRecap(input: RecapInput): { subject: string; body: string } {
-  const subject = `Recap & action items – ${input.seriesName} – ${formatDate(input.callDate)}`
-  const out: string[] = ['Hi all,', '']
-  out.push(`Thanks for the time on ${formatDate(input.callDate)}.${input.summary ? ' ' + input.summary.trim() : ''}`)
-  out.push('')
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-  if (input.items.length) {
-    out.push('Action items')
-    for (const [owner, lines] of groupByOwner(input.items)) {
-      out.push('', owner)
-      for (const l of lines) out.push(`- ${l.text}${l.due ? ` (due ${formatDate(l.due)})` : ''}`)
+export function recapSubject(seriesName: string, callDate: string): string {
+  return `Recap & action items – ${seriesName} – ${formatDate(callDate)}`
+}
+
+export function buildRecap(input: RecapInput): Recap {
+  const text: string[] = ['Hi all,', '', '']
+  const html: string[] = ['<div>Hi all,</div><div><br></div><div><br></div>']
+
+  const section = (lines: RecapLine[]) => {
+    for (const [name, bullets] of group(lines, input.pmcName)) {
+      text.push(name, ...bullets.map(b => `- ${b}`), '')
+      html.push(`<div><b>${esc(name)}</b></div><ul>${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`)
     }
-    out.push('')
   }
 
+  section(input.items)
   if (input.carried.length) {
-    out.push('Still open from previous calls')
-    for (const [owner, lines] of groupByOwner(input.carried)) {
-      out.push('', owner)
-      for (const l of lines) out.push(`- ${l.text}${l.due ? ` (was due ${formatDate(l.due)})` : ''}`)
-    }
-    out.push('')
+    text.push('Still open from previous calls', '')
+    html.push('<div><br></div><div><u>Still open from previous calls</u></div><div><br></div>')
+    section(input.carried)
   }
 
-  if (input.nextCallDate) out.push(`Our next call is ${formatDate(input.nextCallDate)}; anything still open rolls onto that agenda.`, '')
-  out.push('Thanks,', 'Nick')
-  return { subject, body: out.join('\n') }
+  return {
+    subject: recapSubject(input.seriesName, input.callDate),
+    body: text.join('\n').trimEnd() + '\n',
+    html: html.join(''),
+  }
 }
 
-/** mailto: link that opens the user's mail client with the draft
- *  prefilled. Recipients are left blank on purpose — Nick adds them. */
+/** mailto: fallback for the manual button. Recipients left blank on
+ *  purpose — Nick adds them. */
 export function mailtoHref(subject: string, body: string): string {
   return `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
 }

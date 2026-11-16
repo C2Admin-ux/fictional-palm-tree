@@ -42,7 +42,7 @@ export type CallExtractionContext = {
 // only trusted when they exist in the provided context).
 type RawItem = {
   kind?: unknown; property_id?: unknown; description?: unknown
-  owner?: unknown; matched_task_id?: unknown; due_hint?: unknown
+  owner?: unknown; owner_name?: unknown; matched_task_id?: unknown; due_hint?: unknown
 }
 
 export type ExtractOutcome =
@@ -87,6 +87,7 @@ Return ONLY a valid JSON object, no preamble:
       "property_id": "one of the provided property ids" | null,
       "description": "short, specific, actionable sentence",
       "owner": "pm" | "owner" | null,
+      "owner_name": "first name of the person responsible" | null,
       "matched_task_id": "one of the provided open-task ids" | null,
       "due_hint": "YYYY-MM-DD" | null
     }
@@ -99,6 +100,7 @@ Rules:
 - property_id must be exactly one of the provided property ids; null when the item is portfolio-wide or the property is unclear. NEVER invent property ids.
 - description: one short sentence, concrete and self-contained ("Replace pool pump at ...", "Delinquency down to 2.1%..."). No filler, no speaker names unless needed.
 - owner: "pm" when the management company owes the follow-through, "owner" when Nick/ownership does, null when unclear.
+- owner_name: for "action" items, the FIRST NAME of the specific person who committed to it or was assigned it, as it appears in the notes (e.g. "(Victoria)" → "Victoria"; "Cory will follow up" → "Cory"). Use "Nick" for the owner's own commitments. null when no individual is identifiable — never guess.
 - due_hint: only when a date or clear timeframe was stated ("by Friday", "end of month" — resolve relative dates against the call date). Otherwise null.
 - If the previous call's unresolved items are discussed, capture the new status as an item (matched to a task when one exists).
 - Skip small talk and pleasantries. Do not fabricate items.
@@ -221,6 +223,7 @@ export async function extractCall(supabase: Client, call: Call): Promise<Extract
       property_id: typeof i.property_id === 'string' && propertyIds.has(i.property_id) ? i.property_id : null,
       description: (i.description as string).trim(),
       owner: i.owner === 'pm' || i.owner === 'owner' ? i.owner : null,
+      owner_name: typeof i.owner_name === 'string' && i.owner_name.trim() ? i.owner_name.trim().split(/\s+/)[0].slice(0, 40) : null,
       matched_task_id: typeof i.matched_task_id === 'string' && taskIds.has(i.matched_task_id) ? i.matched_task_id : null,
       due_hint: typeof i.due_hint === 'string' && isValidDateOnly(i.due_hint) ? i.due_hint : null,
     }))

@@ -213,23 +213,21 @@ export default function CallDetailPage() {
   }
 
   // ── Email selected ─────────────────────────────────────────
-  // Builds the recap from the follow-ups ticked for email plus any
-  // carried-over reminders, opens the mail client with it prefilled
-  // (recipients blank — Nick adds them), and copies the text as well.
+  // Manual fallback to the automatic Gmail draft: builds the recap from
+  // the follow-ups ticked for email (plus carried-over reminders when
+  // ticked), opens the mail client prefilled (recipients blank — Nick
+  // adds them), and copies the text as well. Same format as the draft.
   function emailSelected() {
     if (!call) return
     const picked = items.filter(i => emailItems.has(i.id))
     const reminders = carried.filter(t => emailCarried.has(t.id))
     if (picked.length === 0 && reminders.length === 0) { toast('Tick the follow-ups to include first'); return }
-    const cadence = seriesInfo?.cadence_days ?? 7
-    const next = new Date(call.call_date + 'T00:00:00'); next.setDate(next.getDate() + cadence)
     const { subject, body } = buildRecap({
       seriesName: seriesInfo?.display_name ?? call.title,
       callDate: call.call_date,
-      nextCallDate: next.toISOString().slice(0, 10),
-      summary: call.summary,
-      items: picked.map(i => ({ text: i.description, owner: i.owner, due: i.due_hint })),
-      carried: reminders.map(t => ({ text: t.title, owner: t.owner, due: t.follow_up_on ?? t.due_date })),
+      pmcName: pmcs.find(p => p.id === call.pmc_id)?.name ?? null,
+      items: picked.map(i => ({ text: i.description, name: i.owner_name, owner: i.owner })),
+      carried: reminders.map(t => ({ text: t.title, name: t.owner_name, owner: t.owner })),
     })
     navigator.clipboard?.writeText(`${subject}\n\n${body}`).catch(() => {})
     window.location.href = mailtoHref(subject, body)
@@ -415,6 +413,11 @@ export default function CallDetailPage() {
               <button onClick={rerunExtraction} disabled={extracting || processing} className="btn-secondary">
                 <Sparkles size={14} />{extracting ? 'Extracting…' : 'Re-run extraction'}
               </button>
+            )}
+            {call.recap_draft_url && (
+              <a href={call.recap_draft_url} target="_blank" rel="noreferrer" className="btn-secondary" title="The recap draft created automatically in Gmail">
+                <Mail size={14} />Open Gmail draft
+              </a>
             )}
             <button onClick={emailSelected} className="btn-secondary" title="Draft the recap email from the follow-ups ticked for email">
               <Mail size={14} />Email selected

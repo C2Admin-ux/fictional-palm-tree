@@ -234,7 +234,7 @@ export type Database = {
         ]
       }
       call_items: {
-        Row: { id: string; call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; property_id: string | null; description: string; owner: string | null; task_id: string | null; matched_task_id: string | null; due_hint: string | null; resolved: boolean; sort_order: number; created_at: string }
+        Row: { id: string; call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; property_id: string | null; description: string; owner: string | null; owner_name: string | null; task_id: string | null; matched_task_id: string | null; due_hint: string | null; resolved: boolean; sort_order: number; created_at: string }
         Insert: Partial<Database['public']['Tables']['call_items']['Row']> & { call_id: string; kind: 'action' | 'update' | 'issue' | 'decision'; description: string }
         Update: Partial<Database['public']['Tables']['call_items']['Row']>
         Relationships: [{ foreignKeyName: 'call_items_call_id_fkey'; columns: ['call_id']; isOneToOne: false; referencedRelation: 'calls'; referencedColumns: ['id'] }]
@@ -242,7 +242,7 @@ export type Database = {
       call_series: {
         // Recurring meeting definition (0021): matched by lowercased title
         // prefix; carries the PMC + covered properties for auto-assignment.
-        Row: { id: string; key: string; display_name: string; pmc_id: string | null; property_ids: string[]; default_recipients: string[]; always_cc: string[]; cadence_days: number; active: boolean; created_at: string; default_property_id: string | null }
+        Row: { id: string; key: string; display_name: string; pmc_id: string | null; property_ids: string[]; default_recipients: string[]; always_cc: string[]; cadence_days: number; active: boolean; created_at: string; default_property_id: string | null; recap_auto: boolean; recap_carryover: boolean }
         Insert: Partial<Database['public']['Tables']['call_series']['Row']> & { key: string; display_name: string }
         Update: Partial<Database['public']['Tables']['call_series']['Row']>
         Relationships: [{ foreignKeyName: 'call_series_pmc_id_fkey'; columns: ['pmc_id']; isOneToOne: false; referencedRelation: 'pmcs'; referencedColumns: ['id'] }]

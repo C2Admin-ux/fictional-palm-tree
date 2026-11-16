@@ -17,6 +17,7 @@ export type CarriedTask = {
   id: string; title: string; status: string; due_date: string | null; follow_up_on: string | null
   since: string   // call_date of the call it came from
   owner: string | null
+  owner_name: string | null
 }
 
 export function CarriedOver({ seriesId, beforeDate, selected, onToggle, onLoaded }: {
@@ -38,14 +39,14 @@ export function CarriedOver({ seriesId, beforeDate, selected, onToggle, onLoaded
       if (!callIds.length) { setRows([]); onLoaded([]); return }
       const dateOf = new Map((earlier ?? []).map(c => [c.id, c.call_date]))
       const { data: items } = await supabase.from('call_items')
-        .select('call_id, owner, task_id, matched_task_id').in('call_id', callIds)
-      const taskToItem = new Map<string, { since: string; owner: string | null }>()
+        .select('call_id, owner, owner_name, task_id, matched_task_id').in('call_id', callIds)
+      const taskToItem = new Map<string, { since: string; owner: string | null; owner_name: string | null }>()
       for (const i of items ?? []) {
         for (const tid of [i.task_id, i.matched_task_id]) {
           if (!tid) continue
           const since = dateOf.get(i.call_id) ?? ''
           const prev = taskToItem.get(tid)
-          if (!prev || since > prev.since) taskToItem.set(tid, { since, owner: i.owner })
+          if (!prev || since > prev.since) taskToItem.set(tid, { since, owner: i.owner, owner_name: i.owner_name })
         }
       }
       const ids = Array.from(taskToItem.keys())
@@ -53,7 +54,7 @@ export function CarriedOver({ seriesId, beforeDate, selected, onToggle, onLoaded
       const { data: tasks } = await supabase.from('tasks')
         .select('id, title, status, due_date, follow_up_on').in('id', ids).neq('status', 'done')
       const out: CarriedTask[] = (tasks ?? []).map(t => ({
-        ...t, since: taskToItem.get(t.id)!.since, owner: taskToItem.get(t.id)!.owner,
+        ...t, since: taskToItem.get(t.id)!.since, owner: taskToItem.get(t.id)!.owner, owner_name: taskToItem.get(t.id)!.owner_name,
       })).sort((a, b) => a.since.localeCompare(b.since))
       setRows(out); onLoaded(out)
     })()
