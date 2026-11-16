@@ -9,10 +9,14 @@ No Resend inbox, receiving address, or mail forwarding involved.
 - Processed messages get the Gmail label **`c2-ingested`** (created
   automatically) so they are never sent twice. The app also dedupes
   server-side on the Gmail message id, so re-runs are harmless.
-- The script never sends email. Besides reading and labeling, it creates a
-  **Gmail draft** of the recap (no recipients) when the app returns one for
-  a call in a series with `recap_auto` on, then reports the draft back to
+- Besides reading and labeling, it creates a **Gmail draft** of the recap
+  (no recipients) when the app returns one for a call in a series with
+  `recap_auto` on, then reports the draft back to
   `POST /api/calls/<id>/recap-draft` so the call page links to it.
+- The only email it ever sends is a one-line "recap draft ready" notice to
+  **the account running the script** (`Session.getEffectiveUser()` — your
+  own address, never anyone else), so your normal new-mail alerts pop up.
+  The recap itself is never sent.
   Recap format lives in `lib/calls/recap.ts`.
 - Authorization needs the Gmail **compose** scope (for drafts). After
   pasting the updated script, run `main` once in the editor and accept the
@@ -149,6 +153,7 @@ function postMessage_(endpoint, token, msg) {
 function createRecapDraft_(endpoint, token, callId, recap) {
   var draft = GmailApp.createDraft('', recap.subject, recap.body, { htmlBody: recap.html });
   console.log('Recap draft created: ' + recap.subject);
+  notifySelf_(recap.subject, draft.getMessage().getId());
   var callbackUrl = endpoint.replace(/\/api\/calls\/ingest\/?$/, '/api/calls/' + callId + '/recap-draft');
   UrlFetchApp.fetch(callbackUrl, {
     method: 'post',
@@ -156,6 +161,18 @@ function createRecapDraft_(endpoint, token, callId, recap) {
     headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify({ token: token, draft_id: draft.getId(), message_id: draft.getMessage().getId() }),
     muteHttpExceptions: true,
+  });
+}
+
+// Pop-up nudge: a one-line email to YOURSELF ONLY (the account running
+// this script) so your normal Gmail new-mail notification fires. The
+// recipient is never taken from the recap or the app.
+function notifySelf_(subject, messageId) {
+  var me = Session.getEffectiveUser().getEmail();
+  var link = 'https://mail.google.com/mail/u/0/#drafts?compose=' + messageId;
+  var title = 'Recap draft ready: ' + subject.replace(/^Recap & action items –\s*/, '');
+  GmailApp.sendEmail(me, title, 'Your recap draft is ready to edit: ' + link, {
+    htmlBody: 'Your recap draft is ready to edit: <a href="' + link + '">open draft</a>',
   });
 }
 ```
